@@ -1,4 +1,4 @@
-← [Phase 1 MVP Definition](12-mvp-definition.md) · [Contents](README.md) · [Evaluation Plan](14-evaluation-plan.md) →
+← [Phase 1 MVP Definition](12-mvp-definition.md) · [Contents](../README.md) · [Evaluation Plan](14-evaluation-plan.md) →
 
 ---
 
@@ -37,4 +37,4 @@ Severity: **Critical** (kills the project or silently corrupts user programs) ·
 
 ---
 
-← [Phase 1 MVP Definition](12-mvp-definition.md) · [Contents](README.md) · [Evaluation Plan](14-evaluation-plan.md) →
+← [Phase 1 MVP Definition](12-mvp-definition.md) · [Contents](../README.md) · [Evaluation Plan](14-evaluation-plan.md) →

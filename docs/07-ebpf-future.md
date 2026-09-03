@@ -1,4 +1,4 @@
-← [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) · [Contents](README.md) · [Competitive / Adjacent Landscape](08-competitive-landscape.md) →
+← [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) · [Contents](../README.md) · [Competitive / Adjacent Landscape](08-competitive-landscape.md) →
 
 ---
 
@@ -116,4 +116,4 @@ The information an eBPF tool most needs for async Rust — "these poll invocatio
 
 ---
 
-← [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) · [Contents](README.md) · [Competitive / Adjacent Landscape](08-competitive-landscape.md) →
+← [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) · [Contents](../README.md) · [Competitive / Adjacent Landscape](08-competitive-landscape.md) →

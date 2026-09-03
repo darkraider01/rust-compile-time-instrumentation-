@@ -1,4 +1,4 @@
-← [eBPF as a Future Extension](07-ebpf-future.md) · [Contents](README.md) · [Gap Analysis](09-gap-analysis.md) →
+← [eBPF as a Future Extension](07-ebpf-future.md) · [Contents](../README.md) · [Gap Analysis](09-gap-analysis.md) →
 
 ---
 
@@ -37,4 +37,4 @@ Only technically relevant entries are included. "Automatic" means the user does 
 
 ---
 
-← [eBPF as a Future Extension](07-ebpf-future.md) · [Contents](README.md) · [Gap Analysis](09-gap-analysis.md) →
+← [eBPF as a Future Extension](07-ebpf-future.md) · [Contents](../README.md) · [Gap Analysis](09-gap-analysis.md) →

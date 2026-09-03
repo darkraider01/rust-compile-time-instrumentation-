@@ -1,4 +1,4 @@
-← [OpenTelemetry Rust](05-otel-rust.md) · [Contents](README.md) · [eBPF as a Future Extension](07-ebpf-future.md) →
+← [OpenTelemetry Rust](05-otel-rust.md) · [Contents](../README.md) · [eBPF as a Future Extension](07-ebpf-future.md) →
 
 ---
 
@@ -180,4 +180,4 @@ At LLVM/binary level, inlined functions have no symbol and cannot be probed at a
 
 ---
 
-← [OpenTelemetry Rust](05-otel-rust.md) · [Contents](README.md) · [eBPF as a Future Extension](07-ebpf-future.md) →
+← [OpenTelemetry Rust](05-otel-rust.md) · [Contents](../README.md) · [eBPF as a Future Extension](07-ebpf-future.md) →

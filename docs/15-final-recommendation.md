@@ -1,4 +1,4 @@
-← [Evaluation Plan](14-evaluation-plan.md) · [Contents](README.md) · [Appendix A — Sources](appendix-a-sources.md) →
+← [Evaluation Plan](14-evaluation-plan.md) · [Contents](../README.md) · [Appendix A — Sources](appendix-a-sources.md) →
 
 ---
 
@@ -116,4 +116,4 @@ Ordered by how much they change the plan.
 
 ---
 
-← [Evaluation Plan](14-evaluation-plan.md) · [Contents](README.md) · [Appendix A — Sources](appendix-a-sources.md) →
+← [Evaluation Plan](14-evaluation-plan.md) · [Contents](../README.md) · [Appendix A — Sources](appendix-a-sources.md) →

@@ -1,7 +1,7 @@
 # Phase 0 — Landscape Research & Architecture
 
-**Investigation date:** 2026-09-04 (research pass), 2026-09-04 (verification pass — see [Appendix B](appendix-b-verification-log.md))
-**Status:** Research artifact. Nothing here is a binding implementation decision until [§15](15-final-recommendation.md) is reviewed.
+**Investigation date:** 2026-09-04 (research pass), 2026-09-04 (verification pass — see [Appendix B](docs/appendix-b-verification-log.md))
+**Status:** Research artifact. Nothing here is a binding implementation decision until [§15](docs/15-final-recommendation.md) is reviewed.
 **Toolchain baseline:** Rust 1.98.0 stable (2026-08-20); `opentelemetry` 0.32.x; `tracing` 0.1.44; `tracing-opentelemetry` 0.33.0; `otelc` v1.1.0. Verification experiments in Appendix B were run against the locally installed Rust 1.97.1 / Cargo 1.97.1 toolchain.
 
 This research is split into one file per section so each can be read, linked, and updated independently. Start here, then follow the table of contents.
@@ -20,22 +20,22 @@ Anything untagged is background or editorial framing, not a load-bearing technic
 ### Table of contents
 
 1. **Executive Summary** — this file, below
-2. [OpenTelemetry Go Compile-Time Instrumentation (`otelc`)](02-otelc-go.md)
-3. [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md)
-4. [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md)
-5. [OpenTelemetry Rust — Current Architecture and What We Should Target](05-otel-rust.md)
-6. [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md)
-7. [eBPF as a Future Extension](07-ebpf-future.md)
-8. [Competitive / Adjacent Landscape](08-competitive-landscape.md)
-9. [Gap Analysis](09-gap-analysis.md)
-10. [Architecture Candidates](10-architecture-candidates.md)
-11. [Recommended Architecture](11-recommended-architecture.md)
-12. [Phase 1 MVP Definition](12-mvp-definition.md)
-13. [Technical Risks](13-technical-risks.md)
-14. [Evaluation Plan](14-evaluation-plan.md)
-15. [Final Recommendation](15-final-recommendation.md)
-- [Appendix A — Primary sources consulted](appendix-a-sources.md)
-- [Appendix B — Verification log](appendix-b-verification-log.md) *(supersedes the original "claims not verified" list — every item there was subsequently checked, several by hands-on experiment)*
+2. [OpenTelemetry Go Compile-Time Instrumentation (`otelc`)](docs/02-otelc-go.md)
+3. [The Rust Compilation Pipeline](docs/03-rust-compiler-pipeline.md)
+4. [Existing Rust Instrumentation Landscape](docs/04-rust-instrumentation-landscape.md)
+5. [OpenTelemetry Rust — Current Architecture and What We Should Target](docs/05-otel-rust.md)
+6. [Rust-Specific Instrumentation Challenges](docs/06-rust-specific-challenges.md)
+7. [eBPF as a Future Extension](docs/07-ebpf-future.md)
+8. [Competitive / Adjacent Landscape](docs/08-competitive-landscape.md)
+9. [Gap Analysis](docs/09-gap-analysis.md)
+10. [Architecture Candidates](docs/10-architecture-candidates.md)
+11. [Recommended Architecture](docs/11-recommended-architecture.md)
+12. [Phase 1 MVP Definition](docs/12-mvp-definition.md)
+13. [Technical Risks](docs/13-technical-risks.md)
+14. [Evaluation Plan](docs/14-evaluation-plan.md)
+15. [Final Recommendation](docs/15-final-recommendation.md)
+- [Appendix A — Primary sources consulted](docs/appendix-a-sources.md)
+- [Appendix B — Verification log](docs/appendix-b-verification-log.md) *(supersedes the original "claims not verified" list — every item there was subsequently checked, several by hands-on experiment)*
 
 ---
 
@@ -101,4 +101,4 @@ The MIR / rustc-driver approach (Architecture B) is more technically interesting
 
 ---
 
-*Continue to [§2 — OpenTelemetry Go Compile-Time Instrumentation](02-otelc-go.md).*
+*Continue to [§2 — OpenTelemetry Go Compile-Time Instrumentation](docs/02-otelc-go.md).*

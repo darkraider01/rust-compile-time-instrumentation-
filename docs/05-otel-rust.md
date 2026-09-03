@@ -1,4 +1,4 @@
-← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →
+← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](../README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →
 
 ---
 
@@ -88,4 +88,4 @@ Reasoning:
 
 ---
 
-← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →
+← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](../README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →

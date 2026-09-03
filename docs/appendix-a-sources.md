@@ -1,4 +1,4 @@
-← [Final Recommendation](15-final-recommendation.md) · [Contents](README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
+← [Final Recommendation](15-final-recommendation.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
 
 ---
 
@@ -83,4 +83,4 @@ Sources from the original research pass (2026-09-04) and the subsequent verifica
 
 ---
 
-← [Final Recommendation](15-final-recommendation.md) · [Contents](README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
+← [Final Recommendation](15-final-recommendation.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →

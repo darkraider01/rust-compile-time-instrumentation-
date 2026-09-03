@@ -1,4 +1,4 @@
-← [OpenTelemetry Go Compile-Time Instrumentation](02-otelc-go.md) · [Contents](README.md) · [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) →
+← [OpenTelemetry Go Compile-Time Instrumentation](02-otelc-go.md) · [Contents](../README.md) · [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) →
 
 ---
 
@@ -282,4 +282,4 @@ The pattern is: call the default provider, clone the `Body` (you need an owned o
 
 ---
 
-← [OpenTelemetry Go Compile-Time Instrumentation](02-otelc-go.md) · [Contents](README.md) · [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) →
+← [OpenTelemetry Go Compile-Time Instrumentation](02-otelc-go.md) · [Contents](../README.md) · [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) →

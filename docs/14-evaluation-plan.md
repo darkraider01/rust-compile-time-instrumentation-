@@ -1,4 +1,4 @@
-← [Technical Risks](13-technical-risks.md) · [Contents](README.md) · [Final Recommendation](15-final-recommendation.md) →
+← [Technical Risks](13-technical-risks.md) · [Contents](../README.md) · [Final Recommendation](15-final-recommendation.md) →
 
 ---
 
@@ -91,4 +91,4 @@ To be filled only with measured values.
 
 ---
 
-← [Technical Risks](13-technical-risks.md) · [Contents](README.md) · [Final Recommendation](15-final-recommendation.md) →
+← [Technical Risks](13-technical-risks.md) · [Contents](../README.md) · [Final Recommendation](15-final-recommendation.md) →

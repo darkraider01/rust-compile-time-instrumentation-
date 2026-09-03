@@ -1,4 +1,4 @@
-← [Competitive / Adjacent Landscape](08-competitive-landscape.md) · [Contents](README.md) · [Architecture Candidates](10-architecture-candidates.md) →
+← [Competitive / Adjacent Landscape](08-competitive-landscape.md) · [Contents](../README.md) · [Architecture Candidates](10-architecture-candidates.md) →
 
 ---
 
@@ -91,4 +91,4 @@ Notes on the scores:
 
 ---
 
-← [Competitive / Adjacent Landscape](08-competitive-landscape.md) · [Contents](README.md) · [Architecture Candidates](10-architecture-candidates.md) →
+← [Competitive / Adjacent Landscape](08-competitive-landscape.md) · [Contents](../README.md) · [Architecture Candidates](10-architecture-candidates.md) →

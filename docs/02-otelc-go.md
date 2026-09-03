@@ -1,4 +1,4 @@
-← [Executive Summary](README.md) · [Contents](README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →
+← [Executive Summary](../README.md) · [Contents](../README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →
 
 ---
 
@@ -165,4 +165,4 @@ This follows Go's established `tools.go` convention. **[Fact]** A package counts
 
 ---
 
-← [Executive Summary](README.md) · [Contents](README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →
+← [Executive Summary](../README.md) · [Contents](../README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →

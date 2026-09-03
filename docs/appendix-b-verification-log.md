@@ -1,4 +1,4 @@
-← [Appendix A — Sources](appendix-a-sources.md) · [Contents](README.md)
+← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md)
 
 ---
 
@@ -52,7 +52,7 @@ Affected sections: [§2.9](02-otelc-go.md).
 
 **Validated mitigation — [Fact]:** Changing `RUSTFLAGS` reliably busts the cache. The tool must derive a synthetic `RUSTFLAGS` value (e.g. a `--cfg` carrying a hash of the active rule set + tool version) and set it whenever the instrumentation configuration is active, so that turning instrumentation on/off, or changing which rules apply, always changes `RUSTFLAGS` and therefore always forces the correct recompile. This must ship in the tool's first working version, not be added as later hardening — see [§13, R1](13-technical-risks.md) and [§15.3](15-final-recommendation.md).
 
-Affected sections: [§12.9 O1](12-mvp-definition.md), [§13, R1](13-technical-risks.md), [§15.5 Q1](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](README.md) confidence table.
+Affected sections: [§12.9 O1](12-mvp-definition.md), [§13, R1](13-technical-risks.md), [§15.5 Q1](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](../README.md) confidence table.
 
 ---
 
@@ -96,7 +96,7 @@ Affected sections: [§4.5](04-rust-instrumentation-landscape.md), [§7.4–7.5](
 
 **Consequence — a genuine complication, not a clean resolution in our favour:** The good news is that `tracing` is not going away — the risk framed in the original document (R15: "#1571 resolves against tracing") does not materialize as stated. The complication is new: the project's own **current, official guidance for new code recommends the opposite of what §5.4 recommends we generate**. This does not automatically overturn §5.4's recommendation — the reasoning there (async correctness via the `Instrumented` future, `STATIC_MAX_LEVEL`, ecosystem convergence with `tokio`/`hyper`/`axum`) is about risk for a tool generating code automatically at scale, which is a different question from "what should a human write by hand" — but it means we are now making a **considered, stated departure from upstream guidance**, not merely picking whichever API happens to be safe. This has been written into §5.2/§5.4 directly rather than left as a footnote.
 
-Affected sections: [§5.2](05-otel-rust.md) (substantially rewritten), [§5.4](05-otel-rust.md) (recommendation reasoning and costs both updated), [§15.5 Q10](15-final-recommendation.md), [§1.5](README.md) confidence table (confidence revised down from "Medium-high" to "Medium").
+Affected sections: [§5.2](05-otel-rust.md) (substantially rewritten), [§5.4](05-otel-rust.md) (recommendation reasoning and costs both updated), [§15.5 Q10](15-final-recommendation.md), [§1.5](../README.md) confidence table (confidence revised down from "Medium-high" to "Medium").
 
 ---
 
@@ -155,7 +155,7 @@ Affected sections: [§4.5](04-rust-instrumentation-landscape.md), [§7.5](07-ebp
 
 **Consequence:** This replaces a hedge ("syn loses formatting") with a specific, quantified cost: **complete loss of non-doc comments, plus a full-file reformat, on every touched file, always.** This does not block Architecture A — none of the losses are semantic, and the output still compiles — but it is a real, now-documented user-experience cost that must be disclosed prominently (a user whose comments silently vanish will distrust the tool regardless of whether the binary is correct), and it sharpens the remaining open question: whether `ra_ap_syntax`'s lossless CST is worth adopting specifically to avoid this, now that the `syn`+`prettyplease` baseline it would be compared against is known rather than assumed.
 
-Affected sections: [§12.9 O2](12-mvp-definition.md), [§13, R11](13-technical-risks.md), [§15.5 Q3](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](README.md) confidence table.
+Affected sections: [§12.9 O2](12-mvp-definition.md), [§13, R11](13-technical-risks.md), [§15.5 Q3](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](../README.md) confidence table.
 
 ---
 
@@ -190,4 +190,4 @@ Two of these eight (items 2 and 7) were resolved by building and running actual 
 
 ---
 
-← [Appendix A — Sources](appendix-a-sources.md) · [Contents](README.md)
+← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md)

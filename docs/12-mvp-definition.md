@@ -1,4 +1,4 @@
-← [Recommended Architecture](11-recommended-architecture.md) · [Contents](README.md) · [Technical Risks](13-technical-risks.md) →
+← [Recommended Architecture](11-recommended-architecture.md) · [Contents](../README.md) · [Technical Risks](13-technical-risks.md) →
 
 ---
 
@@ -177,4 +177,4 @@ The MVP is done when all of these hold:
 
 ---
 
-← [Recommended Architecture](11-recommended-architecture.md) · [Contents](README.md) · [Technical Risks](13-technical-risks.md) →
+← [Recommended Architecture](11-recommended-architecture.md) · [Contents](../README.md) · [Technical Risks](13-technical-risks.md) →
