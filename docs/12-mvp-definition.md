@@ -9,19 +9,19 @@
 
 ```
 ordinary Rust application (async, axum or plain tokio)
+   + exactly one third-party dependency
         ↓
-  cargo instrument -- run
+  cargo instrument -- build
         ↓
-automatic #[instrument]-equivalent injection into the user's crate
+automatic instrumentation injection into the user's crate AND that one dependency
         ↓
 tracing spans → tracing-opentelemetry → opentelemetry_sdk
         ↓
-OTLP → collector → visible trace with correct nesting and durations
+OTLP → collector → visible trace with correct nesting and durations,
+       including a span from inside the unmodified dependency
 ```
 
-**Deliberate MVP restriction:** Phase 1 instruments **workspace crates only** (via `RUSTC_WORKSPACE_WRAPPER`). Dependency-graph coverage — the actual differentiator — is **Phase 2**, using the same machinery switched to `RUSTC_WRAPPER`.
-
-**[Inference]** This looks like it concedes the whole value proposition, and it is worth being explicit about why it does not. Phase 1's job is to prove the *pipeline* — Cargo hook → source rewrite → stock compile → correct spans → OTLP — on code we control, where source layout is simple and failures are debuggable. Rewriting third-party crates adds a large, independent set of problems (read-only registry sources, `build.rs`-generated modules, `include!`, exotic `cfg`) that would obscure whether the core pipeline works. The wrapper mechanism is the same; only the scope changes.
+**[Revised after the adversarial review round — see [Appendix C](appendix-c-adversarial-review.md).** The original MVP scoped Phase 1 to workspace crates only, deferring dependency instrumentation to Phase 2 on the grounds that the cross-crate injection mechanism was unproven. It has since been proven — extern `"C"` trampolines compile and run cleanly against an undeclared third-party crate on stable Rust (Appendix C.2). Deferring the proven mechanism now would only defer the project's actual differentiator for no remaining technical reason. **The MVP now includes exactly one dependency**, kept small deliberately: enough to prove the mechanism generalizes past the workspace boundary, not enough to take on the harder problems (`build.rs`-generated modules, exotic `cfg`, macro-heavy crates) that real dependency-graph coverage will eventually require in Phase 2.]**
 
 ### 12.2 Supported constructs
 
@@ -46,7 +46,7 @@ OTLP → collector → visible trace with correct nesting and durations
 | `#[inline]` / functions below the size threshold | Skipped |
 | Macro-generated items | Not seen at all; documented |
 | `std` / precompiled crates | Out of scope |
-| Third-party dependencies | **Phase 2** |
+| Third-party dependencies | **One dependency in Phase 1** (see §12.1 revision), to prove the mechanism generalizes past the workspace boundary. Full dependency-graph coverage across an arbitrary crate graph is **Phase 2**. |
 | Cross-process context propagation | Phase 2+ |
 | Argument value capture | Off; `skip_all` always in Phase 1 |
 | `no_std` crates | Out of scope |
@@ -58,7 +58,7 @@ OTLP → collector → visible trace with correct nesting and durations
 - **Toolchain:** stable Rust. Target the current stable minus three (matching `opentelemetry-rust`'s own support window **[Fact]**). Nightly must not be required for anything.
 - **Platform:** Linux/macOS/Windows for the tool itself. No kernel requirements — this is one of the advantages of not doing eBPF.
 
-Tool dependencies: `syn` (full features), `quote`, `proc-macro2`, `prettyplease`, `serde` + `serde_yaml`, `cargo_metadata`, `clap`, `anyhow`/`thiserror`, `tracing` (for the tool's own diagnostics). **[Fact — confirmed by a hands-on round-trip experiment during verification, see [Appendix B](appendix-b-verification-log.md) item 7]** `syn` 2 + `prettyplease` 0.2 silently drop every non-doc `//` comment and fully reformat the entire touched file to `prettyplease`'s canonical style (doc comments, attributes, and all structural content survive intact, and the round-trip is idempotent). This is now a known, quantified limitation rather than an open question — see §12.9 O2 and R11.
+Tool dependencies: `syn` (full features, used for **parsing/analysis only** — no `quote`/`prettyplease` in the injection path), `serde` + `serde_yaml`, `cargo_metadata`, `clap`, `anyhow`/`thiserror`, `tracing` (for the tool's own diagnostics). **[Revised after the adversarial review round, see [Appendix C.6](appendix-c-adversarial-review.md)]** The original design planned to parse with `syn` and re-emit with `prettyplease`, which a hands-on experiment confirmed silently drops every non-doc `//` comment and reformats the whole touched file (Appendix B item 7). Following `cargo-mutants`' proven approach instead: `syn` is used only to locate target items and read `span().byte_range()`; the actual code change is a **byte-range splice into the original UTF-8 source buffer**. This preserves comments, formatting, and line numbers exactly outside the insertion point, and removes the need to evaluate `ra_ap_syntax` as an alternative — see §12.9 O2.
 
 Injected/runtime dependencies (added to the user's project): `tracing`, `tracing-subscriber`, `tracing-opentelemetry`, `opentelemetry`, `opentelemetry_sdk`, `opentelemetry-otlp`.
 
@@ -118,7 +118,8 @@ Only one rule type (`inject_span`, our `inject_hooks` analogue) in Phase 1. `wra
 The MVP is done when all of these hold:
 
 1. **It builds a real async application unmodified.** A small axum + tokio + `sqlx`-or-mock service compiles and runs under `cargo instrument` with no source edits beyond adding the tool.
-2. **Spans appear in a collector.** Traces reach an OTel Collector over OTLP and render correctly in Jaeger or equivalent.
+1a. **The one MVP dependency is instrumented without any edit to its own source, `Cargo.toml`, or lockfile.** (Appendix C.2/C.8 item 5.) This is the criterion that actually validates the differentiator, not just the pipeline.
+2. **Spans appear in a collector.** Traces reach an OTel Collector over OTLP and render correctly in Jaeger or equivalent — including at least one span produced from inside that dependency.
 3. **Nesting is correct.** A synchronous call chain `a → b → c` produces three correctly nested spans.
 4. **Async durations are correct.** An `async fn` that awaits a 100 ms sleep produces a span whose *total* duration is ≈100 ms and whose *busy* time is ≈0. This is the single most important correctness test in the MVP.
 5. **Concurrency does not corrupt spans.** Ten concurrently spawned tasks each running an instrumented async function produce ten independent, non-interleaved span trees.
@@ -134,10 +135,10 @@ The MVP is done when all of these hold:
 - Matcher selectivity: crate glob, `is_async`, `not` combinators.
 - Precedence: `INSTRUMENT_RULES` > `--rules` > project file > defaults.
 
-**Unit — AST transformation**
-- Snapshot tests (`insta`) of rewritten output for: free fn, method, trait impl method, generic fn, `async fn`, `Result`-returning fn.
+**Unit — source splicing** *(revised from "AST transformation" per [Appendix C.6](appendix-c-adversarial-review.md) — `syn` is analysis-only, the edit is a byte-range splice, not a parse→print round-trip)*
+- Snapshot tests (`insta`) of spliced output for: free fn, method, trait impl method, generic fn, `async fn`, `Result`-returning fn.
 - Idempotence: a function already carrying `#[instrument]` is not double-instrumented. **This is the duplicate-instrumentation guard and must exist before the first real build.**
-- Round-trip fidelity: parse → print of an untouched file compiles identically.
+- **Splice fidelity**: the output is byte-identical to the input everywhere outside the inserted region — comments, blank lines, and exact formatting all survive. This replaces the old "round-trip fidelity" test, which only checked that the file still compiled, not that it was left otherwise untouched.
 
 **Integration — compilation**
 - Every §12.2 construct compiles after instrumentation.
@@ -155,6 +156,7 @@ The MVP is done when all of these hold:
 **Regression / corpus**
 - `--plan-only` over ≥5 real crates, snapshotted, so rule changes show their blast radius.
 - Full instrumented build of ≥2 real crates in CI.
+- **[New, per Appendix C open question Q7]** At least one instrumented build with `lto = true`, `codegen-units = 1`, and `panic = "abort"` set — the trampoline-linking behaviour under these settings is untested and could fail silently at link time.
 
 **Benchmarks** (reported, not asserted — no pass/fail thresholds in CI)
 - Clean and incremental build time, instrumented vs. not.
@@ -165,13 +167,13 @@ The MVP is done when all of these hold:
 
 | # | Question | Why it matters | How to resolve |
 | --- | --- | --- | --- |
-| O1 | ~~Does `RUSTC_WRAPPER` participate in Cargo's fingerprint so instrumented and plain builds cache separately?~~ **RESOLVED — [Fact, confirmed by direct experiment]** | See [Appendix B](appendix-b-verification-log.md) item 2: on Cargo 1.97.1, it does **not**. Building a crate, then setting `RUSTC_WRAPPER` with no source change, produces zero recompilation — Cargo reports "Finished" with no "Compiling" line and never invokes the wrapper for the actual crate compile. `RUSTC_WORKSPACE_WRAPPER` behaves identically. | Confirmed mitigation, also experimentally validated: pair every wrapper toggle / rule-set change with a synthetic `RUSTFLAGS` value (e.g. a `--cfg` carrying a hash of the active rule set). `RUSTFLAGS` changes were confirmed to force recompilation on every change, three-for-three in testing. This mitigation must ship in the tool's first commit, not be added later. |
-| O2 | `syn` + `prettyplease` or `ra_ap_syntax` CST? **Partially resolved** | **[Fact, confirmed by direct experiment]** See Appendix B item 7: `syn`+`prettyplease` round-tripping of a representative sample destroyed all 4 non-doc `//` comments in the sample while fully preserving doc comments, attributes, cfg, generics, async signatures, and macro bodies; it also reformatted the *entire* file to canonical style, not just the touched item, and did so idempotently (a second pass changed nothing further). This is a real, now-quantified cost, not a guess — every instrumented file's diff will look like a full reformat, and every non-doc comment in it will silently vanish. | Still open: whether `ra_ap_syntax`'s lossless CST avoids this at an acceptable API-stability cost. Prototype it and compare directly against the now-known `syn` baseline above. |
+| O1 | ~~Does `RUSTC_WRAPPER` participate in Cargo's fingerprint so instrumented and plain builds cache separately?~~ **RESOLVED — [Fact, confirmed by direct experiment]** | See [Appendix B](appendix-b-verification-log.md) item 2: on Cargo 1.97.1, it does **not**. Building a crate, then setting `RUSTC_WRAPPER` with no source change, produces zero recompilation — Cargo reports "Finished" with no "Compiling" line and never invokes the wrapper for the actual crate compile. `RUSTC_WORKSPACE_WRAPPER` behaves identically. | **[Revised — see [Appendix C.3](appendix-c-adversarial-review.md)]** The originally proposed `RUSTFLAGS`-hash mitigation works but is destructive: `RUSTFLAGS` is global, so changing it evicts the *entire* workspace and dependency cache (not just the instrumented crate), and setting it as an environment variable clobbers any `[build] rustflags` in `.cargo/config.toml` without merging. **Confirmed working replacement, experimentally validated:** build into an isolated `--target-dir` (e.g. `target/instrumented`) whenever the wrapper is active. This forces the wrapper to run for every crate in that directory (there is no stale cache to reuse there) while leaving the user's default `target/` and their `RUSTFLAGS`/config untouched. |
+| O2 | ~~`syn` + `prettyplease` or `ra_ap_syntax` CST?~~ **RESOLVED — neither; adopt byte-range splicing** | **[Fact, confirmed by direct experiment]** See Appendix B item 7: `syn`+`prettyplease` round-tripping of a representative sample destroyed all 4 non-doc `//` comments in the sample while fully preserving doc comments, attributes, cfg, generics, async signatures, and macro bodies; it also reformatted the *entire* file to canonical style, not just the touched item. | **[Resolved in Appendix C.6]** `cargo-mutants` solves exactly this problem by using `syn` for analysis only and applying mutations **textually** via byte spans, so untouched code keeps its original formatting, comments, and line numbers. Adopting the same technique removes the `prettyplease`-vs-`ra_ap_syntax` trade-off entirely — neither is needed in the injection path. |
 | O3 | Where do rewritten sources live, and how do relative paths (`include!`, `#[path]`, `mod` file resolution) survive? | Determines whether Phase 2 dependency rewriting is viable at all | Prototype on a crate using `include!` and `build.rs`-generated modules |
 | O4 | Does `#[instrument]` compose correctly with `#[async_trait]`, `#[tokio::main]`, and common attribute macros, and in what order? | Determines a large slice of real-world compatibility | Compilation tests |
 | O5 | How do we avoid double-instrumenting a crate that already uses `#[instrument]`? | Duplicate spans corrupt traces | Detect existing attributes in the AST; test |
 | O6 | ~~Exact `code.*` semantic-convention attribute names and their stability~~ **RESOLVED** | **[Fact]** Stable since semconv v1.33.0: `code.function.name`, `code.file.path`, `code.line.number`, `code.column.number`, `code.stacktrace`. See [§5.3](05-otel-rust.md). | — |
-| O7 | Does the tool need to modify `Cargo.toml` (to add `tracing` etc.), and how do we do that without wrecking the user's lockfile? | Phase 1 of `otelc` solves the analogue with `go mod tidy`; Cargo's feature unification makes this harder | Prototype; consider requiring the user to add dependencies manually in Phase 1 |
+| O7 | ~~Does the tool need to modify `Cargo.toml` (to add `tracing` etc.), and how do we do that without wrecking the user's lockfile?~~ **Substantially narrowed** | **[Revised — see [Appendix C.2](appendix-c-adversarial-review.md)]** With the extern `"C"` trampoline mechanism, an **instrumented dependency needs no `Cargo.toml` change at all** — the wrapper injects only a symbol declaration, resolved at the application's own final link step. Only the **application crate** needs `tracing`/`tracing-opentelemetry`/`opentelemetry-otlp` (which it needs anyway, as the runtime owner) — a normal, first-party `Cargo.toml` edit, not a synthetic edit to a dependency's manifest. | Confirm in the MVP's dependency slice (§12.1): the instrumented dependency's own `Cargo.toml`/lockfile should be provably untouched after a build. |
 
 ---
 

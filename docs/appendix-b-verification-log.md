@@ -1,4 +1,4 @@
-← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md)
+← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md) · [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) →
 
 ---
 
@@ -190,4 +190,4 @@ Two of these eight (items 2 and 7) were resolved by building and running actual 
 
 ---
 
-← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md)
+← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md) · [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) →
