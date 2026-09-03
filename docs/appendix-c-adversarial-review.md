@@ -161,4 +161,20 @@ Comments, formatting, and line numbers all survive byte-for-byte outside the ins
 
 ---
 
+### C.9 Open questions that survive this review round
+
+Neither this review round nor the corrections above closed these. They cannot be answered from documentation and require a corpus run, a prototype, or a nightly compiler-driver spike.
+
+| # | Question | Why it can't be answered from docs alone |
+| --- | --- | --- |
+| Q1 | Does source-tree mirroring (C.2) preserve `include_str!`, `#[path]`, `CARGO_MANIFEST_DIR`-relative paths, and proc-macro-driven resolution (e.g. `sqlx::query!`)? | The Appendix C.2 experiment used single-file crates. The review's enumeration of these hazards is credible but untested against a real multi-file crate. |
+| Q2 | What fraction of a real dependency graph rewrites cleanly with byte-range splicing and source-tree mirroring? | Needs a corpus run over real, published crates — not a synthetic sample. |
+| Q3 | Is a `&Task` pointer, read externally via a uprobe, stable and unique enough for poll correlation given pointer reuse after a task is freed? | Nobody has published this for Tokio specifically; it is the crux of whether H2's correlation key is trustworthy (§C.5). |
+| Q4 | Can `StateTransform`'s `.await`↔state-variant map actually be extracted from a custom rustc driver and serialized to a stable format? | Requires a nightly `rustc_private` driver spike; no existing tool does this today. |
+| Q5 | Can a USDT probe's argument-location format carry structured async metadata (state variant, `.await` source location), or does it need a companion ELF section alongside the standard USDT note? | USDT's argument encoding was designed for scalar probe arguments, not structured compiler metadata; untested against this use case. |
+| Q6 | How does `fastrace`'s overhead compare to `tracing`'s specifically under auto-instrumentation span volume and shape (many small, short-lived spans across dependency boundaries)? | `fastrace`'s published benchmarks are self-reported and measure their own chosen workload, not this one. |
+| Q7 | Do the injected `extern "C"` trampolines survive `lto = true`, `codegen-units = 1`, and `panic = "abort"` without being stripped or miscompiled? | Untested. §3.2.5 documents that LTO can strip a runtime crate that is only referenced from injected code in the MIR-instrumentation case; whether the same risk applies to a source-level `extern "C"` trampoline is a different, unverified question. A regression test for this combination was added to [§12.8](12-mvp-definition.md). |
+
+---
+
 ← [Appendix B — Verification Log](appendix-b-verification-log.md) · [Contents](../README.md)

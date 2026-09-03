@@ -71,7 +71,7 @@ In order:
 
 ### 15.5 Open questions requiring experimental validation
 
-Ordered by how much they change the plan.
+Ordered by how much they change the plan. **A second, non-overlapping set of open questions** — surfaced specifically by the adversarial review round (source-tree mirroring edge cases, `&Task` pointer stability, USDT's ability to carry structured async metadata, `fastrace` vs. `tracing` under our specific workload, and LTO/`panic=abort` interaction with the trampoline) — is tracked separately in [Appendix C.9](appendix-c-adversarial-review.md), so it does not get lost by being folded into this numbering.
 
 | # | Question | Blocks | How to test |
 | --- | --- | --- | --- |
