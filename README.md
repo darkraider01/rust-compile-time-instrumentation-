@@ -1,8 +1,8 @@
 # Phase 0 — Landscape Research & Architecture
 
-**Investigation date:** 2026-09-04 (research pass), 2026-09-04 (verification pass — see [Appendix B](docs/appendix-b-verification-log.md))
+**Investigation date:** 2026-09-04 (research pass, verification pass, and an adversarial review round — see [Appendix B](docs/appendix-b-verification-log.md) and [Appendix C](docs/appendix-c-adversarial-review.md))
 **Status:** Research artifact. Nothing here is a binding implementation decision until [§15](docs/15-final-recommendation.md) is reviewed.
-**Toolchain baseline:** Rust 1.98.0 stable (2026-08-20); `opentelemetry` 0.32.x; `tracing` 0.1.44; `tracing-opentelemetry` 0.33.0; `otelc` v1.1.0. Verification experiments in Appendix B were run against the locally installed Rust 1.97.1 / Cargo 1.97.1 toolchain.
+**Toolchain baseline:** Rust 1.98.0 stable (2026-08-20); `opentelemetry` 0.32.x; `tracing` 0.1.44; `tracing-opentelemetry` 0.33.0; `otelc` v1.1.0. All hands-on experiments (Appendix B and Appendix C) were run against the locally installed Rust 1.97.1 / Cargo 1.97.1 toolchain.
 
 This research is split into one file per section so each can be read, linked, and updated independently. Start here, then follow the table of contents.
 
@@ -36,6 +36,7 @@ Anything untagged is background or editorial framing, not a load-bearing technic
 15. [Final Recommendation](docs/15-final-recommendation.md)
 - [Appendix A — Primary sources consulted](docs/appendix-a-sources.md)
 - [Appendix B — Verification log](docs/appendix-b-verification-log.md) *(supersedes the original "claims not verified" list — every item there was subsequently checked, several by hands-on experiment)*
+- [Appendix C — Adversarial review round](docs/appendix-c-adversarial-review.md) *(an independent review challenged the core architecture; settled by experiment — most of Architecture A survived, several mechanism details did not)*
 
 ---
 
@@ -75,13 +76,15 @@ Step 4 is the structural problem. In Go, `otelc` instruments `net/http`, `databa
 
 ### 1.4 Most promising technical direction
 
-**A Cargo-integrated `RUSTC_WRAPPER` tool that performs rule-driven source/AST instrumentation before handing code to a stock `rustc`, emitting `tracing` spans, bridged to OpenTelemetry via `tracing-opentelemetry`.**
+**A Cargo-integrated `RUSTC_WRAPPER` tool that splices `extern "C"` trampoline instrumentation into source at the byte level before handing code to a stock `rustc`, emitting `tracing` spans, bridged to OpenTelemetry via `tracing-opentelemetry`.**
+
+**[Revised after an adversarial review round — see [Appendix C](docs/appendix-c-adversarial-review.md).** An independent review argued this architecture is "structurally blocked on stable Rust" and cannot instrument third-party dependencies at all. That was tested directly by building and running the mechanism: it works, on stable Rust, with no `-Zunstable-options`. Two of the review's specific mechanism criticisms were nonetheless correct and are folded in here: extern `"C"` trampolines (not injecting a crate dependency) avoid all crate-graph/cycle hazards, and byte-range source splicing (not `syn`→`prettyplease`) avoids destroying comments and formatting.]**
 
 This is deliberately the *least* impressive of the candidate architectures. The reasoning (§9, §11):
 
 - It is the direct structural analogue of `otelc`'s `-toolexec` design — the one design in this space that reached v1.0 and production use. **[Fact]**
 - It runs on **stable** Rust, so it is shippable and maintainable.
-- It reaches third-party dependencies — the actual gap — because `RUSTC_WRAPPER` sees every crate in the graph, not just workspace members. **[Fact]**
+- It reaches third-party dependencies — the actual gap — because `RUSTC_WRAPPER` sees every crate in the graph, not just workspace members, and this was confirmed by direct experiment against an undeclared, unmodified dependency, not merely assumed. **[Fact]**
 - It produces a working POC in weeks, and it is a stepping stone to the compiler-level and eBPF work rather than a dead end.
 
 The MIR / rustc-driver approach (Architecture B) is more technically interesting and is where the genuinely novel research lies, but it is nightly-pinned, effectively unshippable to real users, and — critically — **async semantics get harder, not easier, at MIR level** (§6.3). It belongs in Phase 3+ as a research branch, not in Phase 1.
@@ -91,13 +94,13 @@ The MIR / rustc-driver approach (Architecture B) is more technically interesting
 | Claim | Confidence | Why |
 | --- | --- | --- |
 | No existing Rust whole-graph compile-time OTel instrumentation tool | **Medium-high** | Negative search results are inherently weak, but we checked crates.io, OTel's official zero-code list, and the OTel Rust SIG surface |
-| `RUSTC_WRAPPER` source instrumentation is feasible on stable Rust | **High** | Mechanism is documented and stable; Clippy uses the sibling `RUSTC_WORKSPACE_WRAPPER`, `sccache` uses `RUSTC_WRAPPER` |
-| Cargo's build cache will silently serve an uninstrumented artifact unless the tool actively busts it | **Very high — confirmed by direct experiment**, not inferred | Verification pass reproduced this on Cargo 1.97.1/Windows: toggling `RUSTC_WRAPPER` on an already-built crate triggers zero recompilation, and a `RUSTFLAGS`-based cache-buster reliably fixes it. See Appendix B, item 2 |
+| `RUSTC_WRAPPER` source instrumentation can reach third-party dependencies on stable Rust | **Very high — confirmed by direct experiment**, not merely asserted | An adversarial review called this "structurally impossible." Directly tested: an undeclared, unmodified dependency was successfully instrumented via an `extern "C"` trampoline splice, with no `-Zunstable-options`. See Appendix C.2 |
+| Cargo's build cache will silently serve an uninstrumented artifact unless the tool actively busts it | **Very high — confirmed by direct experiment**, not inferred | Verification pass reproduced this on Cargo 1.97.1/Windows: toggling `RUSTC_WRAPPER` on an already-built crate triggers zero recompilation. The original proposed fix (`RUSTFLAGS`-hashing) was itself shown to be destructive — it evicts the whole workspace cache and clobbers user config — and was replaced with an isolated `--target-dir`, also confirmed by experiment. See Appendix B item 2 and Appendix C.3 |
 | MIR instrumentation is feasible but nightly-only and version-fragile | **High** | Directly evidenced by rustc source and `rustc_plugin`'s per-nightly pinning |
-| Source-level rewriting (`syn`+`prettyplease`) silently drops all non-doc comments and reformats the whole file | **Very high — confirmed by direct experiment** | A hands-on round-trip test destroyed 4/4 line comments while preserving all doc comments and structural content; see Appendix B, item 7 |
-| Compiler-generated metadata would materially improve eBPF instrumentation for Rust | **Medium** | Strengthened by the verification pass (OBI does zero function-level Rust instrumentation today, so there is no existing baseline to be merely incremental over) but still fundamentally untested — this is the project's central novel hypothesis (§15.5, H2) |
-| Generating `tracing` output (vs. the OTel API directly) is the right MVP choice | **Medium, revised down slightly** | The technical case (async correctness, `STATIC_MAX_LEVEL`, ecosystem convergence) still holds, but the verification pass found that OpenTelemetry Rust's own current guidance, published after closing the API-choice debate, explicitly recommends the OTel API directly for new code — see §5 and Appendix B, item 4 |
-| The project as originally stated (compile-time instrumentation → eBPF) is worth building *as a whole* | **Low-medium** | The compile-time half is worthwhile; the eBPF half is unproven and should be gated on an experiment, not scheduled |
+| Source-level rewriting via `syn`→`prettyplease` silently drops all non-doc comments and reformats the whole file | **Very high — confirmed by direct experiment**, and now moot | A hands-on round-trip test destroyed 4/4 line comments while preserving all doc comments and structural content (Appendix B item 7). The design has since moved to byte-range splicing (following `cargo-mutants`' proven technique) specifically to avoid this — see Appendix C.6 |
+| Compiler-generated metadata would materially improve eBPF instrumentation for Rust | **Medium, narrowed in scope** | The mechanism itself ("compile-time metadata embedded in a binary for eBPF") is not novel — USDT has done this for two decades, and stable-Rust crates already exist (Appendix C.4). What remains open and untested is specifically whether Rust's *async state-machine structure* can be usefully encoded and consumed by an external observer — this is the project's central novel hypothesis (§15.5, H2), and it is somewhat strengthened by confirming `tokio::task::Id` is stable, though an external observer still cannot read it without knowing memory layout (Appendix C.5) |
+| Generating `tracing` output (vs. the OTel API directly) is the right MVP choice | **Medium** | An adversarial review argued `tracing` lacks OTel span kind/status/remote-parent support; checked directly against `tracing-opentelemetry`'s source, and it turns out to bridge all three via `otel.kind`/`otel.status_code`/`otel.name` special fields — only span links are a genuine gap (Appendix C.5/S5). The divergence from OpenTelemetry Rust's own "prefer the OTel API directly" guidance (§5, Appendix B item 4) is therefore real but narrower than first described |
+| The project as originally stated (compile-time instrumentation → eBPF) is worth building *as a whole* | **Low-medium** | The compile-time half is worthwhile and its core mechanism is now experimentally confirmed rather than merely designed; the eBPF half is unproven and should be gated on an experiment, not scheduled |
 
 ---
 

@@ -14,13 +14,13 @@ What the research supports:
 - **[Fact]** Rust is the conspicuous absence from OpenTelemetry's zero-code instrumentation list.
 - **[Fact]** No tool exists that instruments a Rust dependency graph at build time (subject to §4.6's caveats on negative results).
 - **[Fact]** Every mechanism required to build one is stable and documented: `cargo metadata`, `RUSTC_WRAPPER`, `syn`, `tracing`, `tracing-opentelemetry`, `opentelemetry-otlp`.
-- **[Fact]** A proven reference design exists in `otelc`, at v1.1, whose core architectural choices port to Rust with only the trampoline/linkname mechanism needing replacement.
+- **[Fact — now experimentally confirmed, not just designed; see [Appendix C](appendix-c-adversarial-review.md)]** A proven reference design exists in `otelc`, at v1.1, whose core architectural choices port to Rust with the trampoline/linkname mechanism replaced by an `extern "C"` trampoline splice — this replacement was directly tested against an undeclared, unmodified third-party dependency and works on stable Rust, surviving a deliberate adversarial challenge that claimed it could not.
 
 What the research does **not** support:
 
 - The framing of this as primarily a *compiler* project. The compiler-level route is nightly-pinned, permanently unstable, and — critically — makes the hardest Rust problem (async) **worse**, not better (§6.3). It is a research branch, not a product path.
-- Treating eBPF as a planned phase. It rests on H2 (logical async spans reconstructible from poll events plus metadata), which is unvalidated and may be false because Rust and Tokio expose no stable task identity to an external observer.
-- Claims of novelty for the mechanism. Compile-time auto-instrumentation is a solved, shipped idea in Go. **The novelty is in the Rust adaptation — specifically async semantics, monomorphization, and macro invisibility — not in the concept.**
+- Treating eBPF as a planned phase. It rests on H2 (logical async spans reconstructible from poll events plus metadata), which is unvalidated. **[Revised — see [Appendix C.5](appendix-c-adversarial-review.md)]** The original basis for doubting H2 — "Rust and Tokio expose no stable task identity" — was itself factually wrong (`tokio::task::Id` is stable). The real constraint is narrower and still open: an *external* eBPF observer must recover that identity from the task's in-memory layout at a known offset, not from the stable Rust API, which is exactly the struct-offset fragility already observed in existing prior art (§4.5).
+- Claims of novelty for the *mechanism*. Compile-time auto-instrumentation is a solved, shipped idea in Go, and compile-time metadata embedded in a binary for eBPF consumption is a two-decade-old idea (USDT) with mature stable-Rust implementations (Appendix C.4). **The novelty is in the Rust adaptation — specifically async semantics, monomorphization, and macro invisibility for the compile-time half, and specifically *async state-machine structure* (not metadata in general) for the eBPF half — not in either mechanism as a concept.**
 
 **The honest one-line framing:** *this is a port of a proven Go design to a language where nobody has done it, whose hard parts are genuinely Rust-specific, with one speculative research question (compiler metadata for eBPF) attached as an optional later branch.* That is a good project. It is not a novel-mechanism project, and describing it as one would not survive contact with someone who knows `otelc` exists.
 
@@ -29,13 +29,14 @@ What the research does **not** support:
 **Architecture A**, structured so Architecture D is reachable by addition:
 
 ```
-cargo metadata ─► rule matching ─► plan
+cargo metadata ─► rule matching ─► plan ─► pre-build runtime crate standalone
         │
         ▼
-RUSTC_WRAPPER ─► per-crate source rewrite (syn/CST) ─► stock stable rustc
+RUSTC_WRAPPER (--target-dir target/instrumented) ─► per-crate byte-range
+        splice of extern "C" trampolines (syn for analysis only) ─► stock stable rustc
         │
         ▼
-tracing ─► tracing-opentelemetry ─► opentelemetry_sdk ─► OTLP
+tracing (otel.kind/otel.status_code) ─► tracing-opentelemetry ─► opentelemetry_sdk ─► OTLP
 ```
 
 With one structural decision taken on day one: **the emitter is a seam** (§11.4), so "emit metadata instead of code" is a configuration, not a rewrite.
@@ -44,9 +45,9 @@ With one structural decision taken on day one: **the emitter is a seam** (§11.4
 
 In order:
 
-1. **Answer O1 first.** Verify that `RUSTC_WRAPPER` participates in Cargo's fingerprint. If it does not, the entire architecture needs a cache-busting mechanism before anything else is written. This is a half-day experiment that de-risks the largest Critical item (R1).
-2. **Walking skeleton.** A `RUSTC_WRAPPER` binary that logs its arguments and execs the real `rustc`. Confirm it is invoked for the crates we expect and that the build is byte-identical.
-3. **One hardcoded rewrite.** Inject `#[tracing::instrument(skip_all, level = "debug")]` into a single named function in one crate. Compile. See a span in an in-process collector.
+1. **O1 is done — implement its confirmed mitigation first.** `RUSTC_WRAPPER` does *not* participate in Cargo's fingerprint (Appendix B item 2), and a `RUSTFLAGS`-based fix was shown to be destructive (Appendix C.3). The first thing to build is not an experiment but the isolated `--target-dir` mechanism itself, since everything after this step silently produces uninstrumented binaries without it.
+2. **Walking skeleton.** A `RUSTC_WRAPPER` binary that logs its arguments and execs the real `rustc`, building into that isolated target dir. Confirm it is invoked for the crates we expect, including at least one dependency that does not declare our runtime crate.
+3. **One hardcoded splice, across the crate boundary.** Splice an `extern "C"` trampoline call into a single named function in a dependency crate — not just the app — using `syn` for analysis and a byte-range insertion for the edit (Appendix C.2/C.6). Compile. See a span in an in-process collector, produced from inside the unmodified dependency.
 4. **Async correctness before anything else.** Implement MVP success criterion 4 (total ≈ *D*, busy ≈ 0) and criterion 5 (concurrent isolation) as tests, and make them pass. Everything after this is easier; nothing after this matters if these are wrong.
 5. **Then, and only then, generalise.** Rule format, matcher engine, `--plan-only`, exclusion list, snapshot tests.
 6. **Then the corpus.** Run `--plan-only` over five real crates; fix what breaks.

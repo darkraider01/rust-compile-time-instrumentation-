@@ -28,7 +28,7 @@
 1. **A tool that instruments a whole Rust crate graph, including third-party dependencies, at build time, without source edits.** Nothing found. **[Fact — negative result, see §4.6 caveats]**
 2. **A declarative rule format for Rust instrumentation** (the analogue of `*.otelc.yml`). Nothing found.
 3. **Third-party-distributable Rust instrumentation packages** (the analogue of `otelc`'s import-driven instrumentation crates). Nothing found.
-4. **Compiler-emitted instrumentation metadata for Rust.** Nothing found; this is the genuinely unexplored idea.
+4. **Compiler-emitted *async state-machine* metadata for Rust.** **[Revised — see [Appendix C.4](appendix-c-adversarial-review.md)]** This is narrower than the original claim, which said "compiler-emitted instrumentation metadata" in general — that mechanism is not missing, it is USDT, and stable-Rust crates (`oxidecomputer/usdt`, `cuviper/probe`) already provide it. What is missing, and genuinely unclaimed, is metadata encoding the `.await`-point ↔ coroutine-state-variant mapping that `rustc`'s `StateTransform` computes and discards (§6.3, §7.4).
 5. **Semantically-aware async span reconstruction from below the source level.** Nothing found, and possibly not tractable (§7.4, H2).
 
 ### 9.4 Is the project actually differentiated?
@@ -41,7 +41,7 @@
 | "AST rewriting behind a build hook is a novel mechanism" | ✗ **No.** That is precisely what `otelc` does |
 | "Doing this for Rust is novel" | ✓ **Yes**, as far as we can determine. Nobody has done it, and Rust is absent from OTel's zero-code list |
 | "The Rust-specific problems are novel" | ✓ **Partially.** Async/coroutine instrumentation semantics, monomorphization, and macro invisibility have no Go analogue. The async problem in particular has a genuinely different shape |
-| "Compiler-generated metadata for eBPF is novel" | ✓ **Yes, apparently** — and it is also **unvalidated**. Novelty and value are not the same thing |
+| "Compiler-generated metadata for eBPF is novel" | ✗ **No, as a mechanism** — USDT has done "compile-time metadata embedded in a binary for eBPF" since 2004, and stable-Rust crates already emit it ([Appendix C.4](appendix-c-adversarial-review.md)). ✓ **Yes, as specifically async state-machine content** — and that part is also **unvalidated**. Novelty and value are not the same thing, and now neither is "novel mechanism" and "novel content" |
 | "Compile-time + eBPF + OTel combined is novel" | ⚠️ **Novel but speculative.** Novel because unbuilt; speculative because the load-bearing hypothesis (H2, §7.5) is untested |
 
 **[Inference]** The honest framing: this is a **porting-and-adaptation project with one genuinely novel research question attached**. The port (Rust compile-time auto-instrumentation) is worthwhile, useful, and clearly missing. The research question (does compiler metadata make eBPF instrumentation semantically viable for async Rust?) is interesting but unvalidated and must not be the thing the project depends on for its value.
@@ -62,7 +62,7 @@ The project degenerates into a wrapper if:
 - **A rule language with version-aware matching.** So instrumentation survives dependency upgrades and can be shipped by third parties.
 - **Correct async span semantics, demonstrated with tests.** Not "we call `#[instrument]`," but a test suite showing span durations and nesting are right across `.await`, `spawn`, and concurrent tasks.
 - **Measured overhead.** Real numbers for build time, binary size, and runtime cost. `otelc`'s v1 announcement did not publish these **[Fact]**; if we do, that alone is a contribution.
-- **A compiler-metadata artifact with a specified format**, emitted as a build product, even before anything consumes it. That is the bridge to the research half and is cheap to add once we have the analysis phase.
+- **An async-structure metadata artifact with a specified format**, emitted as a build product, even before anything consumes it. **[Revised — Appendix C.4]** Ordinary per-function probe metadata is not this artifact — USDT already covers that, on stable Rust, today. The artifact worth building is specifically the `StateTransform` await↔state-variant mapping, which is the bridge to the research half and is cheap to add once we have the analysis phase.
 - **Answering H2 experimentally**, either way. A well-documented negative result ("logical async spans cannot be reconstructed from poll events because Tokio exposes no stable task identity") is a genuine contribution to the Rust observability conversation.
 
 ### 9.7 Ranking the seven candidate directions

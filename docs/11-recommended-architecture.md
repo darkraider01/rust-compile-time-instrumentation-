@@ -9,14 +9,16 @@
 
 **Build Architecture A. Design it so Architecture D is reachable by addition, not rewrite. Do not build B, C, or E in Phase 1.**
 
+**[Revised after the adversarial review round — see [Appendix C](appendix-c-adversarial-review.md).** An independent review challenged whether Architecture A can instrument third-party dependencies on stable Rust at all, calling it a "fatal structural flaw." It was tested directly and works, on stable, with no `-Zunstable-options` — but the mechanism below has been corrected from the original write-up in two ways the review got right: trampolines instead of injected crate dependencies, and byte-range splicing instead of `syn`→`prettyplease`.]**
+
 Concretely: a Cargo-integrated tool that
 
-1. resolves the dependency graph (`cargo metadata`),
-2. matches it against a declarative rule set,
-3. intercepts compilation via `RUSTC_WRAPPER`,
-4. rewrites source ASTs to inject `#[tracing::instrument]`-equivalent instrumentation,
+1. resolves the dependency graph (`cargo metadata`) and pre-builds the runtime crate standalone, outside Cargo's own dependency graph,
+2. matches the graph against a declarative rule set,
+3. intercepts compilation via `RUSTC_WRAPPER`, building into an isolated `--target-dir` rather than mutating `RUSTFLAGS`,
+4. splices `extern "C"` trampoline calls into the original source buffer by byte offset (no `--extern`, no crate-graph edge — see [Appendix C.2](appendix-c-adversarial-review.md)),
 5. hands the result to a stock stable `rustc`,
-6. and ships a small runtime-init helper wiring `tracing-subscriber` → `tracing-opentelemetry` → OTLP.
+6. and ships a small runtime-init helper wiring `tracing-subscriber` → `tracing-opentelemetry` → OTLP, with the trampoline symbols resolved at the application's own final link step.
 
 ### 11.2 Why this and not the more impressive options
 
@@ -50,9 +52,10 @@ The other decisive arguments:
 | **A custom rustc driver / MIR pass** | Nightly pin makes it unshippable; async semantics get worse, not better |
 | **Anything eBPF** | Depends on H2, which is unvalidated; different skill domain; would consume the whole project |
 | **An LLVM pass** | Dominated by both A and B; duplicates `-Z instrument-xray` |
-| **A new telemetry abstraction / our own span type** | `tracing` exists, has 818M downloads, and solved async |
+| **A new telemetry abstraction / our own span type** | `tracing` exists, has 818M downloads, and solved async. (`fastrace` is a legitimate faster alternative if generated-span volume ever makes `tracing`'s overhead a real problem — see [Appendix C.7](appendix-c-adversarial-review.md) — but is not the Phase 1 default; it is a candidate for the emitter seam in §11.4 if benchmarks in §14 show a need.) |
 | **Our own OTLP exporter** | `opentelemetry-otlp` exists |
 | **A `tracing-opentelemetry` replacement** | It is maintained, mature, and absorbs OTel API churn for us |
+| **A bespoke metadata sidecar file for eBPF** | USDT already solves "compile-time probe metadata embedded in the binary" — use `oxidecomputer/usdt` or `cuviper/probe`, not a private JSON format (Appendix C.4) |
 | **Metrics or logs** | Traces only in Phase 1. Metrics is `autometrics`'s territory and a separate problem |
 | **`std` instrumentation** | Requires `-Z build-std` (nightly) |
 | **Distributed context propagation** | Requires library-specific rules; Phase 2 at the earliest |

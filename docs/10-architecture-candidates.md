@@ -5,49 +5,56 @@
 ## 10. Architecture Candidates
 
 
-### Architecture A — Source/AST transformation behind a Cargo build hook
+### Architecture A — Source transformation behind a Cargo build hook
+
+**[Revised after the adversarial review round — see [Appendix C](appendix-c-adversarial-review.md).** An independent review challenged whether this architecture can instrument third-party dependencies on stable Rust at all. It was tested directly: it can, two different ways, with no nightly flags. The diagram and technology list below reflect the corrected design — extern `"C"` trampolines instead of injected crate dependencies, byte-range source splicing instead of `syn`→`prettyplease`, and an isolated `--target-dir` instead of a `RUSTFLAGS`-based cache-buster.]**
 
 ```
- cargo instrument -- run
+ cargo instrument -- build
         │
-        ├─ Phase 1: ANALYSIS
-        │     cargo metadata ──► dependency graph
+        ├─ PHASE 1: SETUP (out-of-band, before Cargo starts)
+        │     cargo metadata ──► resolve dependency graph
         │     match graph against rule set (*.rules.yml)
-        │     resolve which crates need rewriting
-        │     ensure hook/runtime crate is a dependency (edit Cargo.toml)
+        │     pre-build the runtime crate standalone ◄─ defeats topological
+        │                                                 scheduling; it is
+        │                                                 never a Cargo DAG node
         │     emit .instrument-build/plan.json
         │
-        └─ Phase 2: BUILD
-              cargo build  with  RUSTC_WRAPPER=instrument-wrapper
+        └─ PHASE 2: BUILD
+              cargo build --target-dir target/instrumented   ◄─ cache isolation;
+                RUSTC_WRAPPER=instrument-wrapper                 NOT RUSTFLAGS
                     │
                     ▼
-              for each rustc invocation:
+              for each rustc invocation (app crates AND dependencies):
                   ├─ read --crate-name, --edition, crate root path
                   ├─ is this crate in the plan?  ──no──► exec real rustc unchanged
                   └─ yes:
-                        parse sources (syn / ra_ap_syntax)
-                        apply matching rules  ──►  inject #[tracing::instrument(...)]
-                        write rewritten tree to OUT_DIR/instrumented/<crate>/
-                        exec real rustc on rewritten root
+                        syn::parse_file  ──►  ANALYSIS ONLY (find targets, check exclusions)
+                        span().byte_range()  ──►  splice into the ORIGINAL UTF-8 buffer
+                        inject:  unsafe extern "C" { fn __otel_enter(..); }
+                                 (no --extern, no -L, no crate-graph involvement)
+                        mirror the crate's source tree (preserves mod/include!/#[path])
+                        exec real rustc on the mirrored, spliced root
                     │
                     ▼
-              stock rustc ──► stock LLVM ──► binary
-                    │
+              stock stable rustc ──► stock LLVM ──► binary
+                    │                    runtime crate is a normal dependency of the
+                    │                    APPLICATION; __otel_* resolves at final link
                     ▼
-              runtime: tracing ─► tracing-opentelemetry ─► opentelemetry_sdk ─► OTLP
+              runtime: tracing (otel.kind/otel.status_code) ─► tracing-opentelemetry ─► OTLP
 ```
 
 | | |
 | --- | --- |
-| **How it works** | Two phases exactly mirroring `otelc`. Phase 1 resolves the dependency graph and prepares dependencies; Phase 2 intercepts each `rustc` invocation, rewrites source for planned crates, and delegates to the real compiler. |
-| **Required technologies** | `cargo metadata`, `RUSTC_WRAPPER`, `syn` + `quote` + `prettyplease` (or `ra_ap_syntax` for edit-preserving rewrites), `serde`/`serde_yaml` for rules, `tracing`, `tracing-opentelemetry`, `opentelemetry-otlp` |
-| **Advantages** | Stable Rust. Reaches dependencies. Output is inspectable Rust — the single biggest debugging advantage of this architecture. Proven design (`otelc`). Incremental: rules can be added one at a time. Low risk of miscompilation, because a stock compiler validates everything we generate. |
-| **Disadvantages** | Cannot see macro-generated code. No type information (so rules match syntactically, not semantically). Cannot instrument `std`. Rewriting dependency source requires care with `include!`, `#[path]`, `build.rs`-generated modules, and `cfg`. Modified dependency sources must be written somewhere writable — the registry cache is read-only. |
-| **Risks** | Cargo fingerprinting could serve a cached uninstrumented artifact (must verify). Rewriting a crate whose `syn`-parse-and-print round-trip is not exact could break it. Rules matching syntactically will have false positives on shadowed names. |
-| **Runtime overhead** | Same as hand-written `#[instrument]` — one span per instrumented call, statically removable via `STATIC_MAX_LEVEL` |
-| **Build overhead** | **[Hypothesis]** Moderate. Parse + print of every instrumented crate's source, plus loss of some incrementality because rewritten sources change. Must be measured. |
+| **How it works** | Two phases exactly mirroring `otelc`. Phase 1 resolves the dependency graph and pre-builds the runtime crate standalone, outside Cargo's own DAG — this is what defeats the "topological scheduling" objection, since Cargo never has to know the runtime exists as a graph node. Phase 2 intercepts each `rustc` invocation (including third-party dependencies, not just workspace members), splices instrumentation into the original source buffer by byte offset, and delegates to the real compiler. |
+| **Required technologies** | `cargo metadata`, `RUSTC_WRAPPER`, `syn` (parsing/analysis only — no `prettyplease`), `serde`/`serde_yaml` for rules, `tracing`, `tracing-opentelemetry`, `opentelemetry-otlp` |
+| **Advantages** | Stable Rust — **confirmed by direct experiment, not merely believed**, including for crates that do not declare the runtime as a dependency (Appendix C.2). Reaches dependencies. Byte-splice output preserves comments, formatting, and line numbers exactly outside the insertion point (Appendix C.6), which is the single biggest debugging advantage of this architecture. Proven design (`otelc`). Incremental: rules can be added one at a time. Low risk of miscompilation, because a stock compiler validates everything generated. The extern `"C"` trampoline needs no `--extern`/`-L` propagation and so cannot produce duplicate-crate or dependency-cycle errors. |
+| **Disadvantages** | Cannot see macro-generated code. No type information (so rules match syntactically, not semantically). Cannot instrument `std`. Rewriting dependency source requires care with `include!`, `#[path]`, `build.rs`-generated modules, and `cfg` — mirroring the source tree (not just the entry file) is required and untested at scale (§15.5 Q1 in Appendix C). |
+| **Risks** | Cargo's rebuild fingerprint does not track `RUSTC_WRAPPER` at all (Appendix B item 2) — mitigated with an isolated `--target-dir`, not `RUSTFLAGS`. Rules matching syntactically will have false positives on shadowed names. LTO + `codegen-units=1` + `panic=abort` interaction with the trampoline is untested (Appendix C, open question Q7). |
+| **Runtime overhead** | Same as hand-written `#[instrument]` — one span per instrumented call. Not "statically removable via `STATIC_MAX_LEVEL`" as originally stated — that flag is global and disables the user's own hand-written spans at the same level too (Appendix C.1); a dedicated `--cfg` gate on generated code only is required for a real per-tool kill switch. |
+| **Build overhead** | **[Hypothesis]** Moderate. Byte-splicing avoids the full re-parse-and-print cost of the original design, so this should be *lower* than initially estimated, but it is still unmeasured. |
 | **Rust-version compatibility** | Any stable Rust that `syn` can parse. Effectively "recent stable and older." |
-| **Development complexity** | Medium. The rule engine and Cargo/`rustc` argument plumbing are the bulk of it, not the AST work. |
+| **Development complexity** | Medium. The rule engine, source-tree mirroring, and Cargo/`rustc` argument plumbing are the bulk of it, not the splicing logic itself. |
 
 ### Architecture B — rustc/MIR instrumentation via a custom driver
 
@@ -90,41 +97,45 @@
 
 ### Architecture C — Compiler-generated metadata → binary → eBPF → OTel
 
+**[Revised after the adversarial review round — see [Appendix C.4](appendix-c-adversarial-review.md).** The bespoke JSON sidecar keyed by build ID, shown in the original diagram, was a design error: Userland Statically Defined Tracing (USDT) has solved "compile-time probe metadata embedded in the binary for eBPF consumption" for two decades, and mature, stable-Rust crates (`oxidecomputer/usdt`, `cuviper/probe`) already emit it. The sidecar is replaced with ELF-native USDT notes below. What is **not** solved by USDT, and remains the actual open contribution, is encoding Rust's async state-machine structure — the diagram now reflects that narrower target.]**
+
 ```
- build (stock or lightly modified)
-        │
-        ├─► binary  (+ .note.gnu.build-id)
-        └─► instrument-metadata.json / custom ELF section
-                { build_id, functions: [
-                    { symbol, mangled, kind: async_poll,
-                      source: "src/handlers.rs:42",
-                      logical_name: "handle_checkout",
-                      generic_of: "…", await_points: [...] } ] }
+ build (stock rustc + a USDT-emitting crate, e.g. oxidecomputer/usdt)
         │
         ▼
- loader (Aya, userspace)
-        read metadata, join on build ID
-        resolve symbols/offsets → attach uprobes/uretprobes
-        pass span-site id via bpf_get_attach_cookie()
+ binary  (+ .note.gnu.build-id, + .note.stapstd USDT probes)
+        USDT already carries: probe name, argument count/types/locations
+        │
+        ▼
+ [THE OPEN PART] does a probe additionally carry async structure?
+        { probe: "handle_checkout::poll", state_variant: 3,
+          await_site: "src/handlers.rs:42", logical_name: "handle_checkout" }
+        ── requires extracting rustc's StateTransform await↔state-variant
+           map (§6.3) and encoding it alongside the standard USDT note ──
+        │
+        ▼
+ loader (Aya / bpftrace / libbpf — any off-the-shelf USDT-aware consumer)
+        no custom loader needed for the probe-attachment part;
+        only the async-reconstruction logic is bespoke
         │
         ▼
  BPF programs ─► perf/ring buffer ─► userspace collector
         │
         ▼
- reconstruct spans ─► OTLP
+ reconstruct spans (H2, unvalidated) ─► OTLP
 ```
 
 | | |
 | --- | --- |
-| **How it works** | The build emits a metadata sidecar describing instrumentable points; an eBPF loader consumes it to attach precise, semantically-labelled probes without rebuilding for instrumentation. |
-| **Required technologies** | Metadata emission (source analysis, or a compiler driver for the richer fields), Aya, uprobes, ELF/build-ID handling, a userspace span reconstructor, OTLP export |
-| **Advantages** | Instrumentation can be attached and detached at runtime with zero cost when off. One build serves both instrumented and uninstrumented operation. Metadata is a durable artifact useful beyond eBPF (§11). |
-| **Disadvantages** | Linux-only. Requires elevated privileges (`CAP_BPF`, `CAP_SYS_PTRACE`, and for some paths `CAP_NET_ADMIN`) **[Fact]**. uprobe cost per hit. Async span reconstruction depends on H2, which is unvalidated. Metadata/binary drift is a new failure mode. |
-| **Risks** | H2 may be false, in which case this yields poll-level events rather than spans. Inlined functions have no probe point. Kernel-version and lockdown-mode constraints. |
-| **Runtime overhead** | **[Open question]** Zero when detached; per-hit trap cost when attached. Must be measured, never asserted. |
-| **Build overhead** | Low — metadata emission only. |
-| **Rust-version compatibility** | Depends on how metadata is produced. Source-derived: stable. Compiler-derived: nightly. |
-| **Development complexity** | High, and spread across two very different domains (compiler tooling and kernel tooling). |
+| **How it works** | The build emits standard USDT probes via an existing crate — no bespoke sidecar, no build-ID join logic to maintain, and any off-the-shelf USDT-aware tool (`bpftrace`, `libbpf`, Aya) can already attach to the *probe-name-and-arguments* part with zero custom loader code. The only genuinely new work is whether a probe's payload can additionally carry Rust's async state-machine structure, which USDT was never designed to express. |
+| **Required technologies** | `oxidecomputer/usdt` or `cuviper/probe` (stable Rust), Aya or `bpftrace` for consumption, a nightly `rustc` driver only if extracting the `StateTransform` await↔variant map (source-derived metadata does not need this), a userspace span reconstructor, OTLP export |
+| **Advantages** | Instrumentation can be attached and detached at runtime with zero cost when off (a single `nop` per probe). One build serves both instrumented and uninstrumented operation. Standard tooling can already consume the non-async-specific parts — no custom loader is required just to get symbol-accurate probe attachment. No metadata/binary drift for the standard part, since USDT notes live inside the ELF itself rather than a separate file. |
+| **Disadvantages** | Linux-only. Requires elevated privileges (`CAP_BPF`, `CAP_SYS_PTRACE`, and for some paths `CAP_NET_ADMIN`) **[Fact]**. uprobe cost per hit. Async span reconstruction depends on H2, which is unvalidated — and H2 is now understood to depend specifically on whether the `StateTransform` mapping can be extracted and encoded, not merely on "compiler metadata" in general. |
+| **Risks** | H2 may be false, in which case this yields correct probe-level events (a real improvement over symbol guessing) but not logical async spans. Inlined functions have no probe point. Kernel-version and lockdown-mode constraints. |
+| **Runtime overhead** | **[Open question]** Zero when detached (USDT's standard `nop`-sled property); per-hit trap cost when attached. Must be measured, never asserted. |
+| **Build overhead** | Low for the standard USDT part (stable, source-level). Higher and nightly-gated only for the async-structure extension, if pursued. |
+| **Rust-version compatibility** | The standard USDT part: stable, today, via existing crates. The async-structure extension: nightly (`rustc_private`, same constraints as Architecture B). |
+| **Development complexity** | Substantially lower than the original design for the standard part, since it reuses existing crates instead of inventing a sidecar format. The async-structure extension remains high complexity, spread across compiler tooling and kernel tooling. |
 
 ### Architecture D — Compiler-assisted instrumentation: hybrid
 
@@ -136,9 +147,9 @@
         │             (HTTP handlers, DB calls, spawn sites)
         │             → real tracing spans, correct async semantics,
         │               real context propagation
-        └─ Phase 3: emit metadata for EVERYTHING ELSE
-                      → sidecar consumed by an optional eBPF loader
-                        for on-demand deep-dive probing
+        └─ Phase 3: emit USDT probes for EVERYTHING ELSE (§10, Arch. C)
+                      → consumed by any USDT-aware loader (Aya/bpftrace)
+                        for on-demand deep-dive probing, no sidecar file
         │
         ▼
  binary with baked-in spans at semantic boundaries
