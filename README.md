@@ -2,7 +2,7 @@
 
 # rust-compile-time-instrumentation
 
-**Zero-code compile-time OpenTelemetry instrumentation for Rust — reaching third-party dependencies, on stable Rust, with no eBPF.**
+**Zero-code compile-time OpenTelemetry instrumentation for Rust reaching third-party dependencies, on stable Rust.**
 
 [![CI](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/ci.yml/badge.svg)](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/ci.yml)
 [![Integration](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/integration.yml/badge.svg)](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/integration.yml)
