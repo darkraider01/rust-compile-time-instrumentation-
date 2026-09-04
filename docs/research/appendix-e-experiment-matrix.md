@@ -1,4 +1,4 @@
-← [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) · [Contents](../README.md)
+← [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) · [Contents](../../README.md)
 
 ---
 
@@ -199,4 +199,4 @@ Ordered by how much the answer changes the plan. Each is scoped to be runnable i
 
 ---
 
-← [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) · [Contents](../README.md)
+← [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) · [Contents](../../README.md)

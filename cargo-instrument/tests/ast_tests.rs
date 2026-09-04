@@ -473,3 +473,69 @@ fn test_c1_module_resolution_path_attribute() {
     assert!(names.contains(&"root_fn"));
     assert!(names.contains(&"custom_fn"));
 }
+
+#[test]
+fn test_ast_error_io_on_missing_file() {
+    use cargo_instrument::ast::{analyze_source_file, AstError};
+    let missing = Path::new("non_existent_file_xyz_123.rs");
+    let result = analyze_source_file("test_crate", missing);
+    match result {
+        Err(AstError::Io { path, .. }) => {
+            assert_eq!(path, missing);
+        }
+        other => panic!("expected AstError::Io, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_ast_error_parse_on_invalid_syntax() {
+    use cargo_instrument::ast::{analyze_source_str, AstError};
+    let bad_code = "fn broken( { let x = ; }";
+    let result = analyze_source_str("test_crate", Path::new("test.rs"), bad_code);
+    match result {
+        Err(AstError::Parse { path, .. }) => {
+            assert_eq!(path, Path::new("test.rs"));
+        }
+        other => panic!("expected AstError::Parse, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_discovery_report_format_debug() {
+    use cargo_instrument::candidate::{Candidate, DiscoveryReport, FunctionKind, UnsafePolicy};
+    use std::path::PathBuf;
+
+    // 1. Empty candidates
+    let empty_report = DiscoveryReport {
+        crate_name: "empty_crate".to_string(),
+        source_file: PathBuf::from("src/lib.rs"),
+        unsafe_policy: UnsafePolicy::Allowed,
+        candidates: Vec::new(),
+    };
+    let formatted_empty = empty_report.format_debug();
+    assert!(formatted_empty.contains("crate: empty_crate"));
+    assert!(formatted_empty.contains("unsafe_policy: Allowed"));
+    assert!(formatted_empty.contains("(none)"));
+
+    // 2. Non-empty candidates
+    let report_with_candidate = DiscoveryReport {
+        crate_name: "sample_crate".to_string(),
+        source_file: PathBuf::from("src/main.rs"),
+        unsafe_policy: UnsafePolicy::Forbidden,
+        candidates: vec![Candidate {
+            function_name: "compute".to_string(),
+            source_file: PathBuf::from("src/main.rs"),
+            byte_range: 10..50,
+            body_byte_range: 25..50,
+            kind: FunctionKind::Free,
+            is_async: true,
+            is_generic: false,
+            has_enclosing_generics: false,
+        }],
+    };
+    let formatted_c = report_with_candidate.format_debug();
+    assert!(formatted_c.contains("crate: sample_crate"));
+    assert!(formatted_c.contains("unsafe_policy: Forbidden"));
+    assert!(formatted_c.contains("compute: bytes 10..50 (src/main.rs)"));
+}
+

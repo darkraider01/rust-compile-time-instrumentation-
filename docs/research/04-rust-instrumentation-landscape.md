@@ -1,4 +1,4 @@
-← [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) · [Contents](../README.md) · [OpenTelemetry Rust](05-otel-rust.md) →
+← [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) · [Contents](../../README.md) · [OpenTelemetry Rust](05-otel-rust.md) →
 
 ---
 
@@ -119,4 +119,4 @@ Detailed treatment in §5.
 
 ---
 
-← [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) · [Contents](../README.md) · [OpenTelemetry Rust](05-otel-rust.md) →
+← [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) · [Contents](../../README.md) · [OpenTelemetry Rust](05-otel-rust.md) →

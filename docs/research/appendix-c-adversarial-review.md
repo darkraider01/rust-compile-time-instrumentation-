@@ -1,4 +1,4 @@
-← [Appendix B — Verification Log](appendix-b-verification-log.md) · [Contents](../README.md) · [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) →
+← [Appendix B — Verification Log](appendix-b-verification-log.md) · [Contents](../../README.md) · [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) →
 
 ---
 
@@ -189,4 +189,4 @@ Neither this review round nor the corrections above closed these. They cannot be
 
 ---
 
-← [Appendix B — Verification Log](appendix-b-verification-log.md) · [Contents](../README.md) · [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) →
+← [Appendix B — Verification Log](appendix-b-verification-log.md) · [Contents](../../README.md) · [Appendix D — Maintainer Q&A](appendix-d-maintainer-qa.md) →

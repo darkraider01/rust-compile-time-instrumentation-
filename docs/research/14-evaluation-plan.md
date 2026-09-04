@@ -1,4 +1,4 @@
-← [Technical Risks](13-technical-risks.md) · [Contents](../README.md) · [Final Recommendation](15-final-recommendation.md) →
+← [Technical Risks](13-technical-risks.md) · [Contents](../../README.md) · [Final Recommendation](15-final-recommendation.md) →
 
 ---
 
@@ -176,4 +176,4 @@ Note what this deliberately does *not* ask. It does not ask whether compile-time
 
 ---
 
-← [Technical Risks](13-technical-risks.md) · [Contents](../README.md) · [Final Recommendation](15-final-recommendation.md) →
+← [Technical Risks](13-technical-risks.md) · [Contents](../../README.md) · [Final Recommendation](15-final-recommendation.md) →

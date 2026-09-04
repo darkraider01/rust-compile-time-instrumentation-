@@ -1,4 +1,4 @@
-← [Gap Analysis](09-gap-analysis.md) · [Contents](../README.md) · [Recommended Architecture](11-recommended-architecture.md) →
+← [Gap Analysis](09-gap-analysis.md) · [Contents](../../README.md) · [Recommended Architecture](11-recommended-architecture.md) →
 
 ---
 
@@ -200,4 +200,4 @@ Advantages: post-inlining decisions; language-agnostic. Disadvantages: nightly; 
 
 ---
 
-← [Gap Analysis](09-gap-analysis.md) · [Contents](../README.md) · [Recommended Architecture](11-recommended-architecture.md) →
+← [Gap Analysis](09-gap-analysis.md) · [Contents](../../README.md) · [Recommended Architecture](11-recommended-architecture.md) →

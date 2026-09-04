@@ -1,4 +1,4 @@
-← [Architecture Candidates](10-architecture-candidates.md) · [Contents](../README.md) · [Phase 1 MVP Definition](12-mvp-definition.md) →
+← [Architecture Candidates](10-architecture-candidates.md) · [Contents](../../README.md) · [Phase 1 MVP Definition](12-mvp-definition.md) →
 
 ---
 
@@ -85,4 +85,4 @@ This is the only piece of speculative generality worth paying for.
 
 ---
 
-← [Architecture Candidates](10-architecture-candidates.md) · [Contents](../README.md) · [Phase 1 MVP Definition](12-mvp-definition.md) →
+← [Architecture Candidates](10-architecture-candidates.md) · [Contents](../../README.md) · [Phase 1 MVP Definition](12-mvp-definition.md) →

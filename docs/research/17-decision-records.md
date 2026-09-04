@@ -1,4 +1,4 @@
-← [Instrumentation Semantics](16-instrumentation-semantics.md) · [Contents](../README.md) · [Appendix A — Sources](appendix-a-sources.md) →
+← [Instrumentation Semantics](16-instrumentation-semantics.md) · [Contents](../../README.md) · [Appendix A — Sources](appendix-a-sources.md) →
 
 ---
 
@@ -289,4 +289,4 @@ Emitters in scope:
 
 ---
 
-← [Instrumentation Semantics](16-instrumentation-semantics.md) · [Contents](../README.md) · [Appendix A — Sources](appendix-a-sources.md) →
+← [Instrumentation Semantics](16-instrumentation-semantics.md) · [Contents](../../README.md) · [Appendix A — Sources](appendix-a-sources.md) →
