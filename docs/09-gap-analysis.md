@@ -41,7 +41,7 @@
 | --- | --- |
 | "Compile-time auto-instrumentation is a novel idea" | ✗ **No.** `otelc` is the OTel-official implementation of it for Go, at v1.1 |
 | "AST rewriting behind a build hook is a novel mechanism" | ✗ **No.** That is precisely what `otelc` does |
-| "Doing this for Rust is novel" | ✓ **Yes**, as far as we can determine. Nobody has done it, and Rust is absent from OTel's zero-code list |
+| "Doing this for Rust is novel" | ✓ **Yes**, as far as we can determine: Rust currently lacks an official OpenTelemetry zero-code mechanism for automatic application-level instrumentation across the Cargo dependency graph without requiring source annotations |
 | "The Rust-specific problems are novel" | ✓ **Partially.** Async/coroutine instrumentation semantics, monomorphization, and macro invisibility have no Go analogue. The async problem in particular has a genuinely different shape |
 | ~~"Compiler-generated metadata for eBPF is novel"~~ | **WITHDRAWN — [Appendix D.4](appendix-d-maintainer-qa.md).** Not novel as a mechanism (USDT, 2004), and the narrowed "async state-machine content" claim is moot now that OBI #1096 is building the capability it would have served |
 | ~~"Compile-time + eBPF + OTel combined is novel"~~ | **WITHDRAWN.** We are not combining them |

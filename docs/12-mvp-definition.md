@@ -56,17 +56,17 @@ Why this shape and not the alternatives:
 
 **The full ABI — including the async quartet — is specified in [§16.3](16-instrumentation-semantics.md).** The two-symbol sketch above is what the experiment used, not what Phase 1 ships.
 
-#### What the experiment did **not** establish
+#### What the experiment did **not** establish (status after validation rounds)
 
-Stated explicitly, because the mechanism's proven scope is narrower than the architecture's claimed scope:
+Stated explicitly, distinguishing what was initially open from current validation status:
 
-| | Status |
+| Area | Status |
 | --- | --- |
 | **Synchronous** function in an undeclared dependency | **[Fact]** Demonstrated ([Appendix E](appendix-e-experiment-matrix.md) E-5) |
-| **`async fn`** in a dependency | **[Design, unproven]** An instrumented dependency cannot name the `opentelemetry` crate, so it **cannot call `FutureExt::with_context`** — the two mechanisms this document specifies are, as literally written, incompatible for Tier 2. The resolution is a spliced `core`-only future wrapper reproducing the same lifecycle over the C ABI ([§16.3](16-instrumentation-semantics.md)); it is a design, not a result. **Scoped out of the Phase 1 MVP** and scheduled as [Appendix E](appendix-e-experiment-matrix.md) FE-2 |
-| `lto = true` + `codegen-units = 1` + `panic = "abort"` | **[Untested]** [Appendix C.9](appendix-c-adversarial-review.md) Q7 / FE-1 — regression test specified in §12.8 |
-| Multi-file crates (`include!`, `#[path]`, `build.rs` modules) | **[Untested]** The experiment used single-file crates. [Appendix D.6](appendix-d-maintainer-qa.md) D-Q4 / FE-8 — the project's largest open unknown |
-| Non-Windows link models (ELF, Mach-O) | **[Untested]** Every experiment ran on Windows/MSVC. [R24](13-technical-risks.md) / FE-7 — and the cross-platform claim is now the project's positioning |
+| **`async fn`** in a dependency | **[Mechanism demonstrated, integration deferred]** An instrumented dependency cannot name `opentelemetry`, so it cannot call `FutureExt::with_context`. A spliced `core`-only `OtelFuture` wrapper reproducing the lifecycle over C ABI was demonstrated on a standalone harness ([Appendix E](appendix-e-experiment-matrix.md) E-8, closing FE-2). Splicer-pipeline integration is tracked as FE-13, and Tier-2 async remains **scoped to Phase 2** to keep the Phase 1 MVP focused on synchronous dependency instrumentation ([§12.3](#123-explicitly-unsupported)) |
+| `lto = true` + `codegen-units = 1` + `panic = "abort"` | **[Fact — passed]** Verified on Windows/MSVC with no added link flags ([Appendix E](appendix-e-experiment-matrix.md) E-7, closing FE-1) |
+| Multi-file crates (`include!`, `#[path]`, `build.rs` modules) | **[Fact — passed]** Tested on 8 published crates, 7/8 compiling clean after establishing block-scoped trampoline declarations ([Appendix E](appendix-e-experiment-matrix.md) E-11, closing FE-8) |
+| Non-Windows link models (ELF, Mach-O) | **[Partially closed]** Linux/ELF verified on WSL2 Ubuntu with GNU ld ([Appendix E](appendix-e-experiment-matrix.md) E-9, partially closing FE-7). macOS (Mach-O) remains untested and is the sole platform gap ([R24](13-technical-risks.md)) |
 | Crates with `#![forbid(unsafe_code)]` | **[Fact — will fail]** `forbid` cannot be lifted by `allow` (`E0453`); such crates are skipped ([§6.11](06-rust-specific-challenges.md), [R26](13-technical-risks.md)). Possible escape via `unsafe extern { safe fn … }` untested — FE-3 |
 
 **Edition sensitivity.** `unsafe extern "C" { … }` is edition-2024 syntax; earlier editions need a bare `extern "C" { … }` block. The wrapper receives `--edition` in its argv, so the splicer selects the form per crate rather than emitting one shape everywhere ([R4](13-technical-risks.md)).
@@ -95,7 +95,7 @@ Stated explicitly, because the mechanism's proven scope is narrower than the arc
 | Macro-generated items | Not seen at all; documented |
 | `std` / precompiled crates | Out of scope |
 | Third-party dependencies | **One dependency in Phase 1** (see §12.1 revision), to prove the mechanism generalizes past the workspace boundary. Full dependency-graph coverage across an arbitrary crate graph is **Phase 2**. |
-| **`async fn` inside a dependency** | **Phase 2.** The MVP's dependency slice instruments a **synchronous** function — the shape the mechanism was actually demonstrated on (§12.1a). Tier-2 async needs the `core`-only future wrapper ([§16.3](16-instrumentation-semantics.md)), which is unproven. Async correctness is still an MVP requirement — proven in the **application** crate, where the native API is available |
+| **`async fn` inside a dependency** | **Phase 2.** The MVP's dependency slice instruments a **synchronous** function — the shape the mechanism was actually demonstrated on (§12.1a). Tier-2 async's `core`-only future wrapper is demonstrated feasible ([Appendix E](appendix-e-experiment-matrix.md) E-8), but end-to-end automated splicer integration is separate work (FE-13). Async correctness is an MVP requirement for the **application** crate (Tier 1), where the native API is available |
 | **Crates with `#![forbid(unsafe_code)]`** | Skipped entirely, with the reason in the plan. `forbid` cannot be lifted by `allow` ([§6.11](06-rust-specific-challenges.md), [R26](13-technical-risks.md)) |
 | Cross-process context propagation | Phase 2+ |
 | Argument value capture | Off; `skip_args` unconditional in Phase 1 (renamed from `skip_all` with the move off `tracing` — §12.6) |

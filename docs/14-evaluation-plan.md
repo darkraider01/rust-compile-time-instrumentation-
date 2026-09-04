@@ -124,9 +124,9 @@ Note what this deliberately does *not* ask. It does not ask whether compile-time
 
 | # | Hypothesis | Falsified by |
 | --- | --- | --- |
-| **HA** | A `RUSTC_WRAPPER` splicing `extern "C"` trampolines can instrument third-party dependencies on stable Rust, without modifying their source, manifest, or the lockfile | Already **supported** for synchronous functions ([Appendix E](appendix-e-experiment-matrix.md) E-5). Falsified for the general case if FE-1 (LTO/`panic=abort`), FE-7 (non-Windows link models), or FE-8 (multi-file crates) fail |
+| **HA** | A `RUSTC_WRAPPER` splicing `extern "C"` trampolines can instrument third-party dependencies on stable Rust, without modifying their source, manifest, or the lockfile | Supported for synchronous functions ([Appendix E](appendix-e-experiment-matrix.md) E-5); strengthened by E-7 (LTO survival), E-9 (Linux/ELF), and E-11 (mirroring). Falsified if macOS link models or full splicer integration (FE-13) fail |
 | **HB** | Generated `FutureExt::with_context` wrapping produces correct async span semantics — one span per invocation, wall-clock duration, no context leakage across suspension, isolation under worker-thread migration | Any [§16.16](16-instrumentation-semantics.md) oracle failure. This is the MVP's load-bearing claim |
-| **HC** | Correct async semantics survive the C-ABI boundary into a crate that cannot name `opentelemetry` (Tier 2) | FE-2. **Currently unproven** — the single largest gap in the evidence base ([R25](13-technical-risks.md)) |
+| **HC** | Correct async semantics survive the C-ABI boundary into a crate that cannot name `opentelemetry` (Tier 2) | Demonstrated feasible on a standalone harness ([Appendix E](appendix-e-experiment-matrix.md) E-8, closing FE-2). Falsified if end-to-end automated splicer integration (FE-13) fails ([R25](13-technical-risks.md)) |
 | **HD** | The build-time cost lands within 1.5×–3× clean compile, consistent with `otelc`'s measured Go figures | FE-10. Falsified in the direction that matters if *incremental* rebuild consistently exceeds 2× ([§15.6](15-final-recommendation.md)) |
 | **HE** | Automatic instrumentation reaches a useful fraction of a real crate's functions after the [§12.3](12-mvp-definition.md) exclusions | FE-9. If default exclusions remove most functions, the tool is a wrapper regardless of mechanism ([§9.5](09-gap-analysis.md)) |
 | **HF** | Generating the native OTel API costs no more per span than `tracing` + `tracing-opentelemetry` | FE-6. Falsification does not reverse [ADR-001](17-decision-records.md) — it triggers an emitter swap ([ADR-006](17-decision-records.md)) |
@@ -140,7 +140,7 @@ Note what this deliberately does *not* ask. It does not ask whether compile-time
 | Scope | workspace only · workspace + one dependency · full graph |
 | Workload shape | sync call chain · single async task · many concurrent async tasks · HTTP service under load |
 | Build type | clean · incremental (one-line change) · no-change rebuild |
-| Platform | Linux · macOS · Windows **(currently a single level — [R24](13-technical-risks.md))** |
+| Platform | Linux · macOS · Windows **(Linux and Windows demonstrated; macOS open — [R24](13-technical-risks.md))** |
 | Compiler profile | debug · release · release + `lto`/`codegen-units=1`/`panic=abort` |
 
 **Dependent variables** — what we measure:

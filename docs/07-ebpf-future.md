@@ -22,7 +22,7 @@
 
 | Technology | What it is | Relevance |
 | --- | --- | --- |
-| **[Aya](https://github.com/aya-rs/aya)** | Pure-Rust eBPF library; no libbpf/BCC dependency, uses only `libc` for syscalls. Async support for tokio and async-std | The natural choice if we ever write eBPF from Rust |
+| **[Aya](https://github.com/aya-rs/aya)** | Pure-Rust eBPF library; no libbpf/BCC dependency, uses only `libc` for syscalls. Async support for tokio and async-std | Historical context: was the natural choice if we ever wrote eBPF from Rust; out of scope for active architecture |
 | **uprobes / uretprobes** | Kernel mechanism to trap at a user-space instruction address | The attachment mechanism |
 | **BTF** | Compact type information format, primarily for kernel types; enables CO-RE | Kernel-side portability of our BPF programs |
 | **DWARF** | Full debug information — types, variable locations, line tables, inlining records | The only reliable source of Rust type/source information in a binary |
@@ -41,7 +41,7 @@ pub fn attach<'a, T: AsRef<Path>, Point: Into<UProbeAttachPoint<'a>>>(
 
 An attach point is a symbol (optionally plus an offset added to the function's address) or an absolute object-file offset; `UProbeAttachLocation::from_virtual_address()` converts an ELF virtual address into one. `target` is a path to a binary or shared library, or a library name. `uprobe` attaches at the function's start address; `uretprobe` at its return address. Attach cookies (kernel 5.15+) are available to the BPF program via `bpf_get_attach_cookie()`.
 
-**[Inference]** The attach cookie is architecturally significant for us: it lets a *userspace* loader associate arbitrary out-of-band data (e.g. "this probe is span-site #47, name `handle_request`, kind `server`") with a probe, so the BPF program does not need to encode that knowledge itself. That is the natural delivery vehicle for compiler-generated metadata.
+**[Inference]** The attach cookie was considered architecturally significant in our initial investigation: it lets a *userspace* loader associate arbitrary out-of-band data (e.g. "this probe is span-site #47, name `handle_request`, kind `server`") with a probe, so the BPF program does not need to encode that knowledge itself. In the closed Architecture C candidate, that was the considered delivery vehicle for compiler-generated metadata.
 
 ### 7.2 The central question
 
@@ -77,7 +77,7 @@ An attach point is a symbol (optionally plus an offset added to the function's a
 
 **[Fact]** Rust's v0 mangling scheme is now the **default on stable**. `-C symbol-mangling-version=v0` has been available since 1.59; it became the stable default in Rust 1.97.0 (released 2026-07-09) via [PR #151994](https://github.com/rust-lang/rust/pull/151994), and `legacy` is now nightly-only. **[Fact]** v0 encodes generic parameters reversibly, has a consistent specification, and restricts symbols to `[A-Za-z0-9_]`, explicitly to improve compatibility with debuggers and profilers. Symbols can be decoded with `rustfilt`.
 
-**[Inference — this weakens part of our hypothesis, and we should say so]** A substantial slice of the "eBPF cannot understand Rust symbols" argument was really "legacy mangling was lossy and ambiguous." With v0 as the stable default, generic instantiations, crate identity, and path structure are all recoverable by demangling. Any Phase 3 justification for compiler metadata must be careful not to claim credit for problems that v0 already solved. What v0 does **not** give you: async structure, trait↔impl relationships, semantic roles, inlining, or anything at all if the binary is stripped.
+**[Inference — this weakens part of our hypothesis, and we should say so]** A substantial slice of the "eBPF cannot understand Rust symbols" argument was really "legacy mangling was lossy and ambiguous." With v0 as the stable default, generic instantiations, crate identity, and path structure are all recoverable by demangling. Any historical justification for compiler metadata must be careful not to claim credit for problems that v0 already solved (and with ADR-005 closing the eBPF branch, no Phase 3 metadata or eBPF work will take place). What v0 does **not** give you: async structure, trait↔impl relationships, semantic roles, inlining, or anything at all if the binary is stripped.
 
 ### 7.4 Could compiler-generated metadata improve eBPF instrumentation?
 
