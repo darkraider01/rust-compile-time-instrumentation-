@@ -1,0 +1,461 @@
+use std::fs;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+use crate::candidate::Candidate;
+
+/// Hard errors that prevent processing an entire file.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TransformError {
+    #[error("Source file '{path}' cannot be modified in-place")]
+    InPlaceModificationDisallowed { path: PathBuf },
+
+    #[error("Offset {offset} in edit {range:?} does not fall on a valid UTF-8 character boundary")]
+    InvalidUtf8Boundary { offset: usize, range: Range<usize> },
+
+    #[error("Edit range {range:?} is out of bounds for source buffer of length {source_len}")]
+    OutOfBounds {
+        range: Range<usize>,
+        source_len: usize,
+    },
+
+    #[error("IO error on '{path}': {message}")]
+    Io { path: PathBuf, message: String },
+}
+
+/// Structured reasons why an individual candidate was safely skipped during planning.
+///
+/// Implements S11 fail-open at candidate granularity: a malformed individual candidate
+/// is skipped and logged, rather than aborting transformation of the entire file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipReason {
+    OutOfBounds {
+        range: Range<usize>,
+        source_len: usize,
+    },
+    InvalidUtf8Boundary {
+        offset: usize,
+    },
+    MissingOpeningBrace {
+        offset: usize,
+        found: u8,
+    },
+    OverlappingWithPrevious {
+        previous: Range<usize>,
+        current: Range<usize>,
+    },
+    AlreadyInstrumented,
+}
+
+/// Diagnostic record of an individual candidate that was skipped during transformation planning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedCandidate {
+    pub function_name: String,
+    pub candidate_range: Range<usize>,
+    pub reason: SkipReason,
+}
+
+/// Marker comment prefix used to identify instrumented sites.
+pub const INSTRUMENT_ANCHOR_PREFIX: &str = "/* __cargo_instrument_anchor:";
+
+/// Pluggable code emission strategy per ADR-006 ("the emitter is a seam").
+///
+/// Decouples edit planning, candidate validation, and byte splicing from
+/// replacement text generation. P1.4 provides `SentinelEmitter`; P1.5 swaps this
+/// with a native OpenTelemetry emitter without modifying the splicing engine.
+pub trait Emitter: Send + Sync {
+    /// Generate replacement text to inject immediately inside the opening brace `{` of `candidate`.
+    ///
+    /// `line_ending` indicates the detected line ending of the source file (`"\n"` or `"\r\n"`).
+    fn emit_body_prefix(&self, candidate: &Candidate, line_ending: &str) -> String;
+}
+
+/// Default minimal sentinel emitter for Milestone P1.4.
+///
+/// Emits a zero-dependency sentinel to prove surgical byte-splicing mechanics
+/// without coupling to runtime OpenTelemetry crates or introducing fake lifecycle semantics.
+#[derive(Debug, Clone, Default)]
+pub struct SentinelEmitter;
+
+impl Emitter for SentinelEmitter {
+    fn emit_body_prefix(&self, candidate: &Candidate, line_ending: &str) -> String {
+        format!(
+            "{nl}    /* __cargo_instrument_anchor: \"{name}\" */{nl}    let _cargo_instrument_sentinel = ();",
+            nl = line_ending,
+            name = candidate.function_name
+        )
+    }
+}
+
+/// Detect the line-ending convention used in the source text.
+/// Returns `"\r\n"` if CRLF is dominant, otherwise `"\n"`.
+pub fn detect_line_ending(source: &str) -> &'static str {
+    let sample = if source.len() > 4096 {
+        &source[..4096]
+    } else {
+        source
+    };
+    let crlf_count = sample.matches("\r\n").count();
+    let lf_count = sample.matches('\n').count().saturating_sub(crlf_count);
+    if crlf_count > lf_count {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+/// A single discrete textual edit to be applied to the original source text.
+///
+/// CRITICAL INVARIANT:
+/// `start` and `end` refer strictly to byte offsets in the ORIGINAL, IMMUTABLE source buffer.
+/// They are never shifted or recalculated relative to intermediate spliced states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ByteEdit {
+    /// Start byte offset in the original immutable source buffer.
+    pub start: usize,
+    /// End byte offset in the original immutable source buffer (for pure insertion, `start == end`).
+    pub end: usize,
+    /// Replacement text to splice in place of `source[start..end]`.
+    pub replacement: String,
+}
+
+/// A validated, sorted, non-overlapping transformation plan for a single source file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformationPlan {
+    /// Ordered list of discrete byte edits, sorted by `start` offset ascending.
+    pub edits: Vec<ByteEdit>,
+    /// Candidates that were skipped during planning with structured reasons (S11 fail-open).
+    pub skipped: Vec<SkippedCandidate>,
+}
+
+impl TransformationPlan {
+    /// Build and validate a transformation plan from original source text and candidates
+    /// using the default `SentinelEmitter`.
+    pub fn build(source: &str, candidates: &[Candidate]) -> Result<Self, TransformError> {
+        Self::build_with_emitter(source, candidates, &SentinelEmitter)
+    }
+
+    /// Build and validate a transformation plan using a pluggable `Emitter` (ADR-006).
+    ///
+    /// Architectural guarantees:
+    /// 1. Every edit offset references the original, immutable `source` buffer.
+    /// 2. Candidate ordering is normalized deterministically (sorted by `body_byte_range.start`,
+    ///    tie-broken by `body_byte_range.end` and `function_name`).
+    /// 3. H2 Fail-Open: Malformed individual candidates (out of bounds, invalid UTF-8 boundary,
+    ///    missing opening brace, overlapping) are skipped and recorded in `plan.skipped`,
+    ///    allowing healthy candidates in the same file to be safely transformed.
+    /// 4. M1: Uses the detected line ending (`\r\n` vs `\n`) for all emitted text.
+    /// 5. M3: Uses structurally constrained idempotence detection (anchor must follow body `{`).
+    pub fn build_with_emitter<E: Emitter + ?Sized>(
+        source: &str,
+        candidates: &[Candidate],
+        emitter: &E,
+    ) -> Result<Self, TransformError> {
+        let source_len = source.len();
+        let line_ending = detect_line_ending(source);
+
+        // 1. Sort candidates deterministically
+        let mut sorted_candidates: Vec<&Candidate> = candidates.iter().collect();
+        sorted_candidates.sort_by(|a, b| {
+            a.body_byte_range
+                .start
+                .cmp(&b.body_byte_range.start)
+                .then_with(|| a.body_byte_range.end.cmp(&b.body_byte_range.end))
+                .then_with(|| a.function_name.cmp(&b.function_name))
+        });
+
+        let mut edits = Vec::new();
+        let mut skipped = Vec::new();
+        let mut last_valid_range: Option<Range<usize>> = None;
+
+        for c in sorted_candidates {
+            let r = &c.body_byte_range;
+
+            // Check 1: Candidate bounds in buffer
+            if r.start >= r.end || r.end > source_len {
+                skipped.push(SkippedCandidate {
+                    function_name: c.function_name.clone(),
+                    candidate_range: r.clone(),
+                    reason: SkipReason::OutOfBounds {
+                        range: r.clone(),
+                        source_len,
+                    },
+                });
+                continue;
+            }
+
+            // Check 2: UTF-8 character boundaries
+            if !source.is_char_boundary(r.start) {
+                skipped.push(SkippedCandidate {
+                    function_name: c.function_name.clone(),
+                    candidate_range: r.clone(),
+                    reason: SkipReason::InvalidUtf8Boundary { offset: r.start },
+                });
+                continue;
+            }
+            if !source.is_char_boundary(r.end) {
+                skipped.push(SkippedCandidate {
+                    function_name: c.function_name.clone(),
+                    candidate_range: r.clone(),
+                    reason: SkipReason::InvalidUtf8Boundary { offset: r.end },
+                });
+                continue;
+            }
+
+            // Check 3: Overlap with previously accepted candidate
+            if let Some(ref prev) = last_valid_range {
+                if r.start < prev.end {
+                    skipped.push(SkippedCandidate {
+                        function_name: c.function_name.clone(),
+                        candidate_range: r.clone(),
+                        reason: SkipReason::OverlappingWithPrevious {
+                            previous: prev.clone(),
+                            current: r.clone(),
+                        },
+                    });
+                    continue;
+                }
+            }
+
+            // Check 4: Opening brace check
+            let first_byte = source.as_bytes()[r.start];
+            if first_byte != b'{' {
+                skipped.push(SkippedCandidate {
+                    function_name: c.function_name.clone(),
+                    candidate_range: r.clone(),
+                    reason: SkipReason::MissingOpeningBrace {
+                        offset: r.start,
+                        found: first_byte,
+                    },
+                });
+                continue;
+            }
+
+            // Check 5: Structurally constrained idempotence detection (M3)
+            if body_starts_with_anchor_sentinel(source, r.start) {
+                skipped.push(SkippedCandidate {
+                    function_name: c.function_name.clone(),
+                    candidate_range: r.clone(),
+                    reason: SkipReason::AlreadyInstrumented,
+                });
+                continue;
+            }
+
+            // Check 6: Insertion point character boundary
+            let insert_offset = r.start + 1;
+            if !source.is_char_boundary(insert_offset) {
+                skipped.push(SkippedCandidate {
+                    function_name: c.function_name.clone(),
+                    candidate_range: r.clone(),
+                    reason: SkipReason::InvalidUtf8Boundary {
+                        offset: insert_offset,
+                    },
+                });
+                continue;
+            }
+
+            // 7. Emit replacement using pluggable emitter and detected line ending
+            let replacement = emitter.emit_body_prefix(c, line_ending);
+
+            edits.push(ByteEdit {
+                start: insert_offset,
+                end: insert_offset,
+                replacement,
+            });
+
+            last_valid_range = Some(r.clone());
+        }
+
+        Ok(TransformationPlan { edits, skipped })
+    }
+
+    /// Apply planned edits to the original source buffer in a single pass.
+    ///
+    /// Constructs a brand new `String` buffer by slicing unchanged byte ranges
+    /// from the original source buffer and appending replacements:
+    /// `source[0..edit[0].start]` + `replacement[0]` + `source[edit[0].end..edit[1].start]` ...
+    ///
+    /// Guaranteed:
+    /// - The original source buffer is never mutated.
+    /// - Comments and formatting outside transformed regions are bit-for-bit identical.
+    /// - Earlier replacements never shift or invalidate subsequent edits because all offsets
+    ///   are indexed against the immutable original `source` buffer.
+    pub fn apply(&self, source: &str) -> Result<String, TransformError> {
+        let total_extra_capacity: usize = self.edits.iter().map(|e| e.replacement.len()).sum();
+        let mut result = String::with_capacity(source.len() + total_extra_capacity);
+        let mut last_offset = 0;
+
+        for edit in &self.edits {
+            if edit.start > source.len() || edit.end > source.len() || edit.start > edit.end {
+                return Err(TransformError::OutOfBounds {
+                    range: edit.start..edit.end,
+                    source_len: source.len(),
+                });
+            }
+
+            if !source.is_char_boundary(edit.start) {
+                return Err(TransformError::InvalidUtf8Boundary {
+                    offset: edit.start,
+                    range: edit.start..edit.end,
+                });
+            }
+            if !source.is_char_boundary(edit.end) {
+                return Err(TransformError::InvalidUtf8Boundary {
+                    offset: edit.end,
+                    range: edit.start..edit.end,
+                });
+            }
+
+            // Copy untouched original bytes between last_offset and edit.start
+            result.push_str(&source[last_offset..edit.start]);
+            // Insert replacement
+            result.push_str(&edit.replacement);
+            last_offset = edit.end;
+        }
+
+        // Copy remaining untouched original bytes
+        result.push_str(&source[last_offset..]);
+        Ok(result)
+    }
+}
+
+/// Structurally constrained idempotence detector (M3).
+///
+/// Verifies that the candidate body structurally begins with the anchor comment
+/// directly following the opening `{`, rather than matching raw substrings anywhere
+/// inside string literals or inner statements.
+///
+/// Verifies the presence of the anchor comment block `/* __cargo_instrument_anchor: ... */`
+/// at the head of the function body without coupling to a specific sentinel statement,
+/// preserving forward-compatibility with pluggable emitters (H3 / ADR-006).
+fn body_starts_with_anchor_sentinel(source: &str, body_start: usize) -> bool {
+    if body_start + 1 >= source.len() {
+        return false;
+    }
+    let inner = &source[body_start + 1..];
+    let trimmed = inner.trim_start();
+    if !trimmed.starts_with(INSTRUMENT_ANCHOR_PREFIX) {
+        return false;
+    }
+    if let Some(rest) = trimmed.strip_prefix(INSTRUMENT_ANCHOR_PREFIX) {
+        return rest.contains("*/");
+    }
+    false
+}
+
+/// Convenience helper: create plan and transform source text in-memory.
+pub fn transform_source_str(
+    source: &str,
+    candidates: &[Candidate],
+) -> Result<String, TransformError> {
+    let plan = TransformationPlan::build(source, candidates)?;
+    plan.apply(source)
+}
+
+/// Convenience helper: transform source text using a custom `Emitter`.
+pub fn transform_source_str_with_emitter<E: Emitter + ?Sized>(
+    source: &str,
+    candidates: &[Candidate],
+    emitter: &E,
+) -> Result<String, TransformError> {
+    let plan = TransformationPlan::build_with_emitter(source, candidates, emitter)?;
+    plan.apply(source)
+}
+
+/// Transform a source file from disk using candidates that have already been scoped to this file.
+///
+/// NON-NEGOTIABLE INVARIANT:
+/// The input source file must NEVER be modified in-place. If `input_path` and `output_path`
+/// resolve to the same file, this function immediately returns an error.
+pub fn transform_source_file_scoped(
+    input_path: &Path,
+    output_path: &Path,
+    scoped_candidates: &[Candidate],
+) -> Result<TransformationPlan, TransformError> {
+    // 1. Guard against in-place modification
+    if paths_are_identical(input_path, output_path) {
+        return Err(TransformError::InPlaceModificationDisallowed {
+            path: input_path.to_path_buf(),
+        });
+    }
+
+    // 2. Read original source bytes
+    let source_bytes = fs::read(input_path).map_err(|e| TransformError::Io {
+        path: input_path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+
+    let source_text = String::from_utf8(source_bytes).map_err(|e| TransformError::Io {
+        path: input_path.to_path_buf(),
+        message: format!("Source is not valid UTF-8: {e}"),
+    })?;
+
+    // 3. Perform transformation
+    let plan = TransformationPlan::build(&source_text, scoped_candidates)?;
+    let transformed = plan.apply(&source_text)?;
+
+    // 4. Ensure parent directories exist for output path
+    if let Some(parent) = output_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            fs::create_dir_all(parent).map_err(|e| TransformError::Io {
+                path: parent.to_path_buf(),
+                message: e.to_string(),
+            })?;
+        }
+    }
+
+    // 5. Write transformed output to destination
+    fs::write(output_path, transformed.as_bytes()).map_err(|e| TransformError::Io {
+        path: output_path.to_path_buf(),
+        message: e.to_string(),
+    })?;
+
+    Ok(plan)
+}
+
+/// Transform a source file, matching candidates by exact canonical or normalized path equality.
+///
+/// C1 INVARIANT: Never matches candidates by basename or `file_name()` alone.
+pub fn transform_source_file(
+    input_path: &Path,
+    output_path: &Path,
+    candidates: &[Candidate],
+) -> Result<TransformationPlan, TransformError> {
+    let scoped: Vec<Candidate> = candidates
+        .iter()
+        .filter(|c| paths_are_identical(&c.source_file, input_path))
+        .cloned()
+        .collect();
+
+    transform_source_file_scoped(input_path, output_path, &scoped)
+}
+
+/// Check if two paths resolve to the exact same file.
+///
+/// Handles canonicalization, relative components, and platform path separators.
+pub fn paths_are_identical(p1: &Path, p2: &Path) -> bool {
+    if p1 == p2 {
+        return true;
+    }
+    match (p1.canonicalize(), p2.canonicalize()) {
+        (Ok(c1), Ok(c2)) => c1 == c2,
+        _ => normalize_path(p1) == normalize_path(p2),
+    }
+}
+
+/// Normalize path components (removing `.` and resolving `..`).
+pub fn normalize_path(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            _ => out.push(c.as_os_str()),
+        }
+    }
+    out
+}

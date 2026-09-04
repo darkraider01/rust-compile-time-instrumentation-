@@ -16,6 +16,10 @@ fn snapshot_files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
             let bytes = fs::read(&path).expect("read file failed");
             files.push((path, bytes));
         } else if path.is_dir() {
+            // Ignore cargo build artifact directory
+            if path.file_name().is_some_and(|name| name == "target") {
+                continue;
+            }
             files.extend(snapshot_files(&path));
         }
     }

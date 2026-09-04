@@ -62,10 +62,10 @@ binary
 | | |
 | --- | --- |
 | **Information available** | Raw text exactly as written: comments, formatting, `cfg` attributes as authored. |
-| **Can instrument?** | Yes — textual/AST rewriting before `rustc` reads the file. |
-| **APIs / tooling** | `syn` + `quote` + `prettyplease` (parse → transform → print); `proc-macro2` for spans; `ra_ap_syntax` (rust-analyzer's lossless CST) for edit-preserving rewrites. All **stable**, all usable outside a proc-macro context. **[Revised — [ADR-002](17-decision-records.md)]** The project uses **none of these three pipelines as written**: `syn` parses for *analysis only*, and the edit is a byte-range splice into the original UTF-8 buffer at `span().byte_range()` (`cargo-mutants`' technique). `prettyplease` is not used at all — a measured round-trip destroyed every non-doc comment and reformatted the whole file ([Appendix E](appendix-e-experiment-matrix.md) E-3) — and `ra_ap_syntax` is therefore never needed. |
+| **Can instrument?** | Yes - textual/AST rewriting before `rustc` reads the file. |
+| **APIs / tooling** | `syn` + `quote` + `prettyplease` (parse → transform → print); `proc-macro2` for spans; `ra_ap_syntax` (rust-analyzer's lossless CST) for edit-preserving rewrites. All **stable**, all usable outside a proc-macro context. **[Revised - [ADR-002](17-decision-records.md)]** The project uses **none of these three pipelines as written**: `syn` parses for *analysis only*, and the edit is a byte-range splice into the original UTF-8 buffer at `span().byte_range()` (`cargo-mutants`' technique). `prettyplease` is not used at all - a measured round-trip destroyed every non-doc comment and reformatted the whole file ([Appendix E](appendix-e-experiment-matrix.md) E-3) - and `ra_ap_syntax` is therefore never needed. |
 | **Advantages** | Stable Rust. Output is fully inspectable, which makes debugging tractable. Diagnostics can be mapped back to real source. Zero compiler-version coupling. Works on dependency source, because Cargo has already unpacked it under `~/.cargo/registry/src`. |
-| **Disadvantages** | No type information. Cannot resolve `use` aliases, method receivers, or trait impls reliably. Cannot see through macros — you see the invocation, not its output. `syn` round-tripping destroys formatting unless you use a CST-based rewriter. |
+| **Disadvantages** | No type information. Cannot resolve `use` aliases, method receivers, or trait impls reliably. Cannot see through macros - you see the invocation, not its output. `syn` round-tripping destroys formatting unless you use a CST-based rewriter. |
 | **Stability concerns** | Minimal. `syn` is among the most-depended-on crates in the ecosystem. |
 | **Maintenance burden** | Low. Tracks *syntax* evolution (new keywords, new syntax), not compiler internals, and `syn` absorbs most of that. |
 
@@ -86,7 +86,7 @@ binary
 | --- | --- |
 | **Information available** | Desugared control flow, resolved names, item structure. **async/await has already been desugared by this point** (`rustc_ast_lowering`). Types not yet computed. |
 | **Can instrument?** | In principle via query overriding, but there is no "rewrite HIR" query that codegen depends on the way it depends on `optimized_mir`. HIR is treated as an input artifact, not a rewritable one. |
-| **Advantages** | Names resolved — you know what `foo::bar` actually refers to. |
+| **Advantages** | Names resolved - you know what `foo::bar` actually refers to. |
 | **Disadvantages** | No practical injection point. `rustc_private` only. |
 | **Verdict** | **Not a viable injection layer.** Valuable for *analysis* (deciding what to instrument), not for *injection*. |
 
@@ -98,11 +98,11 @@ binary
 | **Can instrument?** | Theoretically (a `thir_body` query exists), but THIR is a short-lived intermediate consumed immediately by `rustc_mir_build`, and is the least documented and least externally used IR. |
 | **Verdict** | **Not recommended.** Higher fragility than MIR with no compensating advantage. |
 
-#### 3.2.5 MIR — the serious compiler-level option
+#### 3.2.5 MIR - the serious compiler-level option
 
 **[Fact]** MIR is a control-flow graph of basic blocks containing `Statement`s, each terminated by a `Terminator` (including `Call`). It is *pre-monomorphization* and generic: a generic function has one MIR body regardless of how many times it is instantiated.
 
-**[Fact — read from rustc source]** The MIR pipeline is:
+**[Fact - read from rustc source]** The MIR pipeline is:
 
 ```
 mir_built                                   (Analysis::Initial)
@@ -119,7 +119,7 @@ mir_built                                   (Analysis::Initial)
         run_optimization_passes             → Runtime::Optimized
 ```
 
-**[Fact — critical for §6]** `coroutine::StateTransform` runs inside `run_runtime_lowering_passes`, which runs inside `mir_drops_elaborated_and_const_checked`, which `optimized_mir` calls before running optimization passes. **MIR obtained from the `optimized_mir` query has therefore already been through the async state-machine transform.**
+**[Fact - critical for §6]** `coroutine::StateTransform` runs inside `run_runtime_lowering_passes`, which runs inside `mir_drops_elaborated_and_const_checked`, which `optimized_mir` calls before running optimization passes. **MIR obtained from the `optimized_mir` query has therefore already been through the async state-machine transform.**
 
 **[Fact]** `rustc_mir_transform::run_analysis_to_runtime_passes` carries this source comment:
 
@@ -160,7 +160,7 @@ The pattern is: call the default provider, clone the `Body` (you need an owned o
 -Zunstable-options  -L<runtime_dir>  --extern=force:runtime=<runtime_dir>/libruntime.rlib
 ```
 
-`--extern=force:` makes the crate available even though no source line references it. **[Fact]** Under LTO the linker may still strip the runtime, because it is only referenced from injected MIR; the documented mitigation is a `#[no_mangle] extern "C"` hook anchored with a `#[used] static`. **[Fact]** The same source warns against passing typed references (`&T`) across the hook boundary — it is brittle and can produce invalid IR under LTO — and recommends passing a `usize` address obtained via `CastKind::PointerExposeProvenance`.
+`--extern=force:` makes the crate available even though no source line references it. **[Fact]** Under LTO the linker may still strip the runtime, because it is only referenced from injected MIR; the documented mitigation is a `#[no_mangle] extern "C"` hook anchored with a `#[used] static`. **[Fact]** The same source warns against passing typed references (`&T`) across the hook boundary - it is brittle and can produce invalid IR under LTO - and recommends passing a `usize` address obtained via `CastKind::PointerExposeProvenance`.
 
 | | |
 | --- | --- |
@@ -179,7 +179,7 @@ The pattern is: call the default provider, clone the `Body` (you need an owned o
 | | |
 | --- | --- |
 | **Can instrument?** | Only from inside the compiler (same nightly constraints as MIR), or by writing a custom codegen backend (far more work). |
-| **Notable** | This is the only layer that can make *per-instantiation* decisions — "instrument `Repository::<PgPool>::find` but not `Repository::<MockPool>::find`." No layer above can express that; no layer below retains the type names to express it against. |
+| **Notable** | This is the only layer that can make *per-instantiation* decisions - "instrument `Repository::<PgPool>::find` but not `Repository::<MockPool>::find`." No layer above can express that; no layer below retains the type names to express it against. |
 
 #### 3.2.7 LLVM IR
 
@@ -192,7 +192,7 @@ The pattern is: call the default provider, clone the `Body` (you need an owned o
 | `-Z instrument-mcount` | Nightly | `mcount()` call in each function prologue; has had breakage ([#92109](https://github.com/rust-lang/rust/issues/92109)) |
 | `-Z llvm-plugins` | Nightly ([PR #91125](https://github.com/rust-lang/rust/pull/91125)) | Load out-of-tree LLVM pass plugins |
 
-**[Inference — important]** `-Z instrument-xray` is *already* a compiler-inserted function entry/exit hook mechanism with configurable filtering. If our goal were purely "get a callback on every function entry and exit," a large part of it exists in the compiler and we would be reimplementing it badly. Our value has to come from *semantics* (which function, why, with what attributes, in what async context), not from the mechanical act of hooking entry/exit.
+**[Inference - important]** `-Z instrument-xray` is *already* a compiler-inserted function entry/exit hook mechanism with configurable filtering. If our goal were purely "get a callback on every function entry and exit," a large part of it exists in the compiler and we would be reimplementing it badly. Our value has to come from *semantics* (which function, why, with what attributes, in what async context), not from the mechanical act of hooking entry/exit.
 
 | | |
 | --- | --- |
@@ -210,7 +210,7 @@ The pattern is: call the default provider, clone the `Body` (you need an owned o
 | **Advantages** | No rebuild required. Language-agnostic. Can be attached and detached at runtime. |
 | **Disadvantages** | Everything above is gone. Async structure is unrecognisable. Inlined functions do not exist as symbols. Generic instantiations are separate opaque symbols. |
 
-### 3.3 Cargo integration mechanisms — the `-toolexec` analogues
+### 3.3 Cargo integration mechanisms - the `-toolexec` analogues
 
 **[Fact]** From the Cargo config reference:
 
@@ -221,20 +221,20 @@ The pattern is: call the default provider, clone the `Body` (you need an owned o
 | `build.rustc-workspace-wrapper` | `RUSTC_WORKSPACE_WRAPPER` | Workspace members only | Nests: `$RUSTC_WRAPPER $RUSTC_WORKSPACE_WRAPPER $RUSTC [args]` |
 | `build.rustflags` | `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS` | Target platform, all crates | Extra flags appended |
 
-**[Fact]** The wrapper receives the path to the real `rustc` as its first argument, followed by the full compiler argument list — including every `--extern`, `-L`, `--cfg`, `--crate-name`, and the path to the crate root source file. That is everything needed to (a) know which crate is being compiled, (b) find its source, and (c) re-invoke the real compiler on rewritten source.
+**[Fact]** The wrapper receives the path to the real `rustc` as its first argument, followed by the full compiler argument list - including every `--extern`, `-L`, `--cfg`, `--crate-name`, and the path to the crate root source file. That is everything needed to (a) know which crate is being compiled, (b) find its source, and (c) re-invoke the real compiler on rewritten source.
 
 ~~**[Fact]** `RUSTC_WORKSPACE_WRAPPER` affects the artifact filename hash, so wrapped and unwrapped builds cache separately. **[Open question]** Whether `RUSTC_WRAPPER` participates in the fingerprint identically must be verified experimentally.~~
 
-**[RESOLVED, and the original claim was wrong — [Fact], confirmed by direct experiment: [Appendix E](appendix-e-experiment-matrix.md) E-1.]** **Neither** wrapper participates in Cargo's artifact rebuild fingerprint. Building a crate, then setting `RUSTC_WRAPPER` with no source change, produces zero recompilation — Cargo prints `Finished`, the wrapper is never invoked for the actual compile, and the fingerprint hash is byte-identical. `RUSTC_WORKSPACE_WRAPPER` behaves the same way, so the sentence above ("wrapped and unwrapped builds cache separately") does not hold for it either. This is the worst possible failure mode for an observability tool — **it looks like it worked** — and it is the default steady state of a plain `cargo build`, not an edge case. It is [R1](13-technical-risks.md), and the mitigation is an isolated `--target-dir` ([ADR-004](17-decision-records.md)), not `RUSTFLAGS`.
+**[RESOLVED, and the original claim was wrong - [Fact], confirmed by direct experiment: [Appendix E](appendix-e-experiment-matrix.md) E-1.]** **Neither** wrapper participates in Cargo's artifact rebuild fingerprint. Building a crate, then setting `RUSTC_WRAPPER` with no source change, produces zero recompilation - Cargo prints `Finished`, the wrapper is never invoked for the actual compile, and the fingerprint hash is byte-identical. `RUSTC_WORKSPACE_WRAPPER` behaves the same way, so the sentence above ("wrapped and unwrapped builds cache separately") does not hold for it either. This is the worst possible failure mode for an observability tool - **it looks like it worked** - and it is the default steady state of a plain `cargo build`, not an edge case. It is [R1](13-technical-risks.md), and the mitigation is an isolated `--target-dir` ([ADR-004](17-decision-records.md)), not `RUSTFLAGS`.
 
-**[Inference — key structural finding of §3]** `RUSTC_WRAPPER` is a near-exact analogue of Go's `-toolexec`:
+**[Inference - key structural finding of §3]** `RUSTC_WRAPPER` is a near-exact analogue of Go's `-toolexec`:
 
 | | Go | Rust |
 | --- | --- | --- |
 | Hook | `-toolexec` | `RUSTC_WRAPPER` |
 | Granularity | package | crate |
 | Sees third-party dependencies? | yes | yes |
-| Sees the standard library? | yes | **no** — `std`/`core` ship precompiled as rlibs |
+| Sees the standard library? | yes | **no** - `std`/`core` ship precompiled as rlibs |
 | Stability | stable | stable |
 | Existing users | `otelc` | Clippy (`RUSTC_WORKSPACE_WRAPPER`), `sccache` (`RUSTC_WRAPPER`) |
 
@@ -261,11 +261,11 @@ The pattern is: call the default provider, clone the `Body` (you need an owned o
 
 ### 3.5 The maintenance reality of nightly compiler tooling
 
-**[Fact]** The [`rustc_plugin`](https://github.com/cognitive-engineering-lab/rustc_plugin) framework — which powers Flowistry, Aquascope, Paralegal, and Argus — states its position plainly: because the compiler interface is not stable, "the only sensible way to develop a Rust compiler plugin is by pinning to a specific nightly." Each release encodes the nightly in its version string (e.g. `0.15.2-nightly-2026-05-01`), users must match it exactly, and a nightly bump is treated as a **breaking semver change**.
+**[Fact]** The [`rustc_plugin`](https://github.com/cognitive-engineering-lab/rustc_plugin) framework - which powers Flowistry, Aquascope, Paralegal, and Argus - states its position plainly: because the compiler interface is not stable, "the only sensible way to develop a Rust compiler plugin is by pinning to a specific nightly." Each release encodes the nightly in its version string (e.g. `0.15.2-nightly-2026-05-01`), users must match it exactly, and a nightly bump is treated as a **breaking semver change**.
 
 **[Fact]** `rustc_plugin` documents a *maximum* supported Rust version rather than a minimum: a plugin cannot analyse code that uses compiler features newer than its pinned toolchain.
 
-**[Inference — decisive]** For an *instrumentation* tool this constraint is far more damaging than for an analysis tool. Flowistry's users will install a specific nightly to get an IDE feature they use interactively. A production service team will not pin their entire build to `nightly-2026-05-01` in order to get traces, because that pins their `std`, their compiler bug surface, and their ability to upgrade dependencies that raise their MSRV. **A nightly-only instrumentation tool is, for practical purposes, unshippable.** This is the strongest single argument against Architecture B as a Phase 1 target.
+**[Inference - decisive]** For an *instrumentation* tool this constraint is far more damaging than for an analysis tool. Flowistry's users will install a specific nightly to get an IDE feature they use interactively. A production service team will not pin their entire build to `nightly-2026-05-01` in order to get traces, because that pins their `std`, their compiler bug surface, and their ability to upgrade dependencies that raise their MSRV. **A nightly-only instrumentation tool is, for practical purposes, unshippable.** This is the strongest single argument against Architecture B as a Phase 1 target.
 
 ### 3.6 Precedent: who operates at which layer
 

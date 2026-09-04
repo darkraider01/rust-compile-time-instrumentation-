@@ -13,22 +13,22 @@
 
 </div>
 
-Instruments Rust applications *and their dependencies* at build time — no source annotations, no manual span wiring — by intercepting `rustc` via `RUSTC_WRAPPER` and splicing native OpenTelemetry calls at the byte level. Runs on stable Rust with no compiler forks, no MIR passes, and no eBPF; the frozen architecture and the evidence behind it are in [`docs/research/`](docs/research/).
+Instruments Rust applications *and their dependencies* at build time - no source annotations, no manual span wiring - by intercepting `rustc` via `RUSTC_WRAPPER` and splicing native OpenTelemetry calls at the byte level. Runs on stable Rust with no compiler forks, no MIR passes, and no eBPF; the frozen architecture and the evidence behind it are in [`docs/research/`](docs/research/).
 
 ## Status
 
 | Phase | Status | Focus |
 | --- | --- | --- |
-| **Phase 0 — Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
-| **Phase 1 — `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.3 complete (analysis-only, zero source rewriting); P1.4 is next |
-| **Phase 2 — Production Hardening** | **Planned** | Workspace coverage, MSRV/toolchain compatibility, incremental compilation, large dependency graphs, cross-platform validation |
-| **Phase 3 — Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
+| **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
+| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.3 complete (analysis-only, zero source rewriting); P1.4 is next |
+| **Phase 2 - Production Hardening** | **Planned** | Workspace coverage, MSRV/toolchain compatibility, incremental compilation, large dependency graphs, cross-platform validation |
+| **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
 
 The project is developed incrementally, with each phase establishing and validating a specific part of the compile-time instrumentation pipeline.
 
-### Phase 0 — Landscape Research & Architecture
+### Phase 0 - Landscape Research & Architecture
 **Status:** COMPLETE (Frozen)
 
 **Goal:** Determine whether zero-code compile-time OpenTelemetry instrumentation for Rust is technically viable and establish a defensible, frozen architecture.
@@ -48,31 +48,31 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
 
 ---
 
-### Phase 1 — `cargo-instrument` Tool
+### Phase 1 - `cargo-instrument` Tool
 **Status:** IN PROGRESS
 
 **Goal:** Build the compile-time instrumentation pipeline on stable Rust.
 
-- [x] **P1.1 — Cargo / `RUSTC_WRAPPER` interception** — COMPLETE
+- [x] **P1.1 - Cargo / `RUSTC_WRAPPER` interception** - COMPLETE
   Intercepts Cargo's `rustc` invocations, preserves arguments and exit codes, detects direct nested wrapper invocations, and enforces isolated build artifact directories (`target/instrumented`, [ADR-004](docs/research/17-decision-records.md)).
-- [x] **P1.2 — Source discovery & compilation-unit classification** — COMPLETE
+- [x] **P1.2 - Source discovery & compilation-unit classification** - COMPLETE
   Classifies compiler invocations (ordinary crate, build script, proc macro, compiler queries, pass-through), extracts primary source files, and parses compiler options without modifying inputs.
-- [x] **P1.3 — `syn` AST & exact byte-span analysis** — COMPLETE
+- [x] **P1.3 - `syn` AST & exact byte-span analysis** - COMPLETE
   Performs full `syn` AST parsing, root-aware recursive module discovery (`mod foo;`), identifies eligible function items (free functions, inherent methods, trait methods), filters exclusions (`const fn`, `extern "C"`, nested functions, direct self-recursion), applies R10 idempotence heuristics (closure-based `with_context` discrimination, `.start()` checks), and calculates exact UTF-8 byte ranges (`start..end`) while keeping original source files byte-for-byte untouched.
-- [ ] **P1.4 — Surgical source transformation** — NEXT
+- [ ] **P1.4 - Surgical source transformation** - NEXT
   Implement deterministic byte-range source splicing. Inject span wrappers around function bodies while preserving comments, formatting, and surrounding source text, producing valid, recompilable Rust code.
-- [ ] **P1.5 — Native OpenTelemetry code generation**
+- [ ] **P1.5 - Native OpenTelemetry code generation**
   Generate native OpenTelemetry API calls for synchronous functions, handling span creation, tracer acquisition, and error recording.
-- [ ] **P1.6 — Async instrumentation**
+- [ ] **P1.6 - Async instrumentation**
   Instrument async functions using `opentelemetry::trace::FutureExt::with_context`, preserving correct trace context across future suspension points and executor thread migration.
-- [ ] **P1.7 — Dependency instrumentation / `extern "C"` trampolines**
+- [ ] **P1.7 - Dependency instrumentation / `extern "C"` trampolines**
   Extend instrumentation to upstream Cargo dependencies using `extern "C"` ABI trampolines (`__otel_span_enter` / `__otel_span_exit`), resolved at final application link time.
-- [ ] **P1.8 — End-to-end validation**
+- [ ] **P1.8 - End-to-end validation**
   Validate emitted spans against an OpenTelemetry collector, measure compile-time overhead, verify build-cache isolation, and test across sample multi-crate applications.
 
 ---
 
-### Phase 2 — Production Hardening
+### Phase 2 - Production Hardening
 **Status:** PLANNED
 
 **Goal:** Establish the reliability, usability, and scale required for production build environments.
@@ -88,7 +88,7 @@ Planned areas:
 
 ---
 
-### Phase 3 — Evaluation & Research
+### Phase 3 - Evaluation & Research
 **Status:** PLANNED
 
 **Goal:** Conduct an empirical engineering evaluation comparing compile-time instrumentation against existing paradigms.
@@ -107,19 +107,19 @@ Planned evaluation:
 
 ### Current Focus
 
-**Phase 1 — P1.4: Surgical byte-range source transformation**
+**Phase 1 - P1.4: Surgical byte-range source transformation**
 
 Phase 0 established the architecture and invariants. Milestones P1.1–P1.3 have validated the Cargo interception, root-aware multi-file discovery, and AST byte-span identification (verified with 43 automated tests across Linux, Windows, and macOS). The immediate next step is P1.4: implementing the byte-splicing engine to transform function bodies while preserving original source layout and verifying that transformed crates compile cleanly.
 
 ## Documentation
 
-- **[docs/phase1/](docs/phase1/)** — the Phase 1 implementation record, architecture, empirical findings, and verification matrix for milestones P1.1–P1.3 (Cargo/wrapper interception, classification, AST analysis, and adversarial review resolutions). Start at [docs/phase1/README.md](docs/phase1/README.md).
-- **[docs/research/](docs/research/)** — the full Phase 0 investigation: landscape survey, architecture candidates, the [instrumentation semantics specification](docs/research/16-instrumentation-semantics.md) (the correctness oracle Phase 1's tests are written against), the [architecture decision records](docs/research/17-decision-records.md), and four rounds of verification (hands-on experiments, an adversarial review, a maintainer Q&A round, and a validated experiment matrix). Start at [docs/research/README.md](docs/research/README.md).
+- **[docs/phase1/](docs/phase1/)** - the Phase 1 implementation record, architecture, empirical findings, and verification matrix for milestones P1.1–P1.3 (Cargo/wrapper interception, classification, AST analysis, and adversarial review resolutions). Start at [docs/phase1/README.md](docs/phase1/README.md).
+- **[docs/research/](docs/research/)** - the full Phase 0 investigation: landscape survey, architecture candidates, the [instrumentation semantics specification](docs/research/16-instrumentation-semantics.md) (the correctness oracle Phase 1's tests are written against), the [architecture decision records](docs/research/17-decision-records.md), and four rounds of verification (hands-on experiments, an adversarial review, a maintainer Q&A round, and a validated experiment matrix). Start at [docs/research/README.md](docs/research/README.md).
 - Later phases receive their own sibling documentation folders under `docs/` as milestones land. `docs/research/` remains specifically the archived Phase 0 record and stays frozen.
 
 ## The tool
 
-`cargo-instrument/` — the Cargo subcommand and `RUSTC_WRAPPER` implementation.
+`cargo-instrument/` - the Cargo subcommand and `RUSTC_WRAPPER` implementation.
 
 ```bash
 cargo build --workspace

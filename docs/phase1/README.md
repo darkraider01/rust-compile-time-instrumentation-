@@ -2,38 +2,38 @@
 
 ---
 
-# Phase 1 — Compile-Time Instrumentation Tool (`cargo-instrument`)
+# Phase 1 - Compile-Time Instrumentation Tool (`cargo-instrument`)
 
-**Milestones covered:** P1.1, P1.2, P1.3  
-**Status:** P1.1–P1.3 Complete; P1.4 Next  
+**Milestones covered:** P1.1, P1.2, P1.3, P1.4  
+**Status:** P1.1–P1.4 Implemented & Verified; P1.5 Next  
 **Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
 **Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
-**Test suite status:** 43 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
+**Test suite status:** 67 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
 
 ---
 
 ## Phase Progression
 
 ```text
-Phase 0 — Research & Architecture (Frozen)
+Phase 0 - Research & Architecture (Frozen)
           │
           ▼
-Phase 1 — Compile-Time Instrumentation (In Progress — current focus)
+Phase 1 - Compile-Time Instrumentation (In Progress - current focus)
           │
           ├── P1.1 RUSTC_WRAPPER Interception       ✅ Complete
           ├── P1.2 Source Discovery & Classification ✅ Complete
           ├── P1.3 syn AST + Exact Byte Spans       ✅ Complete
-          ├── P1.4 Surgical Source Transformation   → NEXT
+          ├── P1.4 Surgical Source Transformation   🔧 In Progress (Adversarial Fixes Applied & Verified)
           ├── P1.5 Native OTel Code Generation      ○ Planned
           ├── P1.6 Async Instrumentation            ○ Planned
           ├── P1.7 Dependency Trampolines           ○ Planned
           └── P1.8 End-to-End Validation            ○ Planned
           │
           ▼
-Phase 2 — Production Hardening (Planned)
+Phase 2 - Production Hardening (Planned)
           │
           ▼
-Phase 3 — Evaluation & Research (Planned)
+Phase 3 - Evaluation & Research (Planned)
 ```
 
 ---
@@ -43,9 +43,9 @@ Phase 3 — Evaluation & Research (Planned)
 Phase 1 translates the frozen architecture from [Phase 0](../research/README.md) into a working, stable-Rust compile-time instrumentation CLI and wrapper tool (`cargo-instrument`).
 
 This document records the design decisions, implementation architecture, empirical findings, and verification proofs for the first three Phase 1 milestones:
-- **P1.1 — Cargo / `RUSTC_WRAPPER` interception**
-- **P1.2 — Source discovery & compilation-unit classification**
-- **P1.3 — `syn` AST & exact byte-span analysis**
+- **P1.1 - Cargo / `RUSTC_WRAPPER` interception**
+- **P1.2 - Source discovery & compilation-unit classification**
+- **P1.3 - `syn` AST & exact byte-span analysis**
 
 ### Invariant Boundaries for P1.1–P1.3
 Per Phase 0 normative specifications ([§16](../research/16-instrumentation-semantics.md)):
@@ -58,7 +58,7 @@ Per Phase 0 normative specifications ([§16](../research/16-instrumentation-sema
 
 ## 2. Milestone Architecture
 
-### P1.1 — Cargo / `RUSTC_WRAPPER` Interception
+### P1.1 - Cargo / `RUSTC_WRAPPER` Interception
 
 Cargo supports an environment variable `RUSTC_WRAPPER` pointing to an executable. When set, Cargo invokes the wrapper instead of invoking `rustc` directly, passing the path to the real `rustc` binary as the first argument followed by the standard compiler flags:
 
@@ -75,7 +75,7 @@ cargo-instrument <path-to-rustc> [rustc-arguments...]
 
 ---
 
-### P1.2 — Compilation-Unit Classification & Source Resolution
+### P1.2 - Compilation-Unit Classification & Source Resolution
 
 Not all invocations received by `RUSTC_WRAPPER` represent application crates eligible for instrumentation. In a standard build, Cargo issues multiple queries, compiles procedural macros on the host, and builds build scripts (`build.rs`).
 
@@ -97,7 +97,7 @@ The argument parser categorizes each compiler invocation into a strongly-typed `
 
 ---
 
-### P1.3 — AST Parsing, Module Resolution & Byte-Span Analysis
+### P1.3 - AST Parsing, Module Resolution & Byte-Span Analysis
 
 For eligible `RustCrate` units, the tool reads the crate's root source file into an immutable UTF-8 buffer and parses it using `syn::parse_file`.
 
@@ -200,9 +200,46 @@ candidates:
 
 ---
 
-## 5. Verification Matrix
+## 5. Milestone P1.4 - Surgical Byte-Range Source Transformation
 
-The milestone implementation is verified by **43 automated tests** across 5 test suites:
+Milestone P1.4 takes the candidates produced by the frozen P1.3 AST analysis and performs deterministic surgical byte splicing directly on the **original immutable UTF-8 source buffer**.
+
+### Key Architectural Invariants & Adversarial Review Resolutions
+
+1. **Exact File Association & Scoped API (C1):**
+   Removed heuristic basename-only candidate matching. `transform_source_file` enforces strict canonicalized/normalized path equivalence (`paths_are_identical`). Additionally, `transform_source_file_scoped` provides a direct API for callers to supply pre-scoped candidate lists, eliminating cross-file collisions between files sharing identical basenames (e.g., `src/handlers.rs` and `src/admin/handlers.rs`).
+2. **Safe Candidate-Level Fail-Open (H2 / S11):**
+   Per-candidate defects (out-of-bounds ranges, mid-codepoint UTF-8 boundaries, missing opening braces, or overlapping ranges) are recorded in `plan.skipped` as structured diagnostics (`SkippedCandidate` with `SkipReason`), allowing valid candidates in the same file to be safely transformed. True file-level failures (I/O failures or attempts to modify sources in-place) remain hard errors.
+3. **Pluggable Emitter Seam (H3 / ADR-006):**
+   Separated candidate validation, edit planning, and edit application from replacement generation by introducing the `Emitter` trait. P1.4 provides `SentinelEmitter`, and P1.5 can substitute native OpenTelemetry generation without modifying the byte-splicing engine.
+4. **Line-Ending Preservation (M1):**
+   The transformation engine inspects the source's dominant newline style (`\r\n` vs `\n`) via `detect_line_ending` and ensures all generated replacements match the file's convention bit-for-bit.
+5. **Structurally Constrained Idempotence (M3):**
+   `body_starts_with_anchor_sentinel` verifies that the opening `{` is immediately followed by the anchor comment and sentinel statement. Arbitrary string literals containing the anchor substring inside the body do not falsely suppress instrumentation.
+6. **Live `RUSTC_WRAPPER` Pipeline Integration (H1):**
+   Integrated surgical transformation directly into the compiler wrapper:
+   ```text
+   Cargo ──► RUSTC_WRAPPER ──► Source Discovery ──► P1.3 Candidate Analysis
+                                                              │
+   real rustc ◄── Mirrored / Instrumented Tree ◄── P1.4 Source Transformation
+   ```
+   When candidates are identified, the crate source tree is mirrored into an isolated directory under `--out-dir` (`target/instrumented/.../instrumented_sources/<crate_name>/`), transformed in-place within the mirror, and the mirrored root is forwarded to `rustc`. Original sources remain 100% bit-for-bit untouched, preserving Cargo fingerprint invariants.
+7. **Immutable Original-Buffer Indexing (ADR-002):**
+   Every `ByteEdit` offset refers strictly to byte offsets in the original UTF-8 source buffer. The transformer constructs a new output buffer in a single pass without mutating the original input buffer.
+8. **In-Place Modification Prohibition (S1/S2):**
+   `transform_source_file` rejects `input_path == output_path` (including canonicalized path equivalence) with `TransformError::InPlaceModificationDisallowed`.
+9. **Minimal Sentinel Representation:**
+   The injected sentinel proves insertion mechanics and compilation across all function signatures (sync, async, generic, inherent, trait, diverging `!`, unsafe fn, empty body):
+   ```rust
+   /* __cargo_instrument_anchor: "{function_name}" */
+   let _cargo_instrument_sentinel = ();
+   ```
+
+---
+
+## 6. Verification Matrix
+
+The milestone implementation is verified by **78 automated tests** across 6 test suites:
 
 | Test Suite | Tests | Scope |
 |---|---|---|
@@ -210,17 +247,20 @@ The milestone implementation is verified by **43 automated tests** across 5 test
 | [`discovery_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/discovery_tests.rs) | 8 | Classification (ordinary crate, proc macro, build script, queries), real captured cargo argv, paths with spaces, error handling |
 | [`wrapper_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/wrapper_tests.rs) | 5 | Config parsing, argument forwarding, exit code propagation, recursion guard, serial execution |
 | [`byte_span_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/byte_span_tests.rs) | 4 | Exact UTF-8 buffer slicing, emoji/multibyte offsets, multiline formatting, comment preservation |
+| [`transform_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/transform_tests.rs) | 35 | Surgical byte splicing, comments/formatting preservation, unicode offsets, exclusions, idempotence, overlap rejection, permutation invariance, rustc & Cargo compilation proofs, CLI transform, C1 cross-file basename collisions, H1 live wrapper pipeline and absolute source path handling, H2 fail-open skips, H3 emitter substitution, M1 CRLF preservation, M3 string literal idempotence, diverging `!`, unsafe fn, empty bodies |
 | [`cargo_integration_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/cargo_integration_tests.rs) | 5 | Real wrapped Cargo subprocesses, multi-file discovery on disk, SHA-256 byte-for-byte source preservation, isolated target dir wiring, CLI analyze subcommand |
 
 ---
 
-## 6. Handoff to Milestone P1.4
+## 7. Status & Handoff to Milestone P1.5
 
-### What Is Next: P1.4 — Surgical Source Transformation
-Milestones P1.1–P1.3 establish that the tool can intercept compiler invocations, classify compilation units, discover all source files across a crate, and compute exact byte spans without modifying source code.
+### Current Status: P1.4 In Progress (Adversarial Fixes Applied & Verified)
+All 7 adversarial review findings (C1, H1, H2, H3, M1, M2, M3) have been addressed, implemented, and verified with zero compiler/clippy warnings and 78/78 tests passing. Final acceptance review will freeze P1.4 prior to commencing P1.5.
 
-Milestone P1.4 introduces **byte-range source splicing**:
-1. **Input:** Original immutable source buffer and candidate byte ranges (`Candidate::body_byte_range`).
-2. **Mechanism:** Slice before body `{`, inject span entry/guard tokens, copy original body statements untouched, inject span exit tokens before closing `}`.
-3. **Correctness invariant:** Transformed source must compile cleanly under `rustc`, while preserving original comments, docstrings, formatting, and line structures outside the spliced block.
-4. **Idempotence:** Re-running transformation on previously transformed source must produce identical bytes.
+### What Is Next: P1.5 - Native OpenTelemetry Code Generation (Planned)
+Milestones P1.1–P1.4 establish that the tool intercepts compiler invocations, discovers source candidates across multi-file crates, computes exact byte spans, and executes surgical byte-range transformations that compile cleanly under both `rustc` and `Cargo` via the live compiler wrapper.
+
+Once P1.4 is formally accepted, Milestone P1.5 will plug into the `Emitter` seam to provide **native OpenTelemetry API span generation**:
+1. **Synchronous spans (§16.4):** Inject `tracer.start(...)` and RAII drop guard for context attachment/detachment.
+2. **Metadata binding:** Site registration passing function name, source file, line number, and `SpanKind`.
+3. **No pretty-printing:** Generated code is inserted via surgical byte splicing into the original source buffer.
