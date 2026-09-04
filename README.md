@@ -9,7 +9,7 @@
 > **Two decisions were reversed by the maintainer Q&A round ([Appendix D](docs/appendix-d-maintainer-qa.md)). Read that before acting on anything below.**
 >
 > 1. **Code generation targets the native OpenTelemetry API, not `tracing`.** OTel Rust maintainer Scott Gerring disproved this document's central premise that only `tracing` handles async future interleaving correctly — `opentelemetry::trace::FutureExt::with_context` attaches the context on each `poll()` and detaches on yield, matching `tracing::Instrument`. `tracing`, `tracing-subscriber`, and `tracing-opentelemetry` leave the injected dependency set.
-> 2. **The eBPF branch is closed.** OBI maintainer Giuseppe Ognibene has a working prototype of Tokio async task reconstruction in eBPF (OBI #1096), resolving hypothesis H2 upstream. The [§15.6](docs/15-final-recommendation.md) pivot condition has fired: Architectures C and D are abandoned, and the project is now 100% compile-time Cargo instrumentation, serving the platforms eBPF cannot reach.
+> 2. **The eBPF branch is closed.** OBI maintainer Giuseppe Ognibene has a working prototype of Tokio async task reconstruction in eBPF (OBI #1096), resolving hypothesis H2 upstream. The [§15.6](docs/15-final-recommendation.md) pivot condition has fired: Architectures C and D are abandoned, and the project is now 100% compile-time Cargo instrumentation, with a focus on platforms and deployment environments where eBPF-based instrumentation is unavailable or impractical.
 
 This research is split into one file per section so each can be read, linked, and updated independently. Start here, then follow the table of contents.
 
