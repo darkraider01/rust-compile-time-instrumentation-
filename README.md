@@ -1,9 +1,19 @@
+<div align="center">
+
 # rust-compile-time-instrumentation
+
+**Zero-code compile-time OpenTelemetry instrumentation for Rust — reaching third-party dependencies, on stable Rust, with no eBPF.**
 
 [![CI](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/ci.yml/badge.svg)](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/ci.yml)
 [![Integration](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/integration.yml/badge.svg)](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/integration.yml)
+[![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust)](https://www.rust-lang.org)
+[![No nightly](https://img.shields.io/badge/nightly-not%20required-brightgreen)](docs/research/17-decision-records.md)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Phase](https://img.shields.io/badge/phase-1%20in%20progress-yellow)](#status)
 
-Zero-code compile-time OpenTelemetry instrumentation for Rust, including third-party dependencies, via a stable-Rust `RUSTC_WRAPPER` generating native OTel API calls. No eBPF, no nightly.
+</div>
+
+Instruments Rust applications *and their dependencies* at build time — no source annotations, no manual span wiring — by intercepting `rustc` via `RUSTC_WRAPPER` and splicing native OpenTelemetry calls at the byte level. Runs on stable Rust with no compiler forks, no MIR passes, and no eBPF; the frozen architecture and the evidence behind it are in [`docs/research/`](docs/research/).
 
 ## Status
 
@@ -29,3 +39,7 @@ cargo run --bin cargo-instrument -- -- build                  # wrapped build, i
 ```
 
 CI runs `fmt`/`clippy`/`test`/`build` across Linux, Windows, and macOS ([`ci.yml`](.github/workflows/ci.yml)), plus a dedicated real-subprocess integration workflow ([`integration.yml`](.github/workflows/integration.yml)) that documents exactly which claims about the wrapper/Cargo integration are proven by the current test suite.
+
+## License
+
+[Apache License, Version 2.0](LICENSE).
