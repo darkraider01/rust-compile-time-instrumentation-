@@ -78,7 +78,7 @@ binary
 | **Can instrument?** | Only via proc macros, i.e. only for code that opts in. Not a route to automatic whole-graph instrumentation. |
 | **Advantages** | This is what `#[tracing::instrument]` already is; battle-tested. |
 | **Disadvantages** | Not automatic; cannot reach dependencies. |
-| **Verdict** | Useful as the *target* of generated code, not as the instrumentation mechanism. |
+| **Verdict** | Not a viable automatic whole-graph mechanism. (Earlier considered as a potential generation target via `#[tracing::instrument]`, but superseded by native OTel API generation per ADR-001.) |
 
 #### 3.2.3 HIR
 

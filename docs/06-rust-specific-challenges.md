@@ -129,7 +129,7 @@ This is a **real and permanent capability difference** between source-level and 
 
 A recursive function instrumented at entry produces a span per recursion level. For a depth-10000 recursion that is 10000 spans, which will destroy the trace, the exporter, and possibly the process.
 
-**[Inference]** Needed mitigations: a configurable max-depth guard, and/or excluding self-recursive functions by default, and/or a sampling rule. `tracing`'s own overhead per span is small but not zero, and the OTLP exporter's batching is not designed for this.
+**[Inference]** Needed mitigations: a configurable max-depth guard, and/or excluding self-recursive functions by default, and/or a sampling rule. The runtime's own overhead per span is small but not zero, and the OTLP exporter's batching is not designed for this.
 
 **MVP:** detect direct self-recursion syntactically and exclude it by default; document that mutual recursion is not detected.
 
@@ -145,7 +145,7 @@ At LLVM/binary level, inlined functions have no symbol and cannot be probed at a
 
 ### 6.10 FFI
 
-`extern "C"` functions and `unsafe extern` blocks: instrumenting a Rust function called *from* C means the span has no parent context (there is no ambient `tracing` context on a foreign thread) and the subscriber may not be initialised on that thread. Instrumenting a Rust wrapper *around* a C call is fine and useful.
+`extern "C"` functions and `unsafe extern` blocks: instrumenting a Rust function called *from* C means the span has no parent context (there is no ambient OpenTelemetry/tracing context on a foreign thread) and the subscriber/SDK may not be initialised on that thread. Instrumenting a Rust wrapper *around* a C call is fine and useful.
 
 **MVP:** exclude `extern` functions; instrument Rust-side wrappers normally.
 
@@ -174,7 +174,7 @@ At LLVM/binary level, inlined functions have no symbol and cannot be probed at a
 | `#[inline]` / trivially small | ❌ excluded by default | Perturbs optimisation; low value |
 | Macro-generated items | ❌ out of scope | Invisible to source rewriting |
 | Crates with `#![forbid(unsafe_code)]` | ❌ excluded (whole crate) | `forbid` cannot be lifted by `allow`; a spliced trampoline call is `E0453`. Skip and report (§6.11) |
-| `async fn` **inside a dependency** | ⬜ Phase 2 | Needs the Tier-2 `core`-only future wrapper, which is designed but unproven ([§16.3](16-instrumentation-semantics.md), FE-2) |
+| `async fn` **inside a dependency** | ⬜ Phase 2 | Needs the Tier-2 `core`-only future wrapper (demonstrated feasible in E-8, but end-to-end splicer pipeline integration is deferred to Phase 2; see [§16.3](16-instrumentation-semantics.md), FE-13) |
 | `tokio::spawn` context propagation | ⬜ first post-MVP feature | High value, needs call-site rules |
 | Cross-process context propagation | ⬜ deferred | Needs library-specific rules |
 | Argument recording | ❌ off by default | Security: PII/secret exfiltration risk |

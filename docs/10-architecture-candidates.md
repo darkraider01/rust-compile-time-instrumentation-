@@ -57,7 +57,7 @@
 | **Required technologies** | `cargo metadata`, `RUSTC_WRAPPER`, `syn` (parsing/analysis only — no `prettyplease`), `serde`/`serde_yaml` for rules, `opentelemetry` (native traces API, incl. `FutureExt`), `opentelemetry_sdk`, `opentelemetry-otlp`. **No `tracing`, `tracing-subscriber`, or `tracing-opentelemetry`** ([Appendix D.2](appendix-d-maintainer-qa.md)) |
 | **Advantages** | Stable Rust — **confirmed by direct experiment, not merely believed**, including for crates that do not declare the runtime as a dependency (Appendix C.2). Reaches dependencies. Byte-splice output preserves comments, formatting, and line numbers exactly outside the insertion point (Appendix C.6), which is the single biggest debugging advantage of this architecture. Proven design (`otelc`). Incremental: rules can be added one at a time. Low risk of miscompilation, because a stock compiler validates everything generated. The extern `"C"` trampoline needs no `--extern`/`-L` propagation and so cannot produce duplicate-crate or dependency-cycle errors. |
 | **Disadvantages** | Cannot see macro-generated code. No type information (so rules match syntactically, not semantically). Cannot instrument `std`. Rewriting dependency source requires care with `include!`, `#[path]`, `build.rs`-generated modules, and `cfg` — mirroring the source tree (not just the entry file) is required and untested at scale (§15.5 Q1 in Appendix C). |
-| **Risks** | Cargo's rebuild fingerprint does not track `RUSTC_WRAPPER` at all (Appendix B item 2) — mitigated with an isolated `--target-dir`, not `RUSTFLAGS`. Rules matching syntactically will have false positives on shadowed names. LTO + `codegen-units=1` + `panic=abort` interaction with the trampoline is untested (Appendix C, open question Q7). |
+| **Risks** | Cargo's rebuild fingerprint does not track `RUSTC_WRAPPER` at all (Appendix B item 2) — mitigated with an isolated `--target-dir`, not `RUSTFLAGS`. Rules matching syntactically will have false positives on shadowed names. LTO + `codegen-units=1` + `panic=abort` interaction with the trampoline was verified on Windows/MSVC (E-7) and Linux/ELF (E-9), closing open question Q7/FE-1 (macOS remains open). |
 | **Runtime overhead** | Same as hand-written native-API instrumentation — one span per instrumented call. **[Revised, Appendix D.2]** There is no `STATIC_MAX_LEVEL` analogue in the native API, so the kill switch is the dedicated `--cfg` gate on generated code (which was required anyway — `STATIC_MAX_LEVEL` is global and additive, Appendix C.1). With the gate on but the SDK not recording, the residual cost is a non-recording span rather than nothing — see [R23](13-technical-risks.md). |
 | **Build overhead** | **[Hypothesis, now anchored to real data — [Appendix D.3](appendix-d-maintainer-qa.md)]** `otelc`'s measured CodSpeed figures are 5.3 s → 19.9 s (+275%) single-package and 17.4 s → 26.8 s (+54%) multi-package, i.e. a large fixed setup cost that amortises over bigger builds. **Expect roughly 1.5×–3× clean compile time**, worst on small projects. Byte-splicing avoids the re-parse-and-print cost of the original design, so we may land better; still unmeasured for Rust ([§14.3](14-evaluation-plan.md)). |
 | **Rust-version compatibility** | Any stable Rust that `syn` can parse. Effectively "recent stable and older." |
@@ -87,7 +87,7 @@
         stock codegen ──► LLVM ──► binary  (runtime crate linked, #[used]-anchored)
               │
               ▼
-        runtime crate ─► tracing / OTel ─► OTLP
+        runtime crate ─► native OTel (or tracing bridge) ─► OTLP
 ```
 
 | | |
@@ -97,7 +97,7 @@
 | **Advantages** | Sees everything, including macro-generated and derive-generated code. Type-aware, so rules can match semantically ("all methods of any type implementing `Repository`"). Pre-monomorphization, so one edit per generic definition. Can see drop points and unwind edges, enabling correct panic handling. |
 | **Disadvantages** | Nightly-pinned to a specific date, forever. **[Fact]** Unshippable to teams with an MSRV policy. Runtime linkage is fragile under LTO. Injected MIR must be valid or the compiler ICEs. Debugging is by ICE and `-Z dump-mir`. Async is *harder* here, not easier (§6.3). |
 | **Risks** | Highest of all architectures. Every nightly bump is a potential rewrite. A subtle MIR bug produces a miscompiled user program, which is far worse than a missing span. |
-| **Runtime overhead** | Comparable to A if the runtime is the same; potentially lower if we can inject cheaper primitives than a full `tracing` span |
+| **Runtime overhead** | Comparable to A if the runtime is the same; potentially lower if we can inject cheaper primitives than full tracing/OTel spans |
 | **Build overhead** | **[Hypothesis]** Lower than A (no re-parse, no re-print), but every MIR body is cloned. Must be measured. |
 | **Rust-version compatibility** | Exactly one nightly per release. |
 | **Development complexity** | High, and the complexity is *ongoing*. |

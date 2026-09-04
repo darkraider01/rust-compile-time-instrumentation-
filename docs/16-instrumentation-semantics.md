@@ -66,7 +66,7 @@ The resolution is two emission tiers with **one shared semantics**:
 
 **`FutureExt::with_context` is the normative reference.** Tier 1 emits it. Tier 2 emits source that must be observationally equivalent to it — the runtime, behind the C ABI, is the same OTel SDK either way.
 
-**[Fact]** What the [Appendix C.2](appendix-c-adversarial-review.md) experiment actually demonstrated is a **synchronous** enter/exit call spliced into an undeclared dependency. **Tier-2 async has not been demonstrated**, and this document does not claim it has. It is scheduled as [Appendix E](appendix-e-experiment-matrix.md) FE-2 and scoped out of the Phase 1 MVP ([§12.3](12-mvp-definition.md)).
+**[Fact — updated, [Appendix E](appendix-e-experiment-matrix.md) E-8]** Tier-2 async over the C ABI has now been **demonstrated feasible** on a standalone harness using a `core`-only `OtelFuture` wrapper satisfying first-poll span start and verified zero context leakage under forced single-thread interleaving (closing FE-2). However, end-to-end integration through the automated byte-range splicer pipeline is separate work ([Appendix E](appendix-e-experiment-matrix.md) FE-13), so Tier-2 async remains scoped to Phase 2 to keep the Phase 1 MVP focused on synchronous dependency coverage ([§12.3](12-mvp-definition.md)).
 
 #### The trampoline ABI
 
@@ -95,12 +95,13 @@ void     __otel_span_set_error(uint64_t handle);           /* status = Error    
 - `kind` encodes `SpanKind` (`0 = Internal`, `1 = Server`, `2 = Client`, …), first-class in the native API and one of the reasons for [ADR-001](17-decision-records.md).
 - **Deferred optimization:** passing the name/file/line tuple on every invocation is wasteful; a site-registration call returning a site id, made once per site, is the obvious improvement. Not Phase 1 — measure first ([§14.2](14-evaluation-plan.md)).
 
-#### Two constraints on spliced code that the earlier documents missed
+#### Three constraints on spliced code that the earlier documents missed
 
-**[Fact]** Calling an `extern "C"` function is an unsafe operation, and a crate carrying `#![forbid(unsafe_code)]` **cannot** be given spliced trampoline calls — `forbid` cannot be lifted by an inner `#[allow]`, so the splice is a hard compile error (`E0453`). A non-trivial share of the ecosystem uses this attribute. Two consequences:
+**[Fact]** Calling an `extern "C"` function is an unsafe operation, and a crate carrying `#![forbid(unsafe_code)]` **cannot** be given spliced trampoline calls — `forbid` cannot be lifted by an inner `#[allow]`, so the splice is a hard compile error (`E0453`). A non-trivial share of the ecosystem uses this attribute. Three consequences:
 
 1. **Phase 1 behaviour: skip the crate** and record the reason in the plan (S11). Stripping the user's own safety lint to instrument them is not an acceptable alternative.
 2. **A possible escape, to be tested, not assumed.** Rust 1.82+ allows individual items in an `unsafe extern` block to be declared `safe fn`, which are then callable without an `unsafe` block. Whether that also avoids tripping the `unsafe_code` lint is **[Open question]** — scheduled as [Appendix E](appendix-e-experiment-matrix.md) FE-3, a cheap experiment with a material coverage payoff.
+3. **Declaration placement constraint ([Appendix E](appendix-e-experiment-matrix.md) E-11):** Splicing `extern "C"` declarations at file-top breaks crates carrying `#![...]` inner attributes or `//!` module doc comments (`E0753`). Trampoline declarations MUST be **block-scoped inside the target function body**, which is valid across all Rust editions and avoids interfering with file-level attributes.
 
 **[Fact]** `unsafe extern "C" { … }` is edition-2024 syntax; older editions require a bare `extern "C" { … }` block. The wrapper already receives `--edition` in its argv ([§3.3](03-rust-compiler-pipeline.md)), so the splicer **MUST** select the declaration form per crate edition rather than emitting one shape everywhere ([R4](13-technical-risks.md)).
 
@@ -308,7 +309,7 @@ Every invariant is testable, and this table is the mapping [§12.8](12-mvp-defin
 | # | Question | Where it is tracked |
 | --- | --- | --- |
 | SQ1 | Does span-start-at-first-poll match user expectation, or is construction-to-first-poll delay information worth keeping? | [Appendix E](appendix-e-experiment-matrix.md) FE-4 |
-| SQ2 | Can a `core`-only spliced future wrapper reproduce `with_context`'s lifecycle over the C ABI, across arbitrary dependency crates and editions? | [Appendix E](appendix-e-experiment-matrix.md) FE-2; the largest unknown in the semantics |
+| SQ2 | Can a `core`-only spliced future wrapper reproduce `with_context`'s lifecycle over the C ABI, across arbitrary dependency crates and editions? | [Appendix E](appendix-e-experiment-matrix.md) FE-2 (mechanism demonstrated in E-8; end-to-end splicer pipeline integration tracked in FE-13) |
 | SQ3 | Does per-poll attach/detach through the C ABI cost materially more than in-crate `with_context`? | [Appendix E](appendix-e-experiment-matrix.md) FE-6 |
 | SQ4 | Does `unsafe extern { safe fn … }` (Rust 1.82+) permit instrumenting `#![forbid(unsafe_code)]` crates? | [Appendix E](appendix-e-experiment-matrix.md) FE-3 |
 | SQ5 | Should a cancelled span be distinguished from a completed one before users ask? | Deferred ([§16.12](#1612-cancellation)) |
