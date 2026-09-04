@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: fmt, clippy, test, build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Stable toolchain only. The workspace has no rust-toolchain.toml and
+      # declares no MSRV (Phase 0/1 explicitly targets stable Rust with no
+      # nightly requirement), so this intentionally always tracks whatever
+      # "stable" currently is rather than inventing a pinned MSRV policy.
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Registry + target caching, keyed per-OS/per-job automatically by
+      # this action. Scoped only to this repo's own ~/.cargo and top-level
+      # target/ directory — it never touches the temp directories the
+      # integration tests build fixture crates in (see integration.yml's
+      # header comment for why that matters for ADR-004).
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Build workspace
+        run: cargo build --workspace
