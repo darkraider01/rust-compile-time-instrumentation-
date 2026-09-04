@@ -1,0 +1,96 @@
+name: Integration
+
+# Exercises the real Cargo/RUSTC_WRAPPER integration path — actual `cargo`
+# and `rustc` subprocesses against real fixture crates on disk — rather
+# than unit-testing the wrapper's helper functions in isolation. That
+# coverage already runs as part of `cargo test --workspace` in ci.yml;
+# this workflow exists to make the subprocess-level proof visible and
+# explicit on its own, on every supported platform.
+#
+# ADR-004 note: the integration tests under test here build fixture crates
+# inside `tempfile::tempdir()` (OS temp dirs, auto-cleaned per test run),
+# never inside this repository's own `target/`. Swatinem/rust-cache below
+# only caches this repo's own ~/.cargo registry and top-level `target/`,
+# so nothing here can cache — and therefore nothing here can silently
+# reuse — an instrumented or uninstrumented fixture artifact across runs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wrapper-integration:
+    name: Real Cargo/rustc integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: integration
+
+      # Runs the repository's existing integration test files as-is —
+      # no new test logic is added here. `--nocapture` surfaces the real
+      # candidate-discovery output (printed via INSTRUMENT_DEBUG=1 inside
+      # the tests themselves) in the CI log, not just on failure.
+      - name: Run wrapper + Cargo integration tests
+        run: cargo test --workspace --test cargo_integration_tests --test wrapper_tests -- --nocapture
+
+      # Documents precisely what the tests above do and do not prove.
+      # Written per-matrix-leg deliberately: process spawning, path
+      # resolution (Path::is_absolute()/join() in wrapper.rs), and
+      # RUSTC_WRAPPER's argv contract are exactly the things that could
+      # differ across Windows/Linux/macOS, so each OS gets its own
+      # recorded result rather than one platform collapsed away.
+      #
+      # `shell: bash` is used explicitly (Git Bash on windows-latest,
+      # native bash on ubuntu/macos) so this step's heredoc syntax is
+      # identical across the matrix instead of relying on the default
+      # shell, which is pwsh on Windows and bash elsewhere.
+      - name: Document what this run proves
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## What this workflow proves on \`${{ matrix.os }}\`"
+            echo
+            echo "Ran the repository's existing real-subprocess integration"
+            echo "tests (\`cargo_integration_tests.rs\`, \`wrapper_tests.rs\`)"
+            echo "rather than duplicating their logic. These spawn real"
+            echo "\`cargo\`/\`rustc\` processes and inspect the real filesystem"
+            echo "— not simulated argv."
+            echo
+            echo "| # | Claim | Status | Evidence |"
+            echo "|---|-------|--------|----------|"
+            echo "| 1 | Cargo invokes the wrapper | Proven | \`test_cargo_wrapped_build_and_byte_preservation_invariant\` and \`test_cli_isolated_target_dir_wiring\` set \`RUSTC_WRAPPER\` on a real \`cargo check\`/CLI build |"
+            echo "| 2 | Wrapper delegates to real rustc | Proven | \`test_wrapper_argument_forwarding_and_exit_code\` (real \`rustc -vV\` exits 0) and \`test_wrapper_failing_exit_code_propagation\` (real invalid flag exits non-zero) |"
+            echo "| 3 | Wrapper does not recursively invoke itself | Partially proven | \`test_wrapper_recursion_guard\` proves the guard branch behaves correctly *when the env var is already set*. It does **not** prove the var is ever organically set by a genuine nested invocation (e.g. a build script shelling out to \`cargo build\`) — a known, previously-documented gap, out of scope for this CI task |"
+            echo "| 4 | Source discovery works | Partially proven | Proven for single-file crates (the fixture used here). Multi-file \`mod foo;\` discovery is not yet implemented or tested — known gap, out of scope here |"
+            echo "| 5 | AST analysis runs | Proven | Real candidate output (e.g. \`compute\`, \`async_task\`, \`Controller::handle\`, \`main\`) captured from an actual wrapped \`cargo check\` — see the previous step's log |"
+            echo "| 6 | Candidate discovery works | Proven | Same evidence as (5) |"
+            echo "| 7 | Source remains byte-for-byte unchanged | Proven | \`test_cargo_wrapped_build_and_byte_preservation_invariant\` hashes/compares every fixture source file before and after a real wrapped build |"
+            echo "| 8 | Isolated \`target/instrumented\` directory preserved | Partially proven | Proven for the \`cargo instrument\` CLI path (\`test_cli_isolated_target_dir_wiring\`). **Not** enforced when \`RUSTC_WRAPPER\` is set directly, bypassing the CLI — and \`test_cargo_wrapped_build_and_byte_preservation_invariant\` itself exercises exactly that unprotected path today. Known, previously-documented gap (isolation is currently CLI-only), not fixed by this CI task |"
+            echo
+            echo "This workflow validates the *existing* implementation as"
+            echo "committed; it does not modify it and does not assert"
+            echo "coverage the current tests don't actually provide."
+          } >> "$GITHUB_STEP_SUMMARY"
