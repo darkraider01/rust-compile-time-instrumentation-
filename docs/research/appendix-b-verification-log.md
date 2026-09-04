@@ -1,4 +1,4 @@
-← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md) · [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) →
+← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../../README.md) · [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) →
 
 ---
 
@@ -54,7 +54,7 @@ Affected sections: [§2.9](02-otelc-go.md).
 
 **[SUPERSEDED — [Appendix C.3](appendix-c-adversarial-review.md) / [ADR-004](17-decision-records.md).]** The finding above is correct and the prescription drawn from it was not. `RUSTFLAGS` *works*, but it is **global**: changing it evicts every crate in the workspace and dependency graph, build scripts included, and as an environment variable it **clobbers** `[build] rustflags` in `.cargo/config.toml` rather than merging — silently discarding a user's sanitizer, target, and link flags. **The adopted mitigation is an isolated `--target-dir`** (e.g. `target/instrumented`), separately confirmed by experiment ([Appendix E](appendix-e-experiment-matrix.md) E-6): the wrapper runs for every crate because a fresh directory has no artifacts to reuse, and the user's default `target/`, flags, and config are untouched. Worth recording as a process point: *"it works"* and *"it is the right mechanism"* are different findings, and this item established only the first. What is unchanged is the urgency — the mitigation, whichever one, must ship in the first working version ([§13, R1](13-technical-risks.md), [§15.3](15-final-recommendation.md)).
 
-Affected sections: [§12.9 O1](12-mvp-definition.md), [§13, R1](13-technical-risks.md), [§15.5 Q1](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](../README.md) confidence table.
+Affected sections: [§12.9 O1](12-mvp-definition.md), [§13, R1](13-technical-risks.md), [§15.5 Q1](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](../../README.md) confidence table.
 
 ---
 
@@ -100,7 +100,7 @@ Affected sections: [§4.5](04-rust-instrumentation-landscape.md), [§7.4–7.5](
 
 **[Superseded — [Appendix D.2](appendix-d-maintainer-qa.md), maintainer Q&A round.]** The "considered departure" recorded above lasted one review round. Its central supporting reason — async correctness via `Instrumented` — was refuted directly by OTel Rust maintainer Scott Gerring: `opentelemetry::trace::FutureExt::with_context` attaches per-`poll()` and detaches on yield, so the native API was never the incorrect choice this item assumed. §5.4 now generates the native OTel API and **follows** upstream guidance. Of the three reasons cited in this paragraph, one is refuted (async), one was already demoted in [Appendix C.1](appendix-c-adversarial-review.md) (`STATIC_MAX_LEVEL` is global, never per-tool), and one survives as a real but non-decisive cost (ecosystem convergence with `tokio`/`hyper`/`axum`).
 
-Affected sections: [§5.2](05-otel-rust.md) (substantially rewritten), [§5.4](05-otel-rust.md) (recommendation reasoning and costs both updated), [§15.5 Q10](15-final-recommendation.md), [§1.5](../README.md) confidence table (confidence revised down from "Medium-high" to "Medium").
+Affected sections: [§5.2](05-otel-rust.md) (substantially rewritten), [§5.4](05-otel-rust.md) (recommendation reasoning and costs both updated), [§15.5 Q10](15-final-recommendation.md), [§1.5](../../README.md) confidence table (confidence revised down from "Medium-high" to "Medium").
 
 ---
 
@@ -159,7 +159,7 @@ Affected sections: [§4.5](04-rust-instrumentation-landscape.md), [§7.5](07-ebp
 
 **Consequence:** This replaces a hedge ("syn loses formatting") with a specific, quantified cost: **complete loss of non-doc comments, plus a full-file reformat, on every touched file, always.** This does not block Architecture A — none of the losses are semantic, and the output still compiles — but it is a real, now-documented user-experience cost that must be disclosed prominently (a user whose comments silently vanish will distrust the tool regardless of whether the binary is correct), and it sharpens the remaining open question: whether `ra_ap_syntax`'s lossless CST is worth adopting specifically to avoid this, now that the `syn`+`prettyplease` baseline it would be compared against is known rather than assumed.
 
-Affected sections: [§12.9 O2](12-mvp-definition.md), [§13, R11](13-technical-risks.md), [§15.5 Q3](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](../README.md) confidence table.
+Affected sections: [§12.9 O2](12-mvp-definition.md), [§13, R11](13-technical-risks.md), [§15.5 Q3](15-final-recommendation.md), [§15.6](15-final-recommendation.md), [§1.5](../../README.md) confidence table.
 
 ---
 
@@ -196,4 +196,4 @@ Two of these eight (items 2 and 7) were resolved by building and running actual 
 
 ---
 
-← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../README.md) · [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) →
+← [Appendix A — Sources](appendix-a-sources.md) · [Contents](../../README.md) · [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) →

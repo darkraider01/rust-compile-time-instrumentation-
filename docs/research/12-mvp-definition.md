@@ -1,4 +1,4 @@
-← [Recommended Architecture](11-recommended-architecture.md) · [Contents](../README.md) · [Technical Risks](13-technical-risks.md) →
+← [Recommended Architecture](11-recommended-architecture.md) · [Contents](../../README.md) · [Technical Risks](13-technical-risks.md) →
 
 ---
 
@@ -265,4 +265,4 @@ The MVP is done when all of these hold. **[§16](16-instrumentation-semantics.md
 
 ---
 
-← [Recommended Architecture](11-recommended-architecture.md) · [Contents](../README.md) · [Technical Risks](13-technical-risks.md) →
+← [Recommended Architecture](11-recommended-architecture.md) · [Contents](../../README.md) · [Technical Risks](13-technical-risks.md) →

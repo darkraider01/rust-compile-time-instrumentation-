@@ -1,4 +1,4 @@
-← [Final Recommendation](15-final-recommendation.md) · [Contents](../README.md) · [Architecture Decision Records](17-decision-records.md) →
+← [Final Recommendation](15-final-recommendation.md) · [Contents](../../README.md) · [Architecture Decision Records](17-decision-records.md) →
 
 ---
 
@@ -8,7 +8,7 @@
 
 **This document is the correctness oracle.** [§12.8](12-mvp-definition.md)'s test suite exists to verify the invariants below, and [§14.1](14-evaluation-plan.md) measures against them. A behaviour not specified here is not a bug when it differs between builds — it is an unspecified behaviour, and that distinction is deliberate ([§16.15](#1615-deliberately-unspecified-in-phase-1)).
 
-**Reading convention.** **MUST** / **MUST NOT** are invariants a Phase 1 build has to satisfy to be considered correct. **SHOULD** is a default that a rule may override. Evidence tags follow the [README convention](../README.md); a shape marked **[Design]** is a decision made here and *not yet* experimentally validated.
+**Reading convention.** **MUST** / **MUST NOT** are invariants a Phase 1 build has to satisfy to be considered correct. **SHOULD** is a default that a rule may override. Evidence tags follow the [README convention](../../README.md); a shape marked **[Design]** is a decision made here and *not yet* experimentally validated.
 
 ---
 
@@ -318,4 +318,4 @@ Every invariant is testable, and this table is the mapping [§12.8](12-mvp-defin
 
 ---
 
-← [Final Recommendation](15-final-recommendation.md) · [Contents](../README.md) · [Architecture Decision Records](17-decision-records.md) →
+← [Final Recommendation](15-final-recommendation.md) · [Contents](../../README.md) · [Architecture Decision Records](17-decision-records.md) →

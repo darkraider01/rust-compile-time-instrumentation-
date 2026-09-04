@@ -1,4 +1,4 @@
-← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](../README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →
+← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](../../README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →
 
 ---
 
@@ -111,4 +111,4 @@ That is the same enter-on-poll / exit-on-yield lifecycle `tracing::Instrument` i
 
 ---
 
-← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](../README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →
+← [Existing Rust Instrumentation Landscape](04-rust-instrumentation-landscape.md) · [Contents](../../README.md) · [Rust-Specific Instrumentation Challenges](06-rust-specific-challenges.md) →

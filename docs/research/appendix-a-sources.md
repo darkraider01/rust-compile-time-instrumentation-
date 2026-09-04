@@ -1,4 +1,4 @@
-← [Architecture Decision Records](17-decision-records.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
+← [Architecture Decision Records](17-decision-records.md) · [Contents](../../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
 
 ---
 
@@ -124,4 +124,4 @@ Referenced upstream artifacts:
 
 ---
 
-← [Architecture Decision Records](17-decision-records.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
+← [Architecture Decision Records](17-decision-records.md) · [Contents](../../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →

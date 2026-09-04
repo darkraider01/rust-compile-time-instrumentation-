@@ -1,4 +1,4 @@
-← [Evaluation Plan](14-evaluation-plan.md) · [Contents](../README.md) · [Instrumentation Semantics](16-instrumentation-semantics.md) →
+← [Evaluation Plan](14-evaluation-plan.md) · [Contents](../../README.md) · [Instrumentation Semantics](16-instrumentation-semantics.md) →
 
 ---
 
@@ -172,4 +172,4 @@ What such a paper would need, and what it already has:
 
 ---
 
-← [Evaluation Plan](14-evaluation-plan.md) · [Contents](../README.md) · [Instrumentation Semantics](16-instrumentation-semantics.md) →
+← [Evaluation Plan](14-evaluation-plan.md) · [Contents](../../README.md) · [Instrumentation Semantics](16-instrumentation-semantics.md) →

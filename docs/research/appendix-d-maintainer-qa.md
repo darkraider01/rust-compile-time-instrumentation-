@@ -1,4 +1,4 @@
-← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../README.md) · [Appendix E — Experiment Matrix](appendix-e-experiment-matrix.md) →
+← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../../README.md) · [Appendix E — Experiment Matrix](appendix-e-experiment-matrix.md) →
 
 ---
 
@@ -128,4 +128,4 @@ Closing the eBPF branch closes [Appendix C.9](appendix-c-adversarial-review.md) 
 
 ---
 
-← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../README.md) · [Appendix E — Experiment Matrix](appendix-e-experiment-matrix.md) →
+← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../../README.md) · [Appendix E — Experiment Matrix](appendix-e-experiment-matrix.md) →

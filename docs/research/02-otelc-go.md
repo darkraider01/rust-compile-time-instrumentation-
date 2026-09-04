@@ -1,4 +1,4 @@
-← [Executive Summary](../README.md) · [Contents](../README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →
+← [Executive Summary](../../README.md) · [Contents](../../README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →
 
 ---
 
@@ -185,4 +185,4 @@ Two things this confirms and one it corrects:
 
 ---
 
-← [Executive Summary](../README.md) · [Contents](../README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →
+← [Executive Summary](../../README.md) · [Contents](../../README.md) · [The Rust Compilation Pipeline](03-rust-compiler-pipeline.md) →
