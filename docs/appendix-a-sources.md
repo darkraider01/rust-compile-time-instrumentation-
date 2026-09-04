@@ -4,7 +4,7 @@
 
 ## Appendix A — Primary sources consulted
 
-Sources from the original research pass (2026-09-04) and the subsequent verification pass (2026-09-04, same day — see [Appendix B](appendix-b-verification-log.md) for what each new source resolved).
+Sources from the original research pass (2026-09-04), the subsequent verification pass (2026-09-04, same day — see [Appendix B](appendix-b-verification-log.md) for what each new source resolved), the adversarial review round ([Appendix C](appendix-c-adversarial-review.md)), and the maintainer Q&A round ([Appendix D](appendix-d-maintainer-qa.md)).
 
 **OpenTelemetry Go compile-time instrumentation**
 - https://github.com/open-telemetry/opentelemetry-go-compile-instrumentation
@@ -77,6 +77,20 @@ Sources from the original research pass (2026-09-04) and the subsequent verifica
 - https://github.com/rust-lang/rust-analyzer/issues/20275 (a related but distinct wrapper/cache-invalidation bug, ruled not directly applicable)
 - https://doc.rust-lang.org/nightly/nightly-rustc/cargo/core/compiler/fingerprint/ (Cargo's own fingerprint module docs)
 - Direct experiment: a native Rust `RUSTC_WRAPPER` binary built and run against a scratch crate on the local toolchain (`rustc 1.97.1`, `cargo 1.97.1`, Windows) — see Appendix B for the full protocol and results
+
+**Maintainer correspondence (Q&A round — see [Appendix D](appendix-d-maintainer-qa.md))**
+
+Direct answers from maintainers, obtained in the OpenTelemetry community Slack. These are primary sources of a different kind from the rest of this list: not published documents, and not independently re-checkable by a reader, so each claim sourced to them is attributed by name and SIG in the text.
+
+- **Scott Gerring** (`#otel-rust`) — on async future handling in the native OTel API vs. `tracing`, and on `tracing-opentelemetry`'s context-synchronisation bridge. Reversed the §5.4 emitter decision (Appendix D.2)
+- **Xabier Martinez** (`#otel-go`) — `otelc` CodSpeed compile-time benchmark figures, the scope of what `otelc` benchmarks (compile time, not runtime latency), and the automated latest-version compatibility workflow (Appendix D.3)
+- **Nikola Grcevski** (`#otel-ebpf`) — confirmation that OBI has zero application-level uprobes for Rust and falls back to generic socket kprobes (Appendix D.4)
+- **Giuseppe Ognibene** (`#otel-ebpf`) — the working Tokio async task reconstruction / context propagation prototype and its remaining edge cases (Appendix D.4)
+
+Referenced upstream artifacts:
+- `opentelemetry::trace::FutureExt` — `with_context` / `with_current_context` (the primary-source basis for Appendix D.2, independent of the maintainer's word)
+- OBI issue **#1096** — "Rust Tokio context propagation"
+- `otelc` `.github/workflows/test-latestlibrun.yaml`, issue **#406** (the workflow), issue **#565** (an auto-filed version-range tracking issue)
 
 **Source-rewriting fidelity (verification pass — hands-on experiment)**
 - Direct experiment: a `syn` 2 (full features) + `prettyplease` 0.2 round-trip tool, built locally and run against a representative Rust source sample exercising line comments, doc comments, attributes, `cfg`, derive, generics, `async fn`, `macro_rules!`, and irregular formatting — see [Appendix B](appendix-b-verification-log.md) item 7 for the full sample, output, and diff

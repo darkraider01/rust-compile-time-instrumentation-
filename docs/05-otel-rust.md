@@ -4,6 +4,7 @@
 
 ## 5. OpenTelemetry Rust — Current Architecture and What We Should Target
 
+**[Decision reversed after the maintainer Q&A round — see [Appendix D.2](appendix-d-maintainer-qa.md).** This section previously recommended generating `tracing` instrumentation, resting primarily on the claim that only `tracing` models async future interleaving correctly. OpenTelemetry Rust maintainer Scott Gerring disproved that claim directly: `opentelemetry::trace::FutureExt::with_context` already wraps any `Future`, attaching the context on each `poll()` and detaching on yield across threads — the same lifecycle as `tracing::Instrument`. **The tool now generates native OpenTelemetry API calls.** §5.3 and §5.4 below are rewritten accordingly; §5.1 and §5.2 are unchanged as historical context, with their now-superseded conclusions marked.]**
 
 ### 5.1 Component maturity
 
@@ -23,8 +24,8 @@
 **[Inference — important and uncomfortable]** This is the inverse of Go, Java, and most other OTel implementations, where traces stabilised first. **The exact signal our tool would generate — spans — is the one part of OpenTelemetry Rust that is still Beta.** Practical consequences:
 
 1. We must expect breaking changes in the traces API/SDK across `opentelemetry` minor versions during the project's life.
-2. Any code we *generate* should depend on the traces API as indirectly as possible, so that an `opentelemetry` bump does not require regenerating or reshipping instrumentation.
-3. This is a further argument for generating `tracing` calls: `tracing` 0.1.x has been API-stable for years, and the churn is absorbed by `tracing-opentelemetry` — a crate someone else maintains.
+2. Any code we *generate* should keep its contact surface with the traces API as small as possible, so that an `opentelemetry` bump touches few generated constructs.
+3. ~~This is a further argument for generating `tracing` calls: `tracing` 0.1.x has been API-stable for years, and the churn is absorbed by `tracing-opentelemetry` — a crate someone else maintains.~~ **[Superseded — [Appendix D.2](appendix-d-maintainer-qa.md).]** We now generate against the Beta traces API directly, with no bridge crate absorbing churn on our behalf. That is a real cost of the reversal and is why [R13](13-technical-risks.md)'s mitigation was rewritten: the answer is a tested version pair, a narrow generated-code surface (span start, attribute set, status set, `with_context`), and the emitter seam ([§11.4](11-recommended-architecture.md)) — not an intermediary crate. The offsetting gain is that the intermediary being removed is one its own maintainer describes as *"super hairy / hot-path-y / full of terror."*
 
 ### 5.2 The two-API problem — RESOLVED since the original research pass
 
@@ -43,13 +44,26 @@
 
 citing `tracing`'s lack of span kind, links, and remote-parent support as the reason. `docs/traces.md` is itself marked **Work-In-Progress** (traces remain Beta), while the companion `docs/logs.md` is marked Stable.
 
-**[Inference — a real tension, not swept aside]** So the picture is more complicated than "both APIs survive, therefore our choice is safe." Both APIs *do* survive, but the project maintainers' own current advice for *new* code is the opposite of what we recommend in §5.4. That recommendation is not wrong on its technical merits (§5.4 restates and re-weighs it below), but it is now a **considered disagreement with upstream guidance**, not merely "whichever API the ecosystem happens to use," and should be presented to stakeholders as such.
+**[Resolved by the maintainer Q&A round — see [Appendix D.2](appendix-d-maintainer-qa.md).]** This paragraph previously recorded a "considered disagreement with upstream guidance": both APIs survive, but the maintainers advise the OTel API for new code, and we recommended `tracing` anyway. **That disagreement is now withdrawn.** Its load-bearing technical argument was async lifecycle handling, and that argument was refuted directly by a maintainer (§5.3). We follow `docs/traces.md` and generate the OpenTelemetry Tracing API. Note what does *not* change: #1571 resolved as "maintain both," so `tracing` is not deprecated and users who instrument their own code with it are not stranded — our generated spans and their `tracing` spans simply meet at the SDK rather than in one span tree, which is the same reconciliation any mixed-API Rust application already performs.
 
 ### 5.3 Span lifecycle, context propagation, semantic conventions
 
 **Span lifecycle.** In `tracing`, a span is created, then *entered* and *exited* possibly many times, and finally closed when the last handle is dropped. Entering/exiting is not the same as starting/ending. `tracing-opentelemetry` maps a `tracing` span's full lifetime (creation → close) onto an OTel span's start → end; the multiple enter/exit pairs of an async span become `busy`/`idle` timing rather than separate spans.
 
-**[Inference]** This mapping is *the* reason `tracing` is the right target for async Rust. An OTel span has one start and one end. An async Rust function's execution is interleaved: it is polled, suspends, is polled again on possibly a different thread. Only a model with a separate "entered" concept can represent that faithfully, and `tracing` + `tracing-opentelemetry` already implement it. Rebuilding this on the raw OTel API would mean rebuilding `tracing-opentelemetry`.
+**[Refuted — see [Appendix D.2](appendix-d-maintainer-qa.md).** The original text argued that this mapping is *the* reason `tracing` is the right target for async Rust, and that reproducing it on the OTel API "would mean rebuilding `tracing-opentelemetry`." That is wrong, and it was the single most consequential error in this document.]**
+
+**[Fact]** The OpenTelemetry Rust API already ships the equivalent mechanism. `opentelemetry::trace::FutureExt` provides `with_context(cx)` and `with_current_context()`, which wrap any `Future` and:
+
+- call `attach()` on the context at the start of every `poll()`, so the span's context is current on whichever worker thread happens to poll it;
+- detach when the future yields, so the context is *not* current while the task is suspended and cannot leak into unrelated work on that thread.
+
+That is the same enter-on-poll / exit-on-yield lifecycle `tracing::Instrument` implements. The distinction that mattered — "an OTel span has one start and one end, but an async function's execution is interleaved" — is real, and both crates answer it the same way: **the span's start and end bracket the whole logical operation, while context attachment tracks the interleaving.** Nothing needs rebuilding.
+
+**Maintainer, Scott Gerring (`#otel-rust`):** *"If your goal is compile-time instrumentation, I don't see async future handling as a reason to favour the tracing api."*
+
+**[Inference]** What is genuinely lost by not going through `tracing` is the `busy`/`idle` split, which `tracing-opentelemetry` synthesises from enter/exit pairs and the OTel data model has no field for. That is a nice-to-have diagnostic, not a correctness property — and §5.4's original framing treated its absence as *silently wrong span durations*, which was never true of `with_context`.
+
+**Generated form.** An instrumented `async fn` therefore wraps its body's future in `.with_context(cx)` rather than receiving an `#[instrument]` attribute. A synchronous function keeps the RAII-guard shape, where a guard held to end-of-scope is correct precisely because there is no suspension point to hold it across ([R5](13-technical-risks.md) is unchanged in substance: never hold an attach guard across an `.await`, in either API).
 
 **Context propagation.** OTel Rust provides `Context`, `TextMapPropagator`, and a W3C TraceContext propagator; injection/extraction at process boundaries is manual — you call `propagator.inject_context(...)` on outbound requests and `extract(...)` on inbound ones. **[Fact]** `tracing-opentelemetry`'s `OpenTelemetrySpanExt` exposes `set_parent`/`context` so a remote parent can be attached to a `tracing` span.
 
@@ -63,28 +77,35 @@ citing `tracing`'s lack of span kind, links, and remote-parent support as the re
 
 > **Should compiler instrumentation generate `tracing` instrumentation, directly use OpenTelemetry APIs, or use another abstraction?**
 
-**Recommendation, held with revised (medium, not high) confidence after verification: generate `tracing` instrumentation — specifically `#[tracing::instrument]` where possible, and explicit `tracing::span!` + guard where not. Do not generate raw OTel API calls. Do not invent a third abstraction.**
+**Recommendation — REVERSED after the maintainer Q&A round ([Appendix D.2](appendix-d-maintainer-qa.md)): generate native OpenTelemetry API calls. Wrap instrumented futures with `opentelemetry::trace::FutureExt::with_context`. Do not generate `tracing` spans. Do not invent a third abstraction.**
 
-**This recommendation now knowingly goes against the OpenTelemetry Rust project's own current published guidance** ("For new code, prefer the OpenTelemetry Tracing API directly," `docs/traces.md`, §5.2). That guidance is aimed at humans writing manual instrumentation, where OTel's richer model (span kind, links, remote-parent support) is worth the API's Beta-status risk.
+**This recommendation now follows the OpenTelemetry Rust project's own published guidance** ("For new code, prefer the OpenTelemetry Tracing API directly," `docs/traces.md`, §5.2) rather than diverging from it.
 
-**[Revised after the adversarial review round — see [Appendix C.5/S5](appendix-c-adversarial-review.md).** The gap this guidance is protecting against is narrower than the original research assumed. `tracing-opentelemetry` already bridges most of the "richer model": `otel.kind`, `otel.status_code`, and `otel.name` are documented special fields in its source (`layer.rs`) that map directly onto OTel span kind, status, and name, and `OpenTelemetrySpanExt::set_parent` supports remote-parent propagation. **The one capability genuinely missing from the `tracing` bridge is span links.** So the divergence from upstream guidance is real but smaller than first framed — it is specifically "we forgo span links," not "we forgo span kind, links, and remote-parent support," as the original phrasing implied.]** Our situation is different in a way that we believe still justifies the divergence — argued below — but this is a real trade-off being made against upstream advice, not an uncontested default, and should be revisited if opentelemetry-rust's traces API stabilises before our Phase 1 implementation begins.
+**Why it reversed.** The previous recommendation rested on six reasons. The first was load-bearing and is now refuted; the rest do not carry the decision without it.
 
-Reasoning:
+| # | Original reason for `tracing` | Status after [Appendix D.2](appendix-d-maintainer-qa.md) |
+| --- | --- | --- |
+| 1 | Async semantics are solved in `tracing` "and nowhere else"; raw OTel spans would silently include suspended time in their duration | **Refuted, by a maintainer, on primary evidence.** `FutureExt::with_context` attaches on each `poll()` and detaches on yield (§5.3). Scott Gerring: *"I don't see async future handling as a reason to favour the tracing api."* The claimed silent-wrongness never applied to `with_context` |
+| 2 | The traces API is Beta; `tracing` 0.1 is not | **Still true, and now a cost we accept.** It is a version-pinning problem ([R13](13-technical-risks.md)), not a correctness one. Reason 1 was the only correctness argument |
+| 3 | Ecosystem convergence — self-instrumented libraries emit `tracing` spans, so ours nest with theirs for free | **Weakened.** Real, but it cuts both ways: mixed-API applications already reconcile at the SDK, and the reconciliation `tracing-opentelemetry` performs to make that "free" nesting work is the very component its maintainer calls *"super hairy / hot-path-y / full of terror"* |
+| 4 | Compile-time removability via statically disabled levels | **Mostly already withdrawn in [Appendix C.1](appendix-c-adversarial-review.md)** — `STATIC_MAX_LEVEL` is global and additive, so it was never a per-tool kill switch, and a dedicated `--cfg` gate was required regardless. The residual real loss is tracked as [R23](13-technical-risks.md) |
+| 5 | Debuggability — a generated `#[instrument]` attribute is readable | **Neutral.** A generated `let _span = tracer.start(...)` / `.with_context(cx)` is equally readable, and unlike an attribute macro it needs no `cargo expand` to see what it does |
+| 6 | `tracing-opentelemetry` absorbs OTel API churn for us | **Inverted.** We were treating an unfamiliar hot-path component as free maintenance relief. Removing it removes both the churn shield and the hazard; see reason 2 for how the churn is handled instead |
 
-1. **Async semantics are already solved there and nowhere else.** `#[instrument]` on an `async fn` produces an `Instrumented` future with correct enter/exit-per-poll behaviour **[Fact]**. Generating raw OTel spans in an async function would produce a span whose "duration" includes every period the task was suspended, silently and wrongly. Getting this right ourselves means reimplementing `tracing-opentelemetry`.
-2. **The traces API we would target directly is Beta; `tracing` 0.1 is not.** **[Fact]** Generating against the less stable of two available APIs is the wrong risk trade.
-3. **Ecosystem convergence.** Libraries that *do* instrument themselves (`tokio`, `hyper`, `axum`, `sqlx`, `tower-http`) emit `tracing` spans. If we generate `tracing`, our spans nest correctly inside and around theirs for free. If we generate raw OTel spans, we create two parallel trees that `tracing-opentelemetry` must reconcile.
-4. **Compile-time removability.** Spans at statically disabled `tracing` levels are compiled out entirely, at zero binary/runtime cost **[Fact]** — but this is not, as originally stated, a free *per-tool* kill switch: `STATIC_MAX_LEVEL` is global and additive, so disabling it silences the user's own hand-written spans too (see [Appendix C.1](appendix-c-adversarial-review.md)). The mechanism (zero-cost compiled-out disabled spans) is still a real advantage of targeting `tracing`; a tool-specific on/off control needs its own dedicated `--cfg` gate on top of it.
-5. **Debuggability.** Generated `#[instrument]` attributes are readable Rust that a developer can inspect, `cargo expand`, and reason about. Generated raw span plumbing is not.
-6. **Someone else maintains the hard part.** `tracing-opentelemetry` absorbs OTel API churn, `Context` mapping, and sampling interaction. That is a large, ongoing maintenance load we get for free.
+**What the reversal buys:**
 
-**Costs of this choice, stated honestly — updated post-verification:**
+1. **Alignment with upstream guidance** instead of a documented disagreement with it (§5.2).
+2. **Three fewer injected dependencies** — `tracing`, `tracing-subscriber`, `tracing-opentelemetry` all leave the injected set ([§12.4](12-mvp-definition.md)). This closes [R14](13-technical-risks.md) (the deliberate version offset between `tracing-opentelemetry` and `opentelemetry`, an active resolution hazard for a tool that injects both) and removes the bridge's hot-path context synchronisation.
+3. **Full OTel expressiveness.** Span kinds (`Server`, `Client`, `Internal`) and span **links** become first-class. Links were the one capability [Appendix C.1](appendix-c-adversarial-review.md) confirmed `tracing` genuinely cannot express, and they are exactly what a `tokio::spawn` "this task was spawned from that one" relationship needs in Phase 2.
 
-- We inherit `tracing`'s model, including its `busy`/`idle` semantics, which are not what an OTel-native user necessarily expects.
-- We add a dependency on a bridge crate whose version numbering is deliberately offset from `opentelemetry`'s **[Fact]**, which is an ongoing dependency-resolution hazard for a tool that injects both.
-- **We are explicitly not following the project's own current recommendation for new code** (§5.2), though the gap is narrower than first described — see the revision above: it is specifically about span links, not span kind/status/remote-parent, which `tracing-opentelemetry` already bridges. Reasons 2 and 6 (Beta traces API, `tracing-opentelemetry` absorbing churn) are arguments about *our* risk as tool authors generating code automatically at scale; `docs/traces.md`'s reasoning is about expressiveness for a human writing one span by hand. We believe the risk argument dominates for an auto-instrumentation tool specifically — but this is a judgment call under genuine disagreement with the upstream project, not a settled question, and it should be re-examined once traces stabilise. **#1571 itself no longer poses this risk** — it resolved to "maintain both," not to deprecating `tracing` — so the residual risk is narrower than originally scoped: not "our choice becomes unsupported," but "our choice becomes non-idiomatic by the project's own stated preference, for the one capability (span links) it does not bridge."
+**Costs of this choice, stated honestly:**
 
-**[Inference]** The right structural hedge is to make the *emitted telemetry backend* a rule-level choice from the start — i.e. the rule says "create a span here with these attributes," and a pluggable emitter decides whether that becomes `#[instrument]`, a `tracing::span!`, or an OTel call. That costs almost nothing to design in on day one and costs a rewrite to retrofit. It is *not* a third abstraction for users; it is one internal seam. **[Added — see [Appendix C.7](appendix-c-adversarial-review.md)]** `fastrace` (active, ~6.8M downloads, with `fastrace-opentelemetry` for OTLP export and `fastrace-tracing` for capturing spans from `tracing`-instrumented libraries) is a legitimate fourth backend for this seam if generated-span volume ever makes `tracing`'s per-span overhead a measured problem — not a Phase 1 default, but worth keeping the seam open for.
+- **We generate against a Beta API with no bridge absorbing breaking changes.** Mitigation is a tested `opentelemetry` version pair, a deliberately narrow generated-code surface, and the emitter seam ([R13](13-technical-risks.md)).
+- **No `STATIC_MAX_LEVEL`-equivalent.** The native API has no statically-compiled-out span level. The `--cfg` gate on generated code still deletes call sites at compile time, but the "instrumented build with instrumentation runtime-disabled" configuration now costs a non-recording span rather than nothing ([R23](13-technical-risks.md), open question D-Q3).
+- **No `busy`/`idle` split.** `tracing-opentelemetry` synthesises it; the OTel data model has no field for it (§5.3). A diagnostic loss, not a correctness one.
+- **Our spans and a user's own `tracing` spans meet at the SDK, not in one tree.** Users already instrumenting with `tracing` keep working — #1571 resolved as "maintain both" — but nesting across the two is their existing bridge's problem, not something we provide.
+
+**[Inference]** The emitter seam ([§11.4](11-recommended-architecture.md)) survives this reversal intact, and this round is the argument for it: a rule says "create a span here with these attributes," and a pluggable emitter decides what code that becomes. Had the seam not been the plan, this reversal would have been a rewrite instead of an emitter swap. It keeps a `tracing` emitter available for users who explicitly want their generated spans in their existing `tracing` tree, and keeps `fastrace` ([Appendix C.7](appendix-c-adversarial-review.md)) available if per-span cost is ever measured to be a problem — but the **default emitter is now the native OTel API**.
 
 ---
 

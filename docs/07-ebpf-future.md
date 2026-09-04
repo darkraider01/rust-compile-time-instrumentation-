@@ -4,8 +4,19 @@
 
 ## 7. eBPF as a Future Extension
 
+> ### ⛔ BRANCH CLOSED — resolved upstream, 2026-09-04
+>
+> **[Fact — see [Appendix D.4](appendix-d-maintainer-qa.md).]** OBI maintainer **Giuseppe Ognibene has a working prototype** of Tokio async task reconstruction and context propagation in eBPF, tracked under **OBI issue #1096 ("Rust Tokio context propagation")**, currently in final testing against task migration across worker threads and pointer reuse — the exact edge cases §7.4 and [Appendix C.9](appendix-c-adversarial-review.md) Q3 predicted would be hardest.
+>
+> **This resolves H2**, the load-bearing hypothesis of this entire section, and **formally triggers the [§15.6](15-final-recommendation.md) pivot condition** ("abandon the eBPF branch if OBI ships semantic Rust function-level instrumentation upstream"). Consequences:
+>
+> - **Architectures C and D are abandoned** ([§10](10-architecture-candidates.md)). No eBPF loader, no sidecar, no competing implementation.
+> - **We collaborate rather than compete** — review Giuseppe's upstream PR when it opens and contribute the Rust async-semantics analysis in [§6.3](06-rust-specific-challenges.md) and §7.4 below, which bears directly on the edge cases still in testing.
+> - **The project focuses 100% on Architecture A**, whose scope is now cleanly complementary: compile-time instrumentation serves **the platforms eBPF cannot reach at all** — macOS, Windows, unprivileged containers, non-root deployments — no matter how well #1096 works.
+>
+> **This section is retained as a research record**, not a plan. Its analysis of what the compiler knows that a binary does not (§7.2), of v0 mangling (§7.3), and of async state-machine structure (§7.4) is the material worth contributing upstream. Read the hypotheses in §7.5 as answered, not as pending work.
 
-**Scope note: this section is investigation only. No eBPF work is proposed for Phase 1 or Phase 2.**
+**Scope note: this section is investigation only. No eBPF work is proposed for any phase of this project.**
 
 ### 7.1 The relevant technology
 
@@ -95,24 +106,27 @@ The information an eBPF tool most needs for async Rust — "these poll invocatio
 ### 7.5 Established fact vs. hypothesis: a clean split
 
 **Established facts:**
-- **[Confirmed in verification, previously stated more weakly]** OBI's Rust support is *not* "Go with weaker propagation" — it is architecturally the Generic Tracer path (kprobes on kernel socket syscalls + socket filters), the same path used for any language without a bespoke tracer. OBI attaches **zero function-level uprobes into Rust application code**. Only Go gets a dedicated tracer with library-level uprobes and struct-offset resolution.
+- **[Confirmed twice — in verification, then directly by OBI maintainer Nikola Grcevski ([Appendix D.4](appendix-d-maintainer-qa.md))]** OBI's Rust support is *not* "Go with weaker propagation" — it is architecturally the Generic Tracer path (kprobes on kernel socket syscalls + socket filters), the same path used for any language without a bespoke tracer. OBI attaches **zero function-level uprobes into Rust application code**. Only Go gets a dedicated tracer with library-level uprobes and struct-offset resolution. This is the *current* state; #1096 is the work that changes it.
 - Aya can attach uprobes by symbol or by offset, and supports attach cookies for out-of-band data.
 - v0 mangling is now the stable default and encodes generics reversibly.
 - rustc's `StateTransform` computes an exact mapping from `.await` points to coroutine state variants, and this mapping does not survive into the binary.
 - An early-stage third-party project ([J00MZ/opentelemetry-rust-instrumentation](https://github.com/J00MZ/opentelemetry-rust-instrumentation), explicitly modeled on the real `open-telemetry/opentelemetry-go-instrumentation` but not itself an OTel-org project) is already attempting uprobe-based Rust auto-instrumentation via symbol demangling and multi-return-point uprobes, and is already attempting an executor-level heuristic for async span reconstruction — i.e. attempting H2 without compiler help.
 
-**Hypotheses requiring experimental validation:**
-- H1: Compiler-emitted function metadata materially improves probe selection precision *beyond what v0 demangling already provides*. **[Revised by verification]** The comparison baseline is not OBI (which does no Rust function probing at all) but projects like J00MZ, which already does symbol-based probe selection without compiler help — so H1 is really asking whether compiler metadata beats *that*, not whether it beats nothing.
-- H2: Logical async spans can be reconstructed at runtime from poll-level uprobe events plus compile-time state-machine metadata.
-- H3: Offset-based probe attachment via build-ID-keyed metadata works reliably on stripped, PIE, optimized release binaries.
-- H4: The combined overhead of a metadata-guided eBPF approach is lower than compile-time instrumentation for equivalent span coverage.
+**Hypotheses — all closed by [Appendix D.4](appendix-d-maintainer-qa.md); none will be validated by this project:**
 
-**[Inference]** H2 is the load-bearing one. If H2 is false, "compiler-assisted eBPF for Rust" reduces to "a nicer configuration format for uprobes" — useful, but not a research contribution, and not worth restructuring the project around.
+| # | Hypothesis | Disposition |
+| --- | --- | --- |
+| H1 | Compiler-emitted function metadata materially improves probe selection precision *beyond what v0 demangling already provides* | **Not ours to answer.** The baseline was already narrowed by verification to "does it beat symbol-based selection as J00MZ does it," and by [Appendix C.4](appendix-c-adversarial-review.md) to "beyond what USDT already provides." With the branch closed, this is a question for OBI's maintainers, and the analysis in §7.2/§7.3 is what we contribute to it |
+| H2 | Logical async spans can be reconstructed at runtime from poll-level uprobe events plus compile-time state-machine metadata | **RESOLVED UPSTREAM.** Giuseppe Ognibene's prototype (OBI #1096) reconstructs Tokio async task context in eBPF and is in final testing. The identity/correlation problem this section spent most of its length on — can an external observer track a task across polls and thread migrations — has been answered by someone building it inside OBI ([Appendix D.4](appendix-d-maintainer-qa.md)) |
+| H3 | Offset-based probe attachment via build-ID-keyed metadata works reliably on stripped, PIE, optimized release binaries | **Moot twice over.** [Appendix C.4](appendix-c-adversarial-review.md) already replaced the build-ID-keyed sidecar with ELF-native USDT notes; the branch closure removes the remaining question |
+| H4 | The combined overhead of a metadata-guided eBPF approach is lower than compile-time instrumentation for equivalent span coverage | **Not ours to answer.** Once both approaches exist independently — #1096 upstream, Architecture A here — this becomes a comparison someone can run, not a hypothesis either project depends on |
 
-**Open questions:**
+**[Inference]** H2 was correctly identified as the load-bearing one, and the reasoning held: it decided the branch. It simply decided it by being answered upstream rather than by being tested here. That is the outcome to prefer — the question was real, and it got resolved before we spent a phase on it.
+
+**Open questions — retained as a record; none block this project:**
 - ~~How does the J00MZ project actually resolve axum/hyper handlers from symbols, and where does it fail?~~ **Partially answered in verification** (§4.5): symbol-table scan + `rustc-demangle` + per-library pattern matching + multi-return-point uprobes + JSON/DWARF/heuristic struct-offset tracking. Failure modes (accuracy under optimization, version drift) are not published and remain open.
 - ~~Is there a stable task identity in Tokio observable from eBPF?~~ **Partially answered.** `tokio::task::Id` is a stable *Rust API* (Appendix C.5) — the identity exists. What remains open is whether an *external* eBPF observer can reliably recover an equivalent identity from memory (e.g. a `&Task` pointer at a known register/offset) across Tokio versions without compiler assistance. If not, H2 is likely false.
-- Does OBI have an extension point that would accept externally supplied instrumentation metadata, or would this require a fork?
+- ~~Does OBI have an extension point that would accept externally supplied instrumentation metadata, or would this require a fork?~~ **Overtaken by events.** The question presumed we would be feeding metadata into OBI from outside. With #1096 building Rust async support inside OBI, the productive route is contribution to that work, not an extension point for ours ([Appendix D.4](appendix-d-maintainer-qa.md)).
 ---
 
 ---

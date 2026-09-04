@@ -28,8 +28,10 @@
 1. **A tool that instruments a whole Rust crate graph, including third-party dependencies, at build time, without source edits.** Nothing found. **[Fact — negative result, see §4.6 caveats]**
 2. **A declarative rule format for Rust instrumentation** (the analogue of `*.otelc.yml`). Nothing found.
 3. **Third-party-distributable Rust instrumentation packages** (the analogue of `otelc`'s import-driven instrumentation crates). Nothing found.
-4. **Compiler-emitted *async state-machine* metadata for Rust.** **[Revised — see [Appendix C.4](appendix-c-adversarial-review.md)]** This is narrower than the original claim, which said "compiler-emitted instrumentation metadata" in general — that mechanism is not missing, it is USDT, and stable-Rust crates (`oxidecomputer/usdt`, `cuviper/probe`) already provide it. What is missing, and genuinely unclaimed, is metadata encoding the `.await`-point ↔ coroutine-state-variant mapping that `rustc`'s `StateTransform` computes and discards (§6.3, §7.4).
-5. **Semantically-aware async span reconstruction from below the source level.** Nothing found, and possibly not tractable (§7.4, H2).
+4. ~~**Compiler-emitted *async state-machine* metadata for Rust.**~~ **NO LONGER OURS TO FILL — [Appendix D.4](appendix-d-maintainer-qa.md).** The mechanism was never missing (USDT, [Appendix C.4](appendix-c-adversarial-review.md)); the narrowed claim was the `.await` ↔ coroutine-state-variant content. That gap may still exist in the abstract, but it exists *in service of* eBPF async reconstruction, which OBI is now building (#1096). We do not fill it.
+5. ~~**Semantically-aware async span reconstruction from below the source level.**~~ **BEING FILLED UPSTREAM — [Appendix D.4](appendix-d-maintainer-qa.md).** An OBI maintainer has a working Tokio prototype (#1096). "Nothing found, possibly not tractable" was accurate when written and is now out of date.
+
+**[Inference]** Gaps 1–3 are the project. They are all compile-time, all stable-Rust, and none of them depends on a hypothesis.
 
 ### 9.4 Is the project actually differentiated?
 
@@ -41,17 +43,18 @@
 | "AST rewriting behind a build hook is a novel mechanism" | ✗ **No.** That is precisely what `otelc` does |
 | "Doing this for Rust is novel" | ✓ **Yes**, as far as we can determine. Nobody has done it, and Rust is absent from OTel's zero-code list |
 | "The Rust-specific problems are novel" | ✓ **Partially.** Async/coroutine instrumentation semantics, monomorphization, and macro invisibility have no Go analogue. The async problem in particular has a genuinely different shape |
-| "Compiler-generated metadata for eBPF is novel" | ✗ **No, as a mechanism** — USDT has done "compile-time metadata embedded in a binary for eBPF" since 2004, and stable-Rust crates already emit it ([Appendix C.4](appendix-c-adversarial-review.md)). ✓ **Yes, as specifically async state-machine content** — and that part is also **unvalidated**. Novelty and value are not the same thing, and now neither is "novel mechanism" and "novel content" |
-| "Compile-time + eBPF + OTel combined is novel" | ⚠️ **Novel but speculative.** Novel because unbuilt; speculative because the load-bearing hypothesis (H2, §7.5) is untested |
+| ~~"Compiler-generated metadata for eBPF is novel"~~ | **WITHDRAWN — [Appendix D.4](appendix-d-maintainer-qa.md).** Not novel as a mechanism (USDT, 2004), and the narrowed "async state-machine content" claim is moot now that OBI #1096 is building the capability it would have served |
+| ~~"Compile-time + eBPF + OTel combined is novel"~~ | **WITHDRAWN.** We are not combining them |
+| "Serving the platforms eBPF cannot reach" | ✓ **Not novel, but durable** — and this is the better claim. macOS, Windows, unprivileged containers, and non-root deployments are unreachable by any eBPF approach, however good #1096 turns out to be. That is a structural division of labour, not a race |
 
-**[Inference]** The honest framing: this is a **porting-and-adaptation project with one genuinely novel research question attached**. The port (Rust compile-time auto-instrumentation) is worthwhile, useful, and clearly missing. The research question (does compiler metadata make eBPF instrumentation semantically viable for async Rust?) is interesting but unvalidated and must not be the thing the project depends on for its value.
+**[Inference — the framing is now simpler than it was.]** This was described as *"a porting-and-adaptation project with one genuinely novel research question attached."* The research question has been answered upstream ([Appendix D.4](appendix-d-maintainer-qa.md)), so what remains is the porting-and-adaptation project: worthwhile, useful, clearly missing, and no longer carrying a speculative half that the previous sentence had to warn against depending on. Losing the research question costs the project its most interesting-sounding claim and none of its value — which is exactly what §11.2 chose Architecture A to guarantee.
 
 ### 9.5 What would make it merely a wrapper?
 
 The project degenerates into a wrapper if:
 
-- It only applies `#[tracing::instrument]` to functions in the user's own crate. `tracing-orchestra` already does that, and a `sed` script nearly does.
-- It only provides a nicer `tracing-subscriber` + OTLP setup helper. Half a dozen crates do that.
+- It only instruments functions in the user's own crate. `tracing-orchestra` already does that, and a `sed` script nearly does.
+- It only provides a nicer SDK + OTLP setup helper. Half a dozen crates do that.
 - It requires manual per-function opt-in. Then it is `#[instrument]` with extra steps.
 - It hardcodes a fixed instrumentation set into the binary with no rule format. Then it is unextendable and dies when the first user wants `sqlx`.
 - It cannot instrument dependencies. **This is the single test that separates a real tool from a wrapper**, because dependency coverage is the only thing a user cannot achieve themselves with an afternoon and a text editor.
@@ -60,10 +63,11 @@ The project degenerates into a wrapper if:
 
 - **Dependency-graph coverage.** Instrumenting `hyper`/`sqlx`/`tonic` in the build without touching them. Non-trivial, genuinely useful, currently impossible in Rust.
 - **A rule language with version-aware matching.** So instrumentation survives dependency upgrades and can be shipped by third parties.
-- **Correct async span semantics, demonstrated with tests.** Not "we call `#[instrument]`," but a test suite showing span durations and nesting are right across `.await`, `spawn`, and concurrent tasks.
-- **Measured overhead.** Real numbers for build time, binary size, and runtime cost. `otelc`'s v1 announcement did not publish these **[Fact]**; if we do, that alone is a contribution.
-- **An async-structure metadata artifact with a specified format**, emitted as a build product, even before anything consumes it. **[Revised — Appendix C.4]** Ordinary per-function probe metadata is not this artifact — USDT already covers that, on stable Rust, today. The artifact worth building is specifically the `StateTransform` await↔state-variant mapping, which is the bridge to the research half and is cheap to add once we have the analysis phase.
-- **Answering H2 experimentally**, either way. A well-documented negative result ("logical async spans cannot be reconstructed from poll events because Tokio exposes no stable task identity") is a genuine contribution to the Rust observability conversation.
+- **Correct async span semantics, demonstrated with tests.** Not "we wrap in `with_context`," but a test suite showing span durations, context attachment, and nesting are right across `.await`, `spawn`, worker-thread migration, and concurrent tasks.
+- **Measured overhead.** Real numbers for build time, binary size, and runtime cost. **[Sharpened, [Appendix D.3](appendix-d-maintainer-qa.md)]** `otelc` publishes compile-time benchmarks (+275% single-package, +54% multi-package) but still **no application runtime-latency numbers**. Publishing measured *runtime* overhead for Rust auto-instrumentation would be a genuine first, not a formality.
+- ~~**An async-structure metadata artifact with a specified format.**~~ **Dropped — [Appendix D.4](appendix-d-maintainer-qa.md).** It was "the bridge to the research half," and the research half is closed.
+- ~~**Answering H2 experimentally.**~~ **Answered upstream — [Appendix D.4](appendix-d-maintainer-qa.md).** OBI #1096. The useful contribution here is now *reviewing* that work, and offering the §6.3/§7 analysis of Rust async structure to it.
+- **[New] Working on macOS and Windows.** Trivial for us and impossible for eBPF — and therefore, post-[Appendix D.4](appendix-d-maintainer-qa.md), the clearest statement of what this tool is for.
 
 ### 9.7 Ranking the seven candidate directions
 
@@ -86,6 +90,8 @@ Notes on the scores:
 - **(3) MIR** scores lowest on maintainability for the reasons in §3.5. Its feasibility is real; its shippability is not.
 - **(4) LLVM** is dominated: it is harder than source, less semantic than MIR, and largely duplicates `-Z instrument-xray`.
 - **(6) and (7)** carry the highest research value and the lowest feasibility, and both depend on H2.
+
+**[Superseded — [Appendix D.4](appendix-d-maintainer-qa.md).]** Directions **5, 6, and 7 are withdrawn**: all three scored their novelty and research value on H2, which is now being answered upstream by OBI #1096. Their scores were not wrong — the ranking correctly put them below (2) and (1) on feasibility, and the project correctly picked the top of the table. **The live ranking is (2) + (1) — Architecture A — with (3) surviving only as a Phase 3 nightly spike.** Note what this does to the table's own logic: the two highest-scoring directions were never the ones that depended on the hypothesis, so removing the hypothesis changes the plan not at all.
 
 ---
 

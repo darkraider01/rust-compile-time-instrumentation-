@@ -134,7 +134,26 @@ This follows Go's established `tools.go` convention. **[Fact]** A package counts
 - Persistent `otelc pin`-generated config files are still "under development"; committing them is not yet supported, so persistent configuration is currently a local-workflow-only feature.
 - Requires Go 1.25+.
 
-**[Fact — resolved in the verification pass]** The v1 blog claims "no added runtime overhead" but gives no numbers. `docs/benchmarking.md` was read directly during verification: it contains **no runtime overhead, binary-size, or timing figures of any kind**. Its only quantitative content is a CI gate — `BENCH_MAX_OVERHEAD_PCT=150`, failing a CI job when `otelc`'s *compile time* exceeds 150% of a plain `go build` baseline measured in the same run — and it documents *compile-time* benchmarking methodology (three scenarios: baseline, multi, largeidle), not runtime cost. So even the OTel-official, v1.1, production tool does not publish the runtime-overhead numbers its own marketing claims. We should not repeat that style of unsubstantiated claim about our own tool, and a 150%-of-baseline compile-time tolerance is a reasonable target to adopt for our own CI (§14.3).
+**[Fact — resolved in the verification pass]** The v1 blog claims "no added runtime overhead" but gives no numbers. `docs/benchmarking.md` was read directly during verification: it contains **no runtime overhead, binary-size, or timing figures of any kind**. Its only quantitative content is a CI gate — `BENCH_MAX_OVERHEAD_PCT=150`, failing a CI job when `otelc`'s *compile time* exceeds 150% of a plain `go build` baseline measured in the same run — and it documents *compile-time* benchmarking methodology (three scenarios: baseline, multi, largeidle), not runtime cost. So even the OTel-official, v1.1, production tool does not publish the runtime-overhead numbers its own marketing claims. We should not repeat that style of unsubstantiated claim about our own tool.
+
+### 2.9a Real benchmark and compatibility data from the maintainers
+
+**[Fact — from `otelc` maintainer Xabier Martinez, `#otel-go`; see [Appendix D.3](appendix-d-maintainer-qa.md).]** This partly corrects §2.9: the numbers do not live in `docs/benchmarking.md`, but they do exist, in CI via CodSpeed.
+
+| Scenario | Plain `go build` | With `otelc` | Overhead |
+| --- | --- | --- | --- |
+| Baseline (single package) | 5.3 s | 19.9 s | **+275%** |
+| Multi-package | 17.4 s | 26.8 s | **+54%** |
+
+Two things this confirms and one it corrects:
+
+- **Confirmed:** `otelc`'s published benchmarks measure **compile time only** (`BenchmarkCompile`). There is still no application runtime request-latency benchmark; per-library runtime benchmarking is deferred until instrumentation rules are decoupled into a separate repository. §2.9's warning against unsubstantiated runtime claims stands.
+- **Corrected:** compile-time overhead *is* measured, and the figures are considerably worse than the `BENCH_MAX_OVERHEAD_PCT=150` gate would suggest for the single-package case — so that gate is evidently not applied uniformly across all three scenarios.
+- **[Inference]** The two figures are the fixed-cost and marginal-cost ends of one curve: instrumentation setup is largely per-build, so it dominates a 5.3-second build and amortises across a 17.4-second one. **Our projection: 1.5×–3× clean compile time, worst on small projects** ([§14.3](14-evaluation-plan.md)).
+
+**[Fact — automated forward-compatibility testing.]** `otelc` keeps rules working against upstream library releases with a scheduled CI workflow (`.github/workflows/test-latestlibrun.yaml`, tracked under issue #406) that fetches each instrumented library's latest stable release from the Go module proxy, runs the instrumentation tests against it, and **auto-files a tracking issue** (e.g. #565) when a private API changes and a rule's supported version range must be split.
+
+**[Inference — adopt this, and adopt it early.]** This is the sixth concept to transfer (§2.11), and arguably the one with the longest half-life. Rules pinned to version ranges rot silently; the only sustainable answer at more than a handful of crates is a robot that notices. The Cargo port is direct: query the crates.io index for latest stable, run the instrumented build, open a tracking issue on breakage ([§14.6](14-evaluation-plan.md), [R16](13-technical-risks.md)).
 
 ### 2.10 What is Go-specific
 
@@ -161,6 +180,7 @@ This follows Go's established `tools.go` convention. **[Fact]** A package counts
 3. **Declarative rules with package + version + point selectors.** Do not hardcode instrumentation into the tool.
 4. **Instrumentation ships as ordinary library crates.** The tool is a mechanism; the rules are content.
 5. **Start with the entry/exit function-hook rule type.** The other seven are refinements; `inject_hooks` alone gets you spans.
+6. **[Added, [Appendix D.3](appendix-d-maintainer-qa.md)] Automate forward-compatibility testing against latest upstream releases** (the #406 pattern, §2.9a). Rules pinned to version ranges rot silently; a scheduled job that builds against latest stable and files a tracking issue on breakage is the only version of this that survives contact with a growing rule set.
 ---
 
 ---
