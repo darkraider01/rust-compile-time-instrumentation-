@@ -22,6 +22,14 @@ fn test_wrapper_config_parsing_from_cargo_args() {
 }
 
 #[test]
+fn test_wrapper_config_fallback_when_single_arg() {
+    let args = vec!["target/debug/cargo-instrument.exe".to_string()];
+    let config = WrapperConfig::from_args(&args).expect("config parsing should succeed");
+    assert!(!config.rustc_binary.as_os_str().is_empty());
+    assert!(config.rustc_args.is_empty());
+}
+
+#[test]
 #[serial]
 fn test_wrapper_argument_forwarding_and_exit_code() {
     // Invoke real rustc with -vV to verify argument forwarding and exit status 0

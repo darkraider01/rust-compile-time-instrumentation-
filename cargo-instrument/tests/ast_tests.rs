@@ -538,4 +538,3 @@ fn test_discovery_report_format_debug() {
     assert!(formatted_c.contains("unsafe_policy: Forbidden"));
     assert!(formatted_c.contains("compute: bytes 10..50 (src/main.rs)"));
 }
-
