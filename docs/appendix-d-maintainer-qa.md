@@ -1,4 +1,4 @@
-← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../README.md)
+← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../README.md) · [Appendix E — Experiment Matrix](appendix-e-experiment-matrix.md) →
 
 ---
 
@@ -116,6 +116,8 @@ This partly corrects [§2.9](02-otelc-go.md), which recorded that `docs/benchmar
 
 Closing the eBPF branch closes [Appendix C.9](appendix-c-adversarial-review.md) Q3, Q4, and Q5 — they were all in service of H2. What this round leaves open, and what it newly opens:
 
+**[Consolidated in the Phase 0 completion audit.]** These five, the survivors of [Appendix C.9](appendix-c-adversarial-review.md), and the questions surfaced by writing [§16](16-instrumentation-semantics.md) are now merged into one list — **[Appendix E.3](appendix-e-experiment-matrix.md)**, twelve future experiments — so that a single place answers *"what do we still not know?"*. The mapping: D-Q1 → FE-5, D-Q2 → FE-6, D-Q3 → FE-12, D-Q4 → FE-8, D-Q5 → FE-1. The audit added four the maintainer round could not have surfaced, because they only appear once the generated code is specified precisely: FE-2 (Tier-2 async across the C ABI, [R25](13-technical-risks.md)), FE-3 (`#![forbid(unsafe_code)]`, [R26](13-technical-risks.md)), FE-4 (span start at construction vs. first poll), and FE-7 (non-Windows link models, [R24](13-technical-risks.md)).
+
 | # | Question | Status |
 | --- | --- | --- |
 | D-Q1 | Does `FutureExt::with_context` behave correctly under task migration across Tokio worker threads, at the volume auto-instrumentation generates? | **New.** The mechanism is documented and maintainer-endorsed; its behaviour under our specific span volume is unmeasured. Becomes MVP success criteria 4 and 5 ([§12.7](12-mvp-definition.md)) |
@@ -126,4 +128,4 @@ Closing the eBPF branch closes [Appendix C.9](appendix-c-adversarial-review.md) 
 
 ---
 
-← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../README.md)
+← [Appendix C — Adversarial Review](appendix-c-adversarial-review.md) · [Contents](../README.md) · [Appendix E — Experiment Matrix](appendix-e-experiment-matrix.md) →

@@ -1,7 +1,7 @@
 # Phase 0 — Landscape Research & Architecture
 
 **Investigation date:** 2026-09-04 (research pass, verification pass, an adversarial review round, and a maintainer Q&A round across three OTel SIGs — see [Appendix B](docs/appendix-b-verification-log.md), [Appendix C](docs/appendix-c-adversarial-review.md), and [Appendix D](docs/appendix-d-maintainer-qa.md))
-**Status:** Research artifact. Nothing here is a binding implementation decision until [§15](docs/15-final-recommendation.md) is reviewed.
+**Status: Phase 0 complete — implementation-ready.** §2–§15 are the research record and remain a research artifact. **§16 and §17 are normative**: [§16](docs/16-instrumentation-semantics.md) specifies what the tool must do (and is the correctness oracle for Phase 1's tests), [§17](docs/17-decision-records.md) records the six decisions that are settled and the conditions under which each should be reopened. [Appendix E](docs/appendix-e-experiment-matrix.md) separates what was experimentally demonstrated from what is still assumed.
 **Toolchain baseline:** Rust 1.98.0 stable (2026-08-20); `opentelemetry` 0.32.x; `otelc` v1.1.0. All hands-on experiments (Appendix B and Appendix C) were run against the locally installed Rust 1.97.1 / Cargo 1.97.1 toolchain. *(`tracing` 0.1.44 / `tracing-opentelemetry` 0.33.0 were baseline dependencies until [Appendix D.2](docs/appendix-d-maintainer-qa.md) removed them from the design.)*
 
 > **Two decisions were reversed by the maintainer Q&A round ([Appendix D](docs/appendix-d-maintainer-qa.md)). Read that before acting on anything below.**
@@ -39,10 +39,19 @@ Anything untagged is background or editorial framing, not a load-bearing technic
 13. [Technical Risks](docs/13-technical-risks.md)
 14. [Evaluation Plan](docs/14-evaluation-plan.md)
 15. [Final Recommendation](docs/15-final-recommendation.md)
+
+**Normative artifacts** *(the research above argues; these decide)*
+
+16. [Instrumentation Semantics Specification](docs/16-instrumentation-semantics.md) — what a generated span *is*, precisely. The correctness oracle for Phase 1
+17. [Architecture Decision Records](docs/17-decision-records.md) — ADR-001 … ADR-006, each with its revisit conditions
+
+**Appendices**
+
 - [Appendix A — Primary sources consulted](docs/appendix-a-sources.md)
 - [Appendix B — Verification log](docs/appendix-b-verification-log.md) *(supersedes the original "claims not verified" list — every item there was subsequently checked, several by hands-on experiment)*
 - [Appendix C — Adversarial review round](docs/appendix-c-adversarial-review.md) *(an independent review challenged the core architecture; settled by experiment — most of Architecture A survived, several mechanism details did not)*
 - [Appendix D — Maintainer Q&A round](docs/appendix-d-maintainer-qa.md) *(direct answers from maintainers in `#otel-rust`, `#otel-go`, and `#otel-ebpf` — reversed the emitter decision and closed the eBPF branch)*
+- [Appendix E — Experiment matrix](docs/appendix-e-experiment-matrix.md) *(the six experiments actually run, the source verifications kept separate from them, and twelve future experiments that have not been run)*
 
 ---
 
@@ -93,7 +102,7 @@ This is deliberately the *least* impressive of the candidate architectures. The 
 - It is the direct structural analogue of `otelc`'s `-toolexec` design — the one design in this space that reached v1.0 and production use. **[Fact]**
 - It runs on **stable** Rust, so it is shippable and maintainable.
 - It reaches third-party dependencies — the actual gap — because `RUSTC_WRAPPER` sees every crate in the graph, not just workspace members, and this was confirmed by direct experiment against an undeclared, unmodified dependency, not merely assumed. **[Fact]**
-- It produces a working POC in weeks, and it is a stepping stone to the compiler-level and eBPF work rather than a dead end.
+- It produces a working POC in weeks. **[Revised — [Appendix D.4](docs/appendix-d-maintainer-qa.md)]** It is no longer framed as "a stepping stone to the compiler-level and eBPF work": the eBPF branch is closed ([ADR-005](docs/17-decision-records.md)), and MIR survives only as an optional Phase 3 spike. Architecture A is the deliverable, and it grows sideways into more rules and more platforms rather than downward into the kernel.
 
 The MIR / rustc-driver approach (Architecture B) is more technically interesting and is where the genuinely novel research lies, but it is nightly-pinned, effectively unshippable to real users, and — critically — **async semantics get harder, not easier, at MIR level** (§6.3). It belongs in Phase 3+ as a research branch, not in Phase 1.
 
@@ -109,6 +118,8 @@ The MIR / rustc-driver approach (Architecture B) is more technically interesting
 | ~~Compiler-generated metadata would materially improve eBPF instrumentation for Rust~~ **WITHDRAWN — branch closed** | — | The mechanism was already shown not to be novel (USDT, Appendix C.4), narrowing the claim to *async state-machine structure*. **[Appendix D.4](docs/appendix-d-maintainer-qa.md)** then resolved that too: an OBI maintainer has a working Tokio async reconstruction prototype (#1096). We emit no eBPF metadata and build no loader |
 | ~~Generating `tracing` output (vs. the OTel API directly) is the right MVP choice~~ **REVERSED** | **High confidence in the reversal** | The claim rested on `tracing` being the only correct model for async future interleaving. **[Appendix D.2](docs/appendix-d-maintainer-qa.md)** — OTel Rust maintainer Scott Gerring, plus `opentelemetry::trace::FutureExt::with_context` as primary evidence: the native API attaches per-`poll()` and detaches on yield, exactly as `tracing::Instrument` does. **We now generate the native OTel API**, matching upstream's own guidance. Costs accepted: direct exposure to the Beta traces API ([R13](docs/13-technical-risks.md)) and no `STATIC_MAX_LEVEL` analogue ([R23](docs/13-technical-risks.md)) |
 | Architecture A is worth building on its own, with no eBPF branch attached | **High — and no longer conditional** | Previously "low-medium" for the project *as a whole*, because it bundled a proven compile-time half with an unvalidated eBPF half. The eBPF half has been resolved upstream and removed ([Appendix D.4](docs/appendix-d-maintainer-qa.md)), leaving a project whose mechanism is experimentally confirmed (Appendix C.2), whose emitter now matches upstream guidance (Appendix D.2), and whose niche — platforms eBPF cannot reach — is structural rather than a race |
+| Dependency coverage works for **async** functions, not just synchronous ones | **Low — not demonstrated** | The [Appendix C.2](docs/appendix-c-adversarial-review.md) experiment instrumented a **synchronous** function. An instrumented dependency cannot name the `opentelemetry` crate and therefore cannot call `FutureExt::with_context`; it needs an equivalent `core`-only spliced wrapper over the C ABI ([§16.3](docs/16-instrumentation-semantics.md)). That wrapper is a design, not a result — [Appendix E](docs/appendix-e-experiment-matrix.md) FE-2. **This is the largest unproven claim in the architecture** |
+| The tool works on macOS, Windows, and Linux — the platforms eBPF cannot reach | **Low — untested on two of three** | This is the project's *positioning* after [ADR-005](docs/17-decision-records.md), and every experiment to date ran on **Windows/MSVC only**. The trampoline's link-time behaviour differs across PE, ELF, and Mach-O (macOS dead-stripping is the specific worry). [R24](docs/13-technical-risks.md), [Appendix E](docs/appendix-e-experiment-matrix.md) FE-7. The claim must be earned before it is made publicly |
 
 ---
 
