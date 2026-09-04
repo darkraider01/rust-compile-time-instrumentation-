@@ -72,6 +72,14 @@ impl CompilationUnit {
             _ => None,
         }
     }
+
+    /// Path to the compilation output directory, if available.
+    pub fn out_dir(&self) -> Option<&Path> {
+        match self {
+            CompilationUnit::RustCrate { out_dir, .. } => out_dir.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 /// Parsed representation of a rustc invocation received from Cargo.

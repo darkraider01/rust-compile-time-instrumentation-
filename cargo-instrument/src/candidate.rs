@@ -102,8 +102,11 @@ impl DiscoveryReport {
         } else {
             for c in &self.candidates {
                 out.push_str(&format!(
-                    "  - {}: bytes {}..{}\n",
-                    c.function_name, c.byte_range.start, c.byte_range.end
+                    "  - {}: bytes {}..{} ({})\n",
+                    c.function_name,
+                    c.byte_range.start,
+                    c.byte_range.end,
+                    c.source_file.display()
                 ));
             }
         }

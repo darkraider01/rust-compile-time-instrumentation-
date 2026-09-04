@@ -79,15 +79,38 @@ fn main() {
     let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
 
     // 3. Run cargo check with RUSTC_WRAPPER set to cargo-instrument
-    let status = Command::new("cargo")
+    let output = Command::new("cargo")
         .arg("check")
         .current_dir(fixture_root)
         .env("RUSTC_WRAPPER", cargo_instrument_bin)
         .env("INSTRUMENT_DEBUG", "1")
-        .status()
+        .output()
         .expect("failed to execute cargo check");
 
-    assert!(status.success(), "wrapped cargo check must succeed");
+    assert!(output.status.success(), "wrapped cargo check must succeed");
+
+    // M3: Assert candidate report and PID/crate tag appear on captured stderr
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[cargo-instrument PID="),
+        "stderr should contain PID-tagged header. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=fixture_crate"),
+        "stderr should identify fixture crate. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("compute"),
+        "stderr should contain candidate 'compute'. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("async_task"),
+        "stderr should contain candidate 'async_task'. stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Controller::handle"),
+        "stderr should contain candidate 'Controller::handle'. stderr:\n{stderr}"
+    );
 
     // 4. Snapshot all source files AFTER running
     let after_snapshot = snapshot_files(fixture_root);
@@ -109,6 +132,98 @@ fn main() {
             path_before.display()
         );
     }
+}
+
+#[test]
+fn test_c1_cargo_wrapped_multi_file_discovery() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let fixture_root = temp_dir.path();
+
+    let cargo_toml = r#"
+[package]
+name = "multifile_fixture"
+version = "0.1.0"
+edition = "2021"
+"#;
+    fs::write(fixture_root.join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+
+    let src_dir = fixture_root.join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+
+    let main_rs = r#"
+mod helpers;
+
+fn main() {
+    helpers::submodule_work();
+}
+"#;
+    let helpers_rs = r#"
+pub fn submodule_work() -> i32 {
+    100
+}
+"#;
+    fs::write(src_dir.join("main.rs"), main_rs).expect("write main.rs");
+    fs::write(src_dir.join("helpers.rs"), helpers_rs).expect("write helpers.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    let output = Command::new("cargo")
+        .arg("check")
+        .current_dir(fixture_root)
+        .env("RUSTC_WRAPPER", cargo_instrument_bin)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("failed to execute cargo check");
+
+    assert!(output.status.success(), "wrapped cargo check must succeed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("submodule_work"),
+        "stderr must contain function 'submodule_work' from submodule helpers.rs! stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("main"),
+        "stderr must contain function 'main' from root main.rs! stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_h2_unisolated_target_dir_warning() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let fixture_root = temp_dir.path();
+
+    let cargo_toml = r#"
+[package]
+name = "h2_warning_fixture"
+version = "0.1.0"
+edition = "2021"
+"#;
+    fs::write(fixture_root.join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+
+    let src_dir = fixture_root.join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+    fs::write(src_dir.join("main.rs"), "fn main() {}\n").expect("write main.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    // Invoking cargo check directly with RUSTC_WRAPPER (without CARGO_INSTRUMENT_WRAPPER_MODE
+    // and using default target/ directory) must trigger the ADR-004 unisolated warning.
+    let output = Command::new("cargo")
+        .arg("check")
+        .current_dir(fixture_root)
+        .env("RUSTC_WRAPPER", cargo_instrument_bin)
+        .env_remove("CARGO_INSTRUMENT_WRAPPER_MODE")
+        .output()
+        .expect("failed to execute cargo check");
+
+    assert!(output.status.success(), "cargo check must succeed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning: cargo-instrument: compilation is not using an isolated target directory"),
+        "stderr must contain ADR-004 unisolated target dir warning when wrapper mode is unset! stderr:\n{stderr}"
+    );
 }
 
 #[test]
