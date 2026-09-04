@@ -5,10 +5,10 @@
 # Phase 1 - Compile-Time Instrumentation Tool (`cargo-instrument`)
 
 **Milestones covered:** P1.1, P1.2, P1.3, P1.4  
-**Status:** P1.1–P1.4 Implemented & Verified; P1.5 Next  
+**Status:** P1.1–P1.4 Complete; P1.5 Next  
 **Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
 **Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
-**Test suite status:** 67 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
+**Test suite status:** 78 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
 
 ---
 
@@ -23,8 +23,8 @@ Phase 1 - Compile-Time Instrumentation (In Progress - current focus)
           ├── P1.1 RUSTC_WRAPPER Interception       ✅ Complete
           ├── P1.2 Source Discovery & Classification ✅ Complete
           ├── P1.3 syn AST + Exact Byte Spans       ✅ Complete
-          ├── P1.4 Surgical Source Transformation   🔧 In Progress (Adversarial Fixes Applied & Verified)
-          ├── P1.5 Native OTel Code Generation      ○ Planned
+          ├── P1.4 Surgical Source Transformation   ✅ Complete
+          ├── P1.5 Native OTel Code Generation      → NEXT
           ├── P1.6 Async Instrumentation            ○ Planned
           ├── P1.7 Dependency Trampolines           ○ Planned
           └── P1.8 End-to-End Validation            ○ Planned
@@ -42,10 +42,11 @@ Phase 3 - Evaluation & Research (Planned)
 
 Phase 1 translates the frozen architecture from [Phase 0](../research/README.md) into a working, stable-Rust compile-time instrumentation CLI and wrapper tool (`cargo-instrument`).
 
-This document records the design decisions, implementation architecture, empirical findings, and verification proofs for the first three Phase 1 milestones:
+This document records the design decisions, implementation architecture, empirical findings, and verification proofs for the first four Phase 1 milestones:
 - **P1.1 - Cargo / `RUSTC_WRAPPER` interception**
 - **P1.2 - Source discovery & compilation-unit classification**
 - **P1.3 - `syn` AST & exact byte-span analysis**
+- **P1.4 - Surgical byte-range source transformation**
 
 ### Invariant Boundaries for P1.1–P1.3
 Per Phase 0 normative specifications ([§16](../research/16-instrumentation-semantics.md)):
@@ -254,13 +255,13 @@ The milestone implementation is verified by **78 automated tests** across 6 test
 
 ## 7. Status & Handoff to Milestone P1.5
 
-### Current Status: P1.4 In Progress (Adversarial Fixes Applied & Verified)
-All 7 adversarial review findings (C1, H1, H2, H3, M1, M2, M3) have been addressed, implemented, and verified with zero compiler/clippy warnings and 78/78 tests passing. Final acceptance review will freeze P1.4 prior to commencing P1.5.
+### Milestone P1.4 Status: COMPLETE
+All 7 adversarial review findings (C1, H1, H2, H3, M1, M2, M3) have been addressed, implemented, and verified with zero compiler/clippy warnings and 78/78 tests passing across the workspace. Milestone P1.4 is complete and frozen.
 
-### What Is Next: P1.5 - Native OpenTelemetry Code Generation (Planned)
+### What Is Next: P1.5 - Native OpenTelemetry Code Generation
 Milestones P1.1–P1.4 establish that the tool intercepts compiler invocations, discovers source candidates across multi-file crates, computes exact byte spans, and executes surgical byte-range transformations that compile cleanly under both `rustc` and `Cargo` via the live compiler wrapper.
 
-Once P1.4 is formally accepted, Milestone P1.5 will plug into the `Emitter` seam to provide **native OpenTelemetry API span generation**:
+Milestone P1.5 will plug into the `Emitter` seam to provide **native OpenTelemetry API span generation**:
 1. **Synchronous spans (§16.4):** Inject `tracer.start(...)` and RAII drop guard for context attachment/detachment.
 2. **Metadata binding:** Site registration passing function name, source file, line number, and `SpanKind`.
 3. **No pretty-printing:** Generated code is inserted via surgical byte splicing into the original source buffer.
