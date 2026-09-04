@@ -20,7 +20,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | Phase | Status | Focus |
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
-| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.3 complete (analysis-only, zero source rewriting); P1.4 is next |
+| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.4 complete (surgical byte-range transformation & live wrapper integration verified); P1.5 is next |
 | **Phase 2 - Production Hardening** | **Planned** | Workspace coverage, MSRV/toolchain compatibility, incremental compilation, large dependency graphs, cross-platform validation |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
@@ -59,9 +59,9 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
   Classifies compiler invocations (ordinary crate, build script, proc macro, compiler queries, pass-through), extracts primary source files, and parses compiler options without modifying inputs.
 - [x] **P1.3 - `syn` AST & exact byte-span analysis** - COMPLETE
   Performs full `syn` AST parsing, root-aware recursive module discovery (`mod foo;`), identifies eligible function items (free functions, inherent methods, trait methods), filters exclusions (`const fn`, `extern "C"`, nested functions, direct self-recursion), applies R10 idempotence heuristics (closure-based `with_context` discrimination, `.start()` checks), and calculates exact UTF-8 byte ranges (`start..end`) while keeping original source files byte-for-byte untouched.
-- [ ] **P1.4 - Surgical source transformation** - NEXT
-  Implement deterministic byte-range source splicing. Inject span wrappers around function bodies while preserving comments, formatting, and surrounding source text, producing valid, recompilable Rust code.
-- [ ] **P1.5 - Native OpenTelemetry code generation**
+- [x] **P1.4 - Surgical source transformation** - COMPLETE
+  Transforms original UTF-8 source buffers via deterministic single-pass byte splicing without modifying input files in-place (ADR-002, S1/S2). Features exact normalized path filtering (C1), S11 candidate-level fail-open skips (H2), a pluggable emitter seam (ADR-006 / H3), source line-ending preservation (M1), structurally constrained idempotence (M3), and full live integration into the compiler wrapper pipeline.
+- [ ] **P1.5 - Native OpenTelemetry code generation** - NEXT
   Generate native OpenTelemetry API calls for synchronous functions, handling span creation, tracer acquisition, and error recording.
 - [ ] **P1.6 - Async instrumentation**
   Instrument async functions using `opentelemetry::trace::FutureExt::with_context`, preserving correct trace context across future suspension points and executor thread migration.
@@ -107,13 +107,13 @@ Planned evaluation:
 
 ### Current Focus
 
-**Phase 1 - P1.4: Surgical byte-range source transformation**
+**Phase 1 - P1.5: Native OpenTelemetry code generation**
 
-Phase 0 established the architecture and invariants. Milestones P1.1–P1.3 have validated the Cargo interception, root-aware multi-file discovery, and AST byte-span identification (verified with 43 automated tests across Linux, Windows, and macOS). The immediate next step is P1.4: implementing the byte-splicing engine to transform function bodies while preserving original source layout and verifying that transformed crates compile cleanly.
+Phase 0 established the architecture and invariants. Milestones P1.1–P1.4 have established and validated the compiler interception, multi-file source discovery, AST byte-span identification, and surgical byte-range transformation engine integrated into the compiler wrapper (verified with 78 automated tests across Linux, Windows, and macOS). The immediate next step is P1.5: implementing native OpenTelemetry API code generation to replace the minimal sentinel with runtime span lifecycle management.
 
 ## Documentation
 
-- **[docs/phase1/](docs/phase1/)** - the Phase 1 implementation record, architecture, empirical findings, and verification matrix for milestones P1.1–P1.3 (Cargo/wrapper interception, classification, AST analysis, and adversarial review resolutions). Start at [docs/phase1/README.md](docs/phase1/README.md).
+- **[docs/phase1/](docs/phase1/)** - the Phase 1 implementation record, architecture, empirical findings, and verification matrix for milestones P1.1–P1.4 (Cargo/wrapper interception, classification, AST analysis, surgical byte transformation, and adversarial review resolutions). Start at [docs/phase1/README.md](docs/phase1/README.md).
 - **[docs/research/](docs/research/)** - the full Phase 0 investigation: landscape survey, architecture candidates, the [instrumentation semantics specification](docs/research/16-instrumentation-semantics.md) (the correctness oracle Phase 1's tests are written against), the [architecture decision records](docs/research/17-decision-records.md), and four rounds of verification (hands-on experiments, an adversarial review, a maintainer Q&A round, and a validated experiment matrix). Start at [docs/research/README.md](docs/research/README.md).
 - Later phases receive their own sibling documentation folders under `docs/` as milestones land. `docs/research/` remains specifically the archived Phase 0 record and stays frozen.
 
