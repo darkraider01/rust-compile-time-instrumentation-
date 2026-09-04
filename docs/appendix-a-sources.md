@@ -1,10 +1,23 @@
-← [Final Recommendation](15-final-recommendation.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
+← [Architecture Decision Records](17-decision-records.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
 
 ---
 
 ## Appendix A — Primary sources consulted
 
 Sources from the original research pass (2026-09-04), the subsequent verification pass (2026-09-04, same day — see [Appendix B](appendix-b-verification-log.md) for what each new source resolved), the adversarial review round ([Appendix C](appendix-c-adversarial-review.md)), and the maintainer Q&A round ([Appendix D](appendix-d-maintainer-qa.md)).
+
+### Evidence provenance — four tiers, not one
+
+Added in the Phase 0 completion audit, because the list below mixes grades of evidence that a reader should not have to disentangle by inspection. In descending order of how independently checkable a claim is:
+
+| Tier | What it is | Reader can re-check? | Where |
+| --- | --- | --- | --- |
+| **1 — Published primary source** | Documentation, source code, issue threads, repository metadata | **Yes**, at the URL | Most of this appendix |
+| **2 — Hands-on experiment** | Code written and run on the local toolchain | **In principle** — the protocol is documented, the code is not published | [Appendix E.1](appendix-e-experiment-matrix.md) (6 experiments) |
+| **3 — Maintainer testimony** | Direct answers in the OpenTelemetry community Slack | **No** — not a published document; attributed by name and SIG instead | [Appendix D](appendix-d-maintainer-qa.md) |
+| **4 — Unmerged upstream work** | OBI #1096's prototype, described by its author | **No, and not yet** — the code is unmerged | [Appendix D.4](appendix-d-maintainer-qa.md) |
+
+**[Inference]** Tier 3 and Tier 4 carry two of this project's biggest decisions ([ADR-001](17-decision-records.md) and [ADR-005](17-decision-records.md)). That is defensible — the people who maintain the code are the best available source on what it does and what they are building — but it is worth stating plainly, because both are unverifiable by a reader working only from this repository. **ADR-001 has an independent Tier-1 backstop** (`FutureExt::with_context` is documented API, so the maintainer's answer can be checked against the crate). **ADR-005 does not** — if OBI #1096 stalls or never merges, the decision rests on testimony alone, which is why [ADR-005](17-decision-records.md)'s revisit condition names exactly that scenario.
 
 **OpenTelemetry Go compile-time instrumentation**
 - https://github.com/open-telemetry/opentelemetry-go-compile-instrumentation
@@ -78,6 +91,20 @@ Sources from the original research pass (2026-09-04), the subsequent verificatio
 - https://doc.rust-lang.org/nightly/nightly-rustc/cargo/core/compiler/fingerprint/ (Cargo's own fingerprint module docs)
 - Direct experiment: a native Rust `RUSTC_WRAPPER` binary built and run against a scratch crate on the local toolchain (`rustc 1.97.1`, `cargo 1.97.1`, Windows) — see Appendix B for the full protocol and results
 
+**Adversarial review round (see [Appendix C](appendix-c-adversarial-review.md))**
+- https://github.com/sourcefrog/cargo-mutants — the source of the byte-range splicing technique adopted in [ADR-002](17-decision-records.md); its own documentation states that mutations are applied textually so untouched code keeps its formatting, comments, and line numbers
+- https://github.com/oxidecomputer/usdt (v0.6.0, ~3.8M downloads) and https://github.com/cuviper/probe-rs (v0.5.2, ~1.8M) — stable-Rust USDT probe emission; the evidence that "compile-time probe metadata embedded in a binary for eBPF" was never a novel mechanism ([Appendix C.4](appendix-c-adversarial-review.md))
+- https://github.com/fast/fastrace — a third emitter candidate the original two-way analysis missed; its "10–100× faster" figure is the project's own tagline, not an independent benchmark ([Appendix C.7](appendix-c-adversarial-review.md))
+- https://github.com/tokio-rs/tokio/pull/6793 and https://github.com/tokio-rs/tokio/pull/6891 — `tokio::task::Id` stabilisation, which refuted the original research's claim that Tokio exposes no stable task identity ([Appendix C.5](appendix-c-adversarial-review.md))
+- https://github.com/dvc94ch/cargo-trace — checked and found dormant (40 stars, last pushed 2021-03-04); the review overstated it as a live competitor
+- `dalibo/hud` — **cited by the adversarial review and confirmed not to exist** (HTTP 404). Recorded because a hallucinated citation is itself evidence about how much weight to give an unverified assertion
+- Direct experiment: a three-crate `RUSTC_WRAPPER` setup (`otel_shim` / `victim` / `app`) built and run on the local toolchain to test both cross-crate injection mechanisms — see [Appendix E.1](appendix-e-experiment-matrix.md) E-4 and E-5
+
+**Phase 0 completion audit (see [§16](16-instrumentation-semantics.md), [§17](17-decision-records.md), [Appendix E](appendix-e-experiment-matrix.md))**
+- `opentelemetry::trace::FutureExt` — re-read as the normative reference for the async span lifecycle specified in [§16.7](16-instrumentation-semantics.md)
+- Rust reference and release notes for **`unsafe extern "C"` blocks and `safe fn` items** (stable since 1.82; `unsafe extern` is the edition-2024 form) — the basis for the edition-sensitivity requirement in [§16.3](16-instrumentation-semantics.md) and for the [Appendix E](appendix-e-experiment-matrix.md) FE-3 experiment proposal
+- Rust lint documentation for `unsafe_code` and error **`E0453`** (`allow` cannot override `forbid`) — the basis for [R26](13-technical-risks.md) and the `#![forbid(unsafe_code)]` exclusion in [§6.11](06-rust-specific-challenges.md)
+
 **Maintainer correspondence (Q&A round — see [Appendix D](appendix-d-maintainer-qa.md))**
 
 Direct answers from maintainers, obtained in the OpenTelemetry community Slack. These are primary sources of a different kind from the rest of this list: not published documents, and not independently re-checkable by a reader, so each claim sourced to them is attributed by name and SIG in the text.
@@ -97,4 +124,4 @@ Referenced upstream artifacts:
 
 ---
 
-← [Final Recommendation](15-final-recommendation.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →
+← [Architecture Decision Records](17-decision-records.md) · [Contents](../README.md) · [Appendix B — Verification Log](appendix-b-verification-log.md) →

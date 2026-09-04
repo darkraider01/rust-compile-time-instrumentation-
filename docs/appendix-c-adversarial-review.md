@@ -74,6 +74,16 @@ The symbol resolves at final link from a runtime the *application* declares. **[
 
 **Adopted:** Mechanism 2. It structurally cannot produce the duplicate-crate or dependency-cycle hazards the review raised against Mechanism 1, needs no `-L` propagation, and mirrors `otelc`'s actual trampoline design ([§2.5](02-otelc-go.md)). The review's "Path 2" suggestion was right even though its argument for why Path 1 is impossible was wrong.
 
+**[Scope of this experiment — added in the Phase 0 completion audit, because this result is load-bearing and was being read more broadly than it supports.]** What was demonstrated is a **synchronous** function, in a **single-file** crate, on **Windows/MSVC**, in a **debug** profile, in a crate that does **not** carry `#![forbid(unsafe_code)]`. Each of those is a real limit rather than an incidental detail:
+
+- **Async was not tested, and does not follow.** An instrumented dependency cannot name the `opentelemetry` crate, so it cannot call `FutureExt::with_context` — the async construct the rest of this design depends on ([ADR-001](17-decision-records.md)). Closing that gap needs a spliced `core`-only future wrapper over an extended C ABI ([§16.3](16-instrumentation-semantics.md)); that is a design, not a result ([R25](13-technical-risks.md), [Appendix E](appendix-e-experiment-matrix.md) FE-2).
+- **Multi-file crates** (`include!`, `#[path]`, `build.rs`-generated modules) were not exercised — [Appendix C.9](#c9-open-questions-that-survive-this-review-round) Q1, now FE-8.
+- **`lto`/`codegen-units=1`/`panic=abort`** were not exercised — Q7, now FE-1.
+- **Non-Windows link models** were not exercised, and the project's whole post-[ADR-005](17-decision-records.md) positioning is cross-platform — [R24](13-technical-risks.md), FE-7.
+- **`#![forbid(unsafe_code)]` would have failed** the splice outright (`E0453`), since `forbid` cannot be lifted by an inner `allow` — [R26](13-technical-risks.md), FE-3.
+
+The headline conclusion stands: dependency instrumentation on stable Rust is real, and the review's "structurally impossible" claim is refuted. The generalisation from it does not stand yet.
+
 ---
 
 ### C.3 Experiment: cache isolation without `RUSTFLAGS`
@@ -165,15 +175,17 @@ Comments, formatting, and line numbers all survive byte-for-byte outside the ins
 
 Neither this review round nor the corrections above closed these. They cannot be answered from documentation and require a corpus run, a prototype, or a nightly compiler-driver spike.
 
-| # | Question | Why it can't be answered from docs alone |
-| --- | --- | --- |
-| Q1 | Does source-tree mirroring (C.2) preserve `include_str!`, `#[path]`, `CARGO_MANIFEST_DIR`-relative paths, and proc-macro-driven resolution (e.g. `sqlx::query!`)? | The Appendix C.2 experiment used single-file crates. The review's enumeration of these hazards is credible but untested against a real multi-file crate. |
-| Q2 | What fraction of a real dependency graph rewrites cleanly with byte-range splicing and source-tree mirroring? | Needs a corpus run over real, published crates — not a synthetic sample. |
-| Q3 | Is a `&Task` pointer, read externally via a uprobe, stable and unique enough for poll correlation given pointer reuse after a task is freed? | Nobody has published this for Tokio specifically; it is the crux of whether H2's correlation key is trustworthy (§C.5). |
-| Q4 | Can `StateTransform`'s `.await`↔state-variant map actually be extracted from a custom rustc driver and serialized to a stable format? | Requires a nightly `rustc_private` driver spike; no existing tool does this today. |
-| Q5 | Can a USDT probe's argument-location format carry structured async metadata (state variant, `.await` source location), or does it need a companion ELF section alongside the standard USDT note? | USDT's argument encoding was designed for scalar probe arguments, not structured compiler metadata; untested against this use case. |
-| Q6 | How does `fastrace`'s overhead compare to `tracing`'s specifically under auto-instrumentation span volume and shape (many small, short-lived spans across dependency boundaries)? | `fastrace`'s published benchmarks are self-reported and measure their own chosen workload, not this one. |
-| Q7 | Do the injected `extern "C"` trampolines survive `lto = true`, `codegen-units = 1`, and `panic = "abort"` without being stripped or miscompiled? | Untested. §3.2.5 documents that LTO can strip a runtime crate that is only referenced from injected code in the MIR-instrumentation case; whether the same risk applies to a source-level `extern "C"` trampoline is a different, unverified question. A regression test for this combination was added to [§12.8](12-mvp-definition.md). |
+**[Dispositions added in the Phase 0 completion audit.]** Three of these closed with the eBPF branch and one was superseded; the survivors are consolidated into [Appendix E.3](appendix-e-experiment-matrix.md), which is now the single list of unrun experiments. The table is kept intact as the record of what this round was watching for.
+
+| # | Question | Why it can't be answered from docs alone | Disposition |
+| --- | --- | --- | --- |
+| Q1 | Does source-tree mirroring (C.2) preserve `include_str!`, `#[path]`, `CARGO_MANIFEST_DIR`-relative paths, and proc-macro-driven resolution (e.g. `sqlx::query!`)? | The Appendix C.2 experiment used single-file crates. The review's enumeration of these hazards is credible but untested against a real multi-file crate. | **Open → [Appendix E](appendix-e-experiment-matrix.md) FE-8.** Now the project's largest single unknown ([§15.5](15-final-recommendation.md)) |
+| Q2 | What fraction of a real dependency graph rewrites cleanly with byte-range splicing and source-tree mirroring? | Needs a corpus run over real, published crates — not a synthetic sample. | **Open → FE-8 / FE-9.** [R26](13-technical-risks.md) adds a term the question did not anticipate: crates carrying `#![forbid(unsafe_code)]` cannot be spliced at all |
+| Q3 | Is a `&Task` pointer, read externally via a uprobe, stable and unique enough for poll correlation given pointer reuse after a task is freed? | Nobody has published this for Tokio specifically; it is the crux of whether H2's correlation key is trustworthy (§C.5). | **CLOSED — [Appendix D.4](appendix-d-maintainer-qa.md).** Not ours: OBI #1096's prototype is in final testing against exactly this (pointer reuse after free), which this round independently predicted would be the hard case |
+| Q4 | Can `StateTransform`'s `.await`↔state-variant map actually be extracted from a custom rustc driver and serialized to a stable format? | Requires a nightly `rustc_private` driver spike; no existing tool does this today. | **CLOSED — [ADR-005](17-decision-records.md).** We emit no eBPF metadata in any format |
+| Q5 | Can a USDT probe's argument-location format carry structured async metadata (state variant, `.await` source location), or does it need a companion ELF section alongside the standard USDT note? | USDT's argument encoding was designed for scalar probe arguments, not structured compiler metadata; untested against this use case. | **CLOSED — [ADR-005](17-decision-records.md).** Same reason |
+| Q6 | How does `fastrace`'s overhead compare to `tracing`'s specifically under auto-instrumentation span volume and shape (many small, short-lived spans across dependency boundaries)? | `fastrace`'s published benchmarks are self-reported and measure their own chosen workload, not this one. | **SUPERSEDED — [Appendix D.2](appendix-d-maintainer-qa.md).** The question presumed `tracing` was the baseline; it is not. Replaced by D-Q2 / FE-6: native OTel vs. `tracing`+bridge |
+| Q7 | Do the injected `extern "C"` trampolines survive `lto = true`, `codegen-units = 1`, and `panic = "abort"` without being stripped or miscompiled? | Untested. §3.2.5 documents that LTO can strip a runtime crate that is only referenced from injected code in the MIR-instrumentation case; whether the same risk applies to a source-level `extern "C"` trampoline is a different, unverified question. A regression test for this combination was added to [§12.8](12-mvp-definition.md). | **Open → FE-1**, and widened by [R24](13-technical-risks.md): the same "referenced only from injected code" shape is what macOS `ld`'s dead-strip would remove, so FE-7 tests the platform variant of this question |
 
 ---
 

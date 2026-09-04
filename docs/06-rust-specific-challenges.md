@@ -84,7 +84,7 @@ Consequences:
 
 **[Inference — updated for the native API, [Appendix D.2](appendix-d-maintainer-qa.md)]** A `wrap_call`-style rule that rewrites `tokio::spawn(fut)` into `tokio::spawn(fut.with_context(Context::current()))` would fix a real, common, well-known bug class automatically. **[Added]** The native API improves the ceiling here: a spawned task's relationship to its spawner is naturally an OTel **span link**, which is the one capability [Appendix C.1](appendix-c-adversarial-review.md) confirmed `tracing` cannot express — so Phase 2 can model spawn fan-out properly rather than forcing it into parent/child. It is a strong candidate for the *second* rule we implement after generic function instrumentation, and it is a good demonstration of why call-site rules (not just definition rules) are needed. It is also a good argument for copying `otelc`'s `wrap_call` rule type rather than only `inject_hooks`.
 
-**[Open question]** Does `#[instrument]` on an `async fn` that internally spawns propagate to the spawned task? No — the spawned future is a separate future. Confirm with an experiment in Phase 1's test suite so we can document the limitation precisely.
+**[Resolved by specification, [§16.8](16-instrumentation-semantics.md)]** ~~Does `#[instrument]` on an `async fn` that internally spawns propagate to the spawned task?~~ Restated for the native API: an instrumented `async fn` that internally calls `tokio::spawn` does **not** propagate its context to the spawned task, under either API — the spawned future is a separate future and starts with a fresh context. This is now a specified Phase 1 limitation rather than an open question ([§16.15](16-instrumentation-semantics.md)), with a test in the MVP suite that asserts the break exists and is documented, so nobody discovers it as a surprise.
 
 **MVP:** spawn propagation is **out** of the MVP but should be the first post-MVP feature.
 
@@ -103,7 +103,7 @@ A span guard is an RAII value; its `Drop` runs during unwind, so the span closes
 **[Fact]** `otelc` puts panic isolation in its trampoline specifically so that instrumentation cannot break the application. Our equivalent concerns:
 
 - Under `panic = "abort"` (common in release profiles for size), `Drop` does not run during a panic at all, so the span never closes. **[Inference]** Acceptable — the process is dying.
-- Instrumentation code itself must not panic. A `Debug` impl that panics, invoked while recording an argument, would turn a working program into a crashing one. This is the strongest argument for `skip_all` by default and for never formatting user values without an explicit rule saying to.
+- Instrumentation code itself must not panic. A `Debug` impl that panics, invoked while recording an argument, would turn a working program into a crashing one. This is the strongest argument for `skip_args` by default *(the rule keyword was renamed from `skip_all` with the move off `tracing` — [§12.6](12-mvp-definition.md))* and for never formatting user values without an explicit rule saying to. Specified as invariant **S7**/**S9** ([§16.2](16-instrumentation-semantics.md)), and extended there to error values: an `Err` return sets span status with **no** description, because a user error type's `Display` may allocate, panic, or carry credentials.
 - `std::panic::catch_unwind` around hooks is *not* a good default: it is not free, and it is a no-op under `panic=abort`.
 
 **MVP:** spans close on unwind via `Drop`; panics are not recorded as span status. Document it.
@@ -153,6 +153,8 @@ At LLVM/binary level, inlined functions have no symbol and cannot be probed at a
 
 **[Fact]** A `const fn` cannot be instrumented in either API — `#[instrument]` on one is a compile error, and a spliced call to a non-`const` runtime function is equally a compile error. Also to exclude: functions in `const` contexts, `#[no_std]` crates without an allocator, `build.rs` scripts, proc-macro crates, and test harness code.
 
+**[Fact — added during the Phase 0 completion audit; a hard exclusion the earlier passes missed.]** A crate carrying `#![forbid(unsafe_code)]` **cannot be instrumented at all** by the trampoline mechanism. Calling an `extern "C"` function is an unsafe operation, and `forbid` — unlike `deny` — cannot be lifted by an inner `#[allow]`; attempting it is error `E0453`. The attribute is common in the ecosystem, so this is a real reduction in reachable dependency coverage, which is the project's differentiator. **Phase 1 behaviour: skip the crate, compile it unmodified, and record the reason in the plan** ([§16.3](16-instrumentation-semantics.md), [R26](13-technical-risks.md)). Stripping a user's own safety lint in order to instrument them is not an acceptable alternative. **[Open question]** Rust 1.82+ permits `unsafe extern "C" { safe fn … }`, whose items are callable without an `unsafe` block; whether that also avoids tripping the `unsafe_code` lint is untested and cheap to test — [Appendix E](appendix-e-experiment-matrix.md) FE-3.
+
 **[Inference]** The exclusion list is a first-class part of the design, not an afterthought. An auto-instrumentation tool that breaks the build on 3% of crates is useless, because "the build broke" is a much worse outcome than "no traces." The default posture must be: **when in doubt, do not instrument.**
 
 ### 6.12 MVP vs. deferred — summary
@@ -171,6 +173,8 @@ At LLVM/binary level, inlined functions have no symbol and cannot be probed at a
 | Recursive functions | ❌ excluded by default | Span explosion |
 | `#[inline]` / trivially small | ❌ excluded by default | Perturbs optimisation; low value |
 | Macro-generated items | ❌ out of scope | Invisible to source rewriting |
+| Crates with `#![forbid(unsafe_code)]` | ❌ excluded (whole crate) | `forbid` cannot be lifted by `allow`; a spliced trampoline call is `E0453`. Skip and report (§6.11) |
+| `async fn` **inside a dependency** | ⬜ Phase 2 | Needs the Tier-2 `core`-only future wrapper, which is designed but unproven ([§16.3](16-instrumentation-semantics.md), FE-2) |
 | `tokio::spawn` context propagation | ⬜ first post-MVP feature | High value, needs call-site rules |
 | Cross-process context propagation | ⬜ deferred | Needs library-specific rules |
 | Argument recording | ❌ off by default | Security: PII/secret exfiltration risk |

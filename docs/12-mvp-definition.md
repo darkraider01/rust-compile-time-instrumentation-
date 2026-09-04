@@ -54,7 +54,22 @@ Why this shape and not the alternatives:
 
 **The runtime is pre-built standalone in Phase 1**, outside Cargo's dependency graph, which is what defeats the topological-scheduling objection: Cargo never needs to know the runtime exists as a graph node ([§10](10-architecture-candidates.md), Architecture A).
 
-**Untested edges** carried into Phase 1: `lto = true` + `codegen-units = 1` + `panic = "abort"` ([Appendix C.9](appendix-c-adversarial-review.md) Q7 — regression test specified in §12.8), and source-tree mirroring against real multi-file crates ([Appendix D.6](appendix-d-maintainer-qa.md) D-Q4, now the project's largest open unknown).
+**The full ABI — including the async quartet — is specified in [§16.3](16-instrumentation-semantics.md).** The two-symbol sketch above is what the experiment used, not what Phase 1 ships.
+
+#### What the experiment did **not** establish
+
+Stated explicitly, because the mechanism's proven scope is narrower than the architecture's claimed scope:
+
+| | Status |
+| --- | --- |
+| **Synchronous** function in an undeclared dependency | **[Fact]** Demonstrated ([Appendix E](appendix-e-experiment-matrix.md) E-5) |
+| **`async fn`** in a dependency | **[Design, unproven]** An instrumented dependency cannot name the `opentelemetry` crate, so it **cannot call `FutureExt::with_context`** — the two mechanisms this document specifies are, as literally written, incompatible for Tier 2. The resolution is a spliced `core`-only future wrapper reproducing the same lifecycle over the C ABI ([§16.3](16-instrumentation-semantics.md)); it is a design, not a result. **Scoped out of the Phase 1 MVP** and scheduled as [Appendix E](appendix-e-experiment-matrix.md) FE-2 |
+| `lto = true` + `codegen-units = 1` + `panic = "abort"` | **[Untested]** [Appendix C.9](appendix-c-adversarial-review.md) Q7 / FE-1 — regression test specified in §12.8 |
+| Multi-file crates (`include!`, `#[path]`, `build.rs` modules) | **[Untested]** The experiment used single-file crates. [Appendix D.6](appendix-d-maintainer-qa.md) D-Q4 / FE-8 — the project's largest open unknown |
+| Non-Windows link models (ELF, Mach-O) | **[Untested]** Every experiment ran on Windows/MSVC. [R24](13-technical-risks.md) / FE-7 — and the cross-platform claim is now the project's positioning |
+| Crates with `#![forbid(unsafe_code)]` | **[Fact — will fail]** `forbid` cannot be lifted by `allow` (`E0453`); such crates are skipped ([§6.11](06-rust-specific-challenges.md), [R26](13-technical-risks.md)). Possible escape via `unsafe extern { safe fn … }` untested — FE-3 |
+
+**Edition sensitivity.** `unsafe extern "C" { … }` is edition-2024 syntax; earlier editions need a bare `extern "C" { … }` block. The wrapper receives `--edition` in its argv, so the splicer selects the form per crate rather than emitting one shape everywhere ([R4](13-technical-risks.md)).
 
 ### 12.2 Supported constructs
 
@@ -80,8 +95,10 @@ Why this shape and not the alternatives:
 | Macro-generated items | Not seen at all; documented |
 | `std` / precompiled crates | Out of scope |
 | Third-party dependencies | **One dependency in Phase 1** (see §12.1 revision), to prove the mechanism generalizes past the workspace boundary. Full dependency-graph coverage across an arbitrary crate graph is **Phase 2**. |
+| **`async fn` inside a dependency** | **Phase 2.** The MVP's dependency slice instruments a **synchronous** function — the shape the mechanism was actually demonstrated on (§12.1a). Tier-2 async needs the `core`-only future wrapper ([§16.3](16-instrumentation-semantics.md)), which is unproven. Async correctness is still an MVP requirement — proven in the **application** crate, where the native API is available |
+| **Crates with `#![forbid(unsafe_code)]`** | Skipped entirely, with the reason in the plan. `forbid` cannot be lifted by `allow` ([§6.11](06-rust-specific-challenges.md), [R26](13-technical-risks.md)) |
 | Cross-process context propagation | Phase 2+ |
-| Argument value capture | Off; `skip_all` always in Phase 1 |
+| Argument value capture | Off; `skip_args` unconditional in Phase 1 (renamed from `skip_all` with the move off `tracing` — §12.6) |
 | `no_std` crates | Out of scope |
 | Metrics, logs | Out of scope |
 | eBPF | **Out of scope, hard boundary** |
@@ -97,14 +114,29 @@ Injected/runtime dependencies (added to the **application** crate only — never
 
 **[Revised after the maintainer Q&A round, see [Appendix D.2](appendix-d-maintainer-qa.md)]** `tracing`, `tracing-subscriber`, and `tracing-opentelemetry` are **no longer injected**. The original design generated `#[tracing::instrument]` on the premise that only `tracing` models async future interleaving correctly; OTel Rust maintainer Scott Gerring disproved that — `opentelemetry::trace::FutureExt::with_context` attaches the context on each `poll()` and detaches on yield, matching `tracing::Instrument`'s lifecycle. Dropping the three crates closes [R14](13-technical-risks.md) (the deliberate `tracing-opentelemetry` ↔ `opentelemetry` version offset) and removes the bridge's hot-path context synchronisation. A `tracing` emitter remains available behind the §11.4 seam for users who want generated spans inside their existing `tracing` tree.
 
-**Generated forms:**
+**Generated forms.** These differ by **tier** — whether the crate being instrumented may name `opentelemetry` ([§16.3](16-instrumentation-semantics.md)). The semantics are identical either way; only the spelling changes. *(Illustrative shapes; [§16](16-instrumentation-semantics.md) is normative.)*
 
 ```rust
-// sync fn — guard to end of scope
-let _otel_guard = __otel_span_enter(/* name, kind, code.* attrs */);
+// ── Tier 1: application / workspace crates (may depend on `opentelemetry`) ──
 
-// async fn — no guard held across .await; the future carries the context
+// sync fn — guard to end of scope, bound to a NAMED local.
+// `let _ = …` would drop immediately and end the span before the body runs.
+let _otel_guard = /* tracer.start(...) + Context::attach */;
+
+// async fn — no guard across .await; the future carries the context,
+// attaching per poll() and detaching on yield.
 async move { /* original body */ }.with_context(cx)
+
+
+// ── Tier 2: third-party dependencies (no Cargo edge to `opentelemetry`) ──
+
+// sync fn — C-ABI trampoline; guard struct defined in the splice, Drop calls exit.
+let _otel_guard = OtelGuard(unsafe { __otel_span_enter(/* name, file, line, kind */) });
+
+// async fn — NOT YET DEMONSTRATED. Requires a `core`-only spliced future wrapper
+// calling __otel_ctx_attach / __otel_ctx_detach per poll, since `with_context`
+// cannot be named here. Design in §16.3; prototype is Appendix E FE-2; R25.
+// Phase 1's dependency slice is synchronous for exactly this reason.
 ```
 
 ### 12.5 CLI
@@ -114,7 +146,7 @@ cargo instrument [OPTIONS] -- <cargo args...>
 
   --rules <PATH>            Additional rule file(s). Repeatable.
   --plan-only               Run analysis, print the plan, do not build.
-  --emit-plan <PATH>        Write the plan as JSON (the metadata-artifact seed).
+  --emit-plan <PATH>        Write the plan as JSON, for diffing and CI snapshots.
   --dump-rewritten <DIR>    Write rewritten sources here for inspection.
   --verbosity <TIER>        Generation-time selectivity tier (default: normal).
                             Chooses WHICH functions get spans; OTel spans have no
@@ -165,10 +197,10 @@ Only one rule type (`inject_span`, our `inject_hooks` analogue) in Phase 1. `wra
 
 ### 12.7 Success criteria
 
-The MVP is done when all of these hold:
+The MVP is done when all of these hold. **[§16](16-instrumentation-semantics.md) is the correctness oracle** — criteria 3–6 are its invariants restated as acceptance tests, and [§16.16](16-instrumentation-semantics.md) maps every invariant to the test that proves it.
 
 1. **It builds a real async application unmodified.** A small axum + tokio + `sqlx`-or-mock service compiles and runs under `cargo instrument` with no source edits beyond adding the tool.
-1a. **The one MVP dependency is instrumented without any edit to its own source, `Cargo.toml`, or lockfile.** (Appendix C.2/C.8 item 5.) This is the criterion that actually validates the differentiator, not just the pipeline.
+1a. **The one MVP dependency is instrumented without any edit to its own source, `Cargo.toml`, or lockfile.** (Appendix C.2/C.8 item 5.) This is the criterion that actually validates the differentiator, not just the pipeline. **[Scoped, §12.1a]** The instrumented dependency function is **synchronous** — the shape [Appendix E](appendix-e-experiment-matrix.md) E-5 actually demonstrated. Async-in-dependency is Phase 2 and must not be claimed by the MVP.
 2. **Spans appear in a collector.** Traces reach an OTel Collector over OTLP and render correctly in Jaeger or equivalent — including at least one span produced from inside that dependency.
 3. **Nesting is correct.** A synchronous call chain `a → b → c` produces three correctly nested spans.
 4. **Async durations and context are correct.** **[Revised, [Appendix D.2](appendix-d-maintainer-qa.md)]** An `async fn` that awaits a 100 ms sleep produces exactly **one** span whose duration is ≈100 ms — not one span per `poll()`, and not a duration that collapses to the CPU-busy time. The `busy`/`idle` half of the original criterion is dropped: it was a `tracing-opentelemetry` synthesis with no field in the OTel data model. What replaces it, and is the sharper test of `with_context`: **while the task is suspended, the span's context is not current on the thread that was polling it** — a second, unrelated instrumented function running on that thread during the sleep must not become a child. This is the single most important correctness test in the MVP.
@@ -195,7 +227,7 @@ The MVP is done when all of these hold:
 - Every §12.3 construct is skipped and the crate still compiles.
 - Instrumented and uninstrumented builds produce the same program output.
 
-**Integration — telemetry correctness** (in-process span exporter, no network)
+**Integration — telemetry correctness** (in-process span exporter, no network) — *this suite is [§16.16](16-instrumentation-semantics.md)'s oracle table; keep the two in sync*
 - Sync nesting (criterion 3).
 - Async duration: exactly one span, duration ≈ 100 ms (criterion 4).
 - Context is not current on the polling thread while the task is suspended (criterion 4).
@@ -224,7 +256,10 @@ The MVP is done when all of these hold:
 | O4 | **[Reframed, [Appendix D.2](appendix-d-maintainer-qa.md)]** ~~Does `#[instrument]` compose with `#[async_trait]`/`#[tokio::main]`?~~ Does a **body splice** survive functions that attribute macros rewrite — `#[async_trait]` (desugars the body into a boxed future), `#[tokio::main]`, `#[test]`? | Determines a large slice of real-world compatibility. Note this is a *different and probably easier* question than the attribute-ordering one: we insert statements into a body rather than adding an attribute whose expansion order matters | Compilation tests across the macro matrix |
 | O5 | How do we avoid double-instrumenting a function that is already instrumented, by `#[instrument]` or by a hand-written OTel span? | Duplicate spans corrupt traces | Detect existing attributes and existing `tracer.start`/`with_context` calls in the AST; test |
 | O6 | ~~Exact `code.*` semantic-convention attribute names and their stability~~ **RESOLVED** | **[Fact]** Stable since semconv v1.33.0: `code.function.name`, `code.file.path`, `code.line.number`, `code.column.number`, `code.stacktrace`. See [§5.3](05-otel-rust.md). | — |
-| O7 | ~~Does the tool need to modify `Cargo.toml` (to add `tracing` etc.), and how do we do that without wrecking the user's lockfile?~~ **Substantially narrowed** | **[Revised — see [Appendix C.2](appendix-c-adversarial-review.md)]** With the extern `"C"` trampoline mechanism, an **instrumented dependency needs no `Cargo.toml` change at all** — the wrapper injects only a symbol declaration, resolved at the application's own final link step. Only the **application crate** needs `tracing`/`tracing-opentelemetry`/`opentelemetry-otlp` (which it needs anyway, as the runtime owner) — a normal, first-party `Cargo.toml` edit, not a synthetic edit to a dependency's manifest. | Confirm in the MVP's dependency slice (§12.1): the instrumented dependency's own `Cargo.toml`/lockfile should be provably untouched after a build. |
+| O7 | ~~Does the tool need to modify `Cargo.toml` (to add `tracing` etc.), and how do we do that without wrecking the user's lockfile?~~ **Substantially narrowed** | **[Revised — [Appendix C.2](appendix-c-adversarial-review.md), then [Appendix D.2](appendix-d-maintainer-qa.md)]** With the extern `"C"` trampoline mechanism, an **instrumented dependency needs no `Cargo.toml` change at all** — the wrapper injects only a symbol declaration, resolved at the application's own final link step. Only the **application crate** needs `opentelemetry`/`opentelemetry_sdk`/`opentelemetry-otlp` plus our runtime crate (which it needs anyway, as the runtime owner) — a normal, first-party `Cargo.toml` edit, not a synthetic edit to a dependency's manifest. *(The earlier `tracing`/`tracing-opentelemetry` list is superseded — those crates are no longer injected, §12.4.)* | Confirm in the MVP's dependency slice (§12.1): the instrumented dependency's own `Cargo.toml`/lockfile should be provably untouched after a build. |
+| O8 | Does `unsafe extern "C" { safe fn … }` (Rust 1.82+) let us instrument a `#![forbid(unsafe_code)]` crate, or does the `unsafe_code` lint fire regardless? | Directly sizes the ceiling on dependency coverage, which is the differentiator. `forbid` cannot be lifted by `allow`, so today such crates are skipped outright ([R26](13-technical-risks.md)) | [Appendix E](appendix-e-experiment-matrix.md) FE-3 — hours, not days. Then count the attribute's prevalence across a real dependency corpus to learn what it costs us |
+| O9 | Can a `core`-only spliced future wrapper reproduce `FutureExt::with_context`'s lifecycle across the C ABI? | Decides whether dependency coverage extends to `async fn` at all, or stops at synchronous functions ([§16.3](16-instrumentation-semantics.md)) | [Appendix E](appendix-e-experiment-matrix.md) FE-2, verified against the [§16.16](16-instrumentation-semantics.md) oracle |
+| O10 | Should a generated async span start at future **construction** or at **first poll**? | A normative semantic clause currently decided on reasoning alone ([§16.7](16-instrumentation-semantics.md)); it changes reported durations for any future not awaited immediately | [Appendix E](appendix-e-experiment-matrix.md) FE-4: construct, sleep 100 ms, await; assert the sleep is excluded |
 
 ---
 

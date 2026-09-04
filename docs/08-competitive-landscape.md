@@ -23,7 +23,7 @@ Only technically relevant entries are included. "Automatic" means the user does 
 | **`-C instrument-coverage`** | ✓ | ✓ | ✓ | ✗ | ✓ (LLVM) | ✗ | ✗ |
 | **`-Z instrument-xray`** | ✓ | ✓ | ✓ | ✗ | ✓ (LLVM) | ✗ | ✗ |
 | **`sccache`** | ✓ | ✓ | ✓ | ✗ | ✗ (wrapper only) | ✗ | ✗ |
-| **← our proposed project** | ✓ | ✓ | ✓ | ✓ | later | later | ✓ |
+| **← our proposed project** | ✓ | ✓ | ✓ | ✓ | Phase 3 spike only | **never** | ✓ |
 
 **Reading the table.** Three clusters exist and the intersection between them is empty:
 
@@ -32,6 +32,8 @@ Only technically relevant entries are included. "Automatic" means the user does 
 3. **Rust + automatic + compile-time** — all existing entries are **not OTel** (Clippy, Miri, coverage, XRay; these are analysis or profiling tools).
 
 **[Inference]** The unoccupied cell is precisely **Rust + automatic + compile-time + OTel**. That is the project's differentiator, and it is a real one — but note that it is a *combination* gap, not a *mechanism* gap: every individual mechanism required already exists and is proven. That is good news for feasibility and bad news for novelty claims (§9.4).
+
+**[Updated — [Appendix D.4](appendix-d-maintainer-qa.md) / [ADR-005](17-decision-records.md).]** Our project's own row previously read "later / later" for the compiler-level and eBPF columns. Both are now settled: **eBPF is never** (the branch is closed, and OBI #1096 is building Rust async support upstream), and compiler-level is a Phase 3 spike behind a nightly feature flag, never the default path. **A column this table does not have, and which matters more after that closure, is *platform*.** OBI and J00MZ are Linux-with-privileges only; every source-level and compile-time row works everywhere Rust does. That is the axis on which this project does not compete with #1096 ([§14.4](14-evaluation-plan.md)) — and, per [R24](13-technical-risks.md), the axis on which it has not yet tested itself.
 
 ---
 

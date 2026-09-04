@@ -110,6 +110,68 @@ The Cargo port, to be in place before we ship rules for more than a handful of c
 
 **[Inference]** Two reasons this ranks higher for us than it does for `otelc`. First, we splice into source rather than matching exported API shapes, so we are sensitive to internal refactors that do not change a crate's public API at all — a strictly larger breakage surface. Second, `otelc` is a SIG with contributors; an unattended rule set is worse for a small project, not better. This is the cheapest available substitute for people.
 
+### 14.7 Experimental design
+
+§14.1–14.4 say *what to measure*. This section states the study those measurements constitute, so results can be reported as findings rather than as a pile of numbers. It is written to be usable as the methods section of a write-up ([§15.7](15-final-recommendation.md) assesses whether that write-up is worth attempting).
+
+**Research question.**
+
+> **Can whole-dependency-graph, zero-code OpenTelemetry instrumentation be delivered for Rust at build time on a stable toolchain — and at what cost in build time, runtime overhead, and coverage?**
+
+Note what this deliberately does *not* ask. It does not ask whether compile-time auto-instrumentation is possible (`otelc` answered that for Go), and after [ADR-005](17-decision-records.md) it does not ask anything about eBPF. The open part is **Rust**: async semantics, monomorphization, macro invisibility, and the absence of a `//go:linkname` equivalent.
+
+**Hypotheses** — each stated so a result can falsify it.
+
+| # | Hypothesis | Falsified by |
+| --- | --- | --- |
+| **HA** | A `RUSTC_WRAPPER` splicing `extern "C"` trampolines can instrument third-party dependencies on stable Rust, without modifying their source, manifest, or the lockfile | Already **supported** for synchronous functions ([Appendix E](appendix-e-experiment-matrix.md) E-5). Falsified for the general case if FE-1 (LTO/`panic=abort`), FE-7 (non-Windows link models), or FE-8 (multi-file crates) fail |
+| **HB** | Generated `FutureExt::with_context` wrapping produces correct async span semantics — one span per invocation, wall-clock duration, no context leakage across suspension, isolation under worker-thread migration | Any [§16.16](16-instrumentation-semantics.md) oracle failure. This is the MVP's load-bearing claim |
+| **HC** | Correct async semantics survive the C-ABI boundary into a crate that cannot name `opentelemetry` (Tier 2) | FE-2. **Currently unproven** — the single largest gap in the evidence base ([R25](13-technical-risks.md)) |
+| **HD** | The build-time cost lands within 1.5×–3× clean compile, consistent with `otelc`'s measured Go figures | FE-10. Falsified in the direction that matters if *incremental* rebuild consistently exceeds 2× ([§15.6](15-final-recommendation.md)) |
+| **HE** | Automatic instrumentation reaches a useful fraction of a real crate's functions after the [§12.3](12-mvp-definition.md) exclusions | FE-9. If default exclusions remove most functions, the tool is a wrapper regardless of mechanism ([§9.5](09-gap-analysis.md)) |
+| **HF** | Generating the native OTel API costs no more per span than `tracing` + `tracing-opentelemetry` | FE-6. Falsification does not reverse [ADR-001](17-decision-records.md) — it triggers an emitter swap ([ADR-006](17-decision-records.md)) |
+
+**Independent variables** — what we manipulate:
+
+| Variable | Levels |
+| --- | --- |
+| Instrumentation configuration | A–G of [§14.2](14-evaluation-plan.md) (uninstrumented → gate off → non-recording → recording → exporting → manual native → manual `tracing`) |
+| Emitter | native OTel · C trampoline (Tier 2) · `tracing` · dry-run |
+| Scope | workspace only · workspace + one dependency · full graph |
+| Workload shape | sync call chain · single async task · many concurrent async tasks · HTTP service under load |
+| Build type | clean · incremental (one-line change) · no-change rebuild |
+| Platform | Linux · macOS · Windows **(currently a single level — [R24](13-technical-risks.md))** |
+| Compiler profile | debug · release · release + `lto`/`codegen-units=1`/`panic=abort` |
+
+**Dependent variables** — what we measure:
+
+| Class | Measures |
+| --- | --- |
+| **Correctness** | Oracle pass/fail per [§16.16](16-instrumentation-semantics.md) invariant; span count vs. expected; parent/child edge accuracy; duration error vs. known sleep |
+| **Coverage** | Instrumented ÷ instrumentable functions; skip-reason distribution; crates successfully mirrored and spliced ÷ crates attempted; **crates blocked by `#![forbid(unsafe_code)]`** ([R26](13-technical-risks.md)) |
+| **Runtime** | Per-call cost (criterion); service throughput; p50/p95/p99 latency — **distributions, not means** |
+| **Memory** | Steady-state RSS; allocations per request |
+| **Binary size** | `.text` and total, stripped and unstripped |
+| **Build time** | Clean wall time; incremental wall time; peak compile memory; tool time vs. `rustc` time, measured separately |
+
+**Baselines** — every measurement takes its baseline in the same run, on the same hardware:
+
+1. **Uninstrumented** — the floor.
+2. **Manual native-OTel instrumentation** of the same functions — *"are we worse than a human doing it by hand?"* The most demanding baseline and the one users actually compare against.
+3. **Manual `#[tracing::instrument]` + bridge** — the comparison a `tracing`-using reader will demand, and the empirical price of [ADR-001](17-decision-records.md).
+4. **`otelc` on an equivalent Go service** — for *build-time* overhead only. Not a runtime comparison: different language, different runtime, and cross-language latency claims would be dishonest.
+5. **OBI on the same Rust service** — for *coverage shape*, not overhead. It produces network-boundary spans and we produce function spans; the honest comparison is what each can and cannot see, on which platforms.
+
+**Workloads.** Three, fixed and published, so results are reproducible:
+
+| Workload | Purpose |
+| --- | --- |
+| **W1 — microbenchmark harness** | Per-call and per-poll cost in isolation. criterion, ≥10 runs, median and IQR |
+| **W2 — a small axum + tokio service** with a mock or real datastore | The realistic case, and the MVP's own acceptance target ([§12.7](12-mvp-definition.md)) |
+| **W3 — a real open-source crate corpus** (≥5 for `--plan-only`, ≥2 built) | Coverage, exclusion rates, mirroring survival, and build overhead at real scale. The only workload that can falsify HA and HE |
+
+**Reporting criteria.** A result is publishable when: the harness is public; hardware, toolchain, and dependency versions are recorded with every number; ≥10 runs report median and IQR; **negative results are reported in the same place as positive ones** ([§14.5](14-evaluation-plan.md)); and no comparison against another project is published without running both ourselves.
+
 ---
 
 ---
