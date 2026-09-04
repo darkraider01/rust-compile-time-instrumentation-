@@ -270,3 +270,25 @@ edition = "2021"
         "ADR-004: default target/debug must not be clobbered when running cargo-instrument"
     );
 }
+
+#[test]
+fn test_cli_analyze_subcommand() {
+    let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let test_file = temp_dir.path().join("sample.rs");
+    fs::write(&test_file, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n")
+        .expect("write sample.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    let output = Command::new(cargo_instrument_bin)
+        .arg("analyze")
+        .arg(&test_file)
+        .output()
+        .expect("failed to run cargo-instrument analyze");
+
+    assert!(output.status.success(), "analyze command must exit 0");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("candidates:"));
+    assert!(stdout.contains("add: bytes"));
+}

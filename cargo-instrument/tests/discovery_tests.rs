@@ -189,3 +189,29 @@ fn test_classify_real_cargo_build_invocation() {
         other => panic!("expected RustCrate, got {:?}", other),
     }
 }
+
+#[test]
+fn test_discovery_empty_arguments_error() {
+    use cargo_instrument::discovery::DiscoveryError;
+    let result = CrateInvocation::parse(&[]);
+    match result {
+        Err(DiscoveryError::EmptyArguments) => {}
+        other => panic!("expected EmptyArguments error, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_discovery_passthrough_when_no_source_file() {
+    let args = vec![
+        "--crate-name".to_string(),
+        "something".to_string(),
+        "-C".to_string(),
+        "opt-level=3".to_string(),
+    ];
+    let invocation = CrateInvocation::parse(&args).expect("parsing should succeed");
+    assert!(matches!(
+        invocation.unit,
+        CompilationUnit::PassThrough { .. }
+    ));
+    assert!(!invocation.unit.is_eligible_for_analysis());
+}
