@@ -96,6 +96,8 @@ Affected sections: [§4.5](04-rust-instrumentation-landscape.md), [§7.4–7.5](
 
 **Consequence — a genuine complication, not a clean resolution in our favour:** The good news is that `tracing` is not going away — the risk framed in the original document (R15: "#1571 resolves against tracing") does not materialize as stated. The complication is new: the project's own **current, official guidance for new code recommends the opposite of what §5.4 recommends we generate**. This does not automatically overturn §5.4's recommendation — the reasoning there (async correctness via the `Instrumented` future, `STATIC_MAX_LEVEL`, ecosystem convergence with `tokio`/`hyper`/`axum`) is about risk for a tool generating code automatically at scale, which is a different question from "what should a human write by hand" — but it means we are now making a **considered, stated departure from upstream guidance**, not merely picking whichever API happens to be safe. This has been written into §5.2/§5.4 directly rather than left as a footnote.
 
+**[Superseded — [Appendix D.2](appendix-d-maintainer-qa.md), maintainer Q&A round.]** The "considered departure" recorded above lasted one review round. Its central supporting reason — async correctness via `Instrumented` — was refuted directly by OTel Rust maintainer Scott Gerring: `opentelemetry::trace::FutureExt::with_context` attaches per-`poll()` and detaches on yield, so the native API was never the incorrect choice this item assumed. §5.4 now generates the native OTel API and **follows** upstream guidance. Of the three reasons cited in this paragraph, one is refuted (async), one was already demoted in [Appendix C.1](appendix-c-adversarial-review.md) (`STATIC_MAX_LEVEL` is global, never per-tool), and one survives as a real but non-decisive cost (ecosystem convergence with `tokio`/`hyper`/`axum`).
+
 Affected sections: [§5.2](05-otel-rust.md) (substantially rewritten), [§5.4](05-otel-rust.md) (recommendation reasoning and costs both updated), [§15.5 Q10](15-final-recommendation.md), [§1.5](../README.md) confidence table (confidence revised down from "Medium-high" to "Medium").
 
 ---
@@ -167,9 +169,11 @@ Affected sections: [§12.9 O2](12-mvp-definition.md), [§13, R11](13-technical-r
 
 **Finding:** See item 3 above. [J00MZ/opentelemetry-rust-instrumentation](https://github.com/J00MZ/opentelemetry-rust-instrumentation) states its async strategy as "instrument at the executor level and track task contexts to maintain proper span hierarchies" — a real, current attempt at exactly this problem, using runtime heuristics with no compiler assistance, with no published accuracy data.
 
-**Status: still unresolved, correctly.** This neither confirms nor refutes H2. It does two useful things: it confirms the problem is being actively worked on elsewhere (raising confidence that it is a real, non-trivial, currently-open problem rather than something already solved that we would be redundantly re-attempting), and it gives Phase 3 a concrete artifact to study — reading J00MZ's actual implementation and any results it produces is now a well-defined, cheap first step before building an independent prototype.
+**Status at the time: still unresolved, correctly.** This neither confirmed nor refuted H2. It did two useful things: it confirmed the problem was being actively worked on elsewhere, and it gave Phase 3 a concrete artifact to study.
 
-Affected sections: [§7.4–7.5](07-ebpf-future.md), [§15.5 Q8](15-final-recommendation.md), [§15.6](15-final-recommendation.md).
+**[RESOLVED — [Appendix D.4](appendix-d-maintainer-qa.md), maintainer Q&A round.]** OBI maintainer **Giuseppe Ognibene has a working prototype** of Tokio async task reconstruction and context propagation in eBPF (OBI issue #1096), in final testing. This item's own reasoning held up: it correctly judged H2 to be a real, open, actively-worked problem — and the party actively working it turned out to be OBI itself, not J00MZ. The [§15.6](15-final-recommendation.md) pivot condition fired and the eBPF branch is abandoned; the prototype this item anticipated will not be built here.
+
+Affected sections: [§7.4–7.5](07-ebpf-future.md), [§15.5 Q8](15-final-recommendation.md), [§15.6](15-final-recommendation.md) — all now marked closed.
 
 ---
 

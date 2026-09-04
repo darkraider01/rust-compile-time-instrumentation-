@@ -11,7 +11,7 @@ For each construct: what makes it hard, and at which layer(s) it is tractable.
 
 Easy at every layer. Source: add `#[instrument]`. MIR: prepend a call at the entry block, append at every `Return` terminator. Binary: uprobe on the symbol.
 
-**Complication:** every layer must decide what to *name* the span and which arguments to record. Recording all arguments (the `#[instrument]` default) is wrong for automatic instrumentation — it can leak secrets and it can be expensive (`Debug`-formatting a large struct on every call). **Automatic instrumentation must default to `skip_all`.** This is a security requirement, not a performance preference: an auto-instrumentation tool that records every argument by default will exfiltrate passwords, tokens, and PII into a telemetry backend without anyone deciding to.
+**Complication:** every layer must decide what to *name* the span and which arguments to record. Recording all arguments (the `#[instrument]` default) is wrong for automatic instrumentation — it can leak secrets and it can be expensive (`Debug`-formatting a large struct on every call). **Automatic instrumentation must never capture argument values by default** (`skip_args` in our rule vocabulary, [§12.6](12-mvp-definition.md)). This is a security requirement, not a performance preference: an auto-instrumentation tool that records every argument by default will exfiltrate passwords, tokens, and PII into a telemetry backend without anyone deciding to.
 
 **MVP:** yes.
 
@@ -61,8 +61,9 @@ Consequences:
 
 | Layer | What "instrumenting `foo`" naturally means | Resulting span duration |
 | --- | --- | --- |
-| **Source (`#[instrument]`)** | Wrap the returned future in `Instrumented`, entering/exiting the span around each `poll` | **Correct.** Span opens when the future is first polled, closes when it completes. `tracing` separates busy time (in `poll`) from idle time (suspended) |
-| **Source (naïve — RAII guard at the top of the body)** | `let _g = span.enter();` as the first statement of an `async fn` | **Wrong, and this is the classic Rust tracing bug.** The guard is held across `.await`, so the span stays "entered" while the task is suspended and another task runs — corrupting the thread-local span stack. `tracing` documents this hazard; `#[instrument]` exists partly to prevent it |
+| **Source — native OTel (`FutureExt::with_context`)** ← **what we generate** | Wrap the returned future so the context is `attach()`ed at the start of each `poll` and detached on yield | **Correct.** The span brackets the whole logical operation; context attachment tracks the interleaving. **[Fact, [Appendix D.2](appendix-d-maintainer-qa.md)]** No `busy`/`idle` split — the OTel data model has no field for it |
+| **Source (`#[instrument]`)** | Wrap the returned future in `Instrumented`, entering/exiting the span around each `poll` | **Also correct**, by the same design. `tracing` additionally separates busy time (in `poll`) from idle time (suspended). **[Revised, [Appendix D.2](appendix-d-maintainer-qa.md)]** This row was previously the *only* correct source-layer option in this table; that was wrong, and it was the premise behind §5.4's original emitter choice |
+| **Source (naïve — RAII guard at the top of the body)** | `let _g = span.enter();` (or a bare `Context::attach` guard) as the first statement of an `async fn` | **Wrong in both APIs, and this is the classic Rust instrumentation bug.** The guard is held across `.await`, so the context stays current while the task is suspended and another task runs — corrupting thread-local state globally rather than locally. `#[instrument]` and `with_context` both exist partly to prevent it ([R5](13-technical-risks.md)) |
 | **MIR on the outer `foo` body** | Instrument entry/exit of the function that *constructs* the future | **Meaningless.** Measures the nanoseconds spent building a struct. The actual work has not happened yet, and may never happen if the future is dropped unpolled |
 | **MIR on the coroutine body, post-`StateTransform`** | Instrument entry/exit of the `poll` function | **One span per poll.** You get N spans for a future polled N times, none of which corresponds to the logical operation |
 | **MIR on the coroutine body, pre-`StateTransform`** | Instrument the pre-transform body, letting `StateTransform` split it | **Potentially correct, and this is the interesting research question.** Instrumentation inserted before the transform would be threaded through the state machine by the transform itself. But the span guard would become a local live across suspension points, hence a field of the coroutine struct — which is *exactly* the right representation, and is essentially what `Instrumented` achieves by hand |
@@ -73,15 +74,15 @@ Consequences:
 
 **[Hypothesis — worth testing, do not assume]** MIR instrumentation inserted into a coroutine body *before* `StateTransform` would be correctly threaded into the state machine, producing a span guard stored in the coroutine struct and thus correct logical-duration semantics. This would require overriding `mir_drops_elaborated_and_const_checked` (which rustc explicitly supports overriding, per the `#114628` comment **[Fact]**) and running the pass at the right point in `run_analysis_to_runtime_passes` rather than overriding `optimized_mir`. If true, this is a genuinely novel and defensible technical result. If false — for example if the borrow checker or the transform rejects our injected locals — MIR-level async instrumentation is a dead end and Architecture B loses most of its appeal.
 
-**MVP:** async functions **must** be supported (they are the majority of code in any real Rust service), via `#[instrument]`-equivalent generation at source level. MIR-level async is explicitly deferred to a research spike.
+**MVP:** async functions **must** be supported (they are the majority of code in any real Rust service), via **`FutureExt::with_context` wrapping** at source level ([Appendix D.2](appendix-d-maintainer-qa.md)). MIR-level async is explicitly deferred to a research spike.
 
 ### 6.4 Futures, `.await`, Tokio tasks, spawned tasks
 
 **`.await` points.** Instrumenting individual `.await` expressions (rather than function boundaries) would give await-level granularity. `tracing` has no idiomatic construct for this beyond `.instrument(span)` on the awaited future. **[Inference]** High cardinality, low value. Defer indefinitely.
 
-**`tokio::spawn`.** A spawned task starts with a *fresh* context — `tracing`'s span context is thread-local and does not follow a future onto another worker thread unless the future was explicitly `.instrument(...)`-ed before being spawned. This is the single most common cause of "my trace is broken across a spawn" in Rust.
+**`tokio::spawn`.** A spawned task starts with a *fresh* context — context is thread-local in both APIs and does not follow a future onto another worker thread unless the future was explicitly wrapped before being spawned. This is the single most common cause of "my trace is broken across a spawn" in Rust.
 
-**[Inference]** A `wrap_call`-style rule that rewrites `tokio::spawn(fut)` into `tokio::spawn(fut.instrument(tracing::Span::current()))` would fix a real, common, well-known bug class automatically. It is a strong candidate for the *second* rule we implement after generic function instrumentation, and it is a good demonstration of why call-site rules (not just definition rules) are needed. It is also a good argument for copying `otelc`'s `wrap_call` rule type rather than only `inject_hooks`.
+**[Inference — updated for the native API, [Appendix D.2](appendix-d-maintainer-qa.md)]** A `wrap_call`-style rule that rewrites `tokio::spawn(fut)` into `tokio::spawn(fut.with_context(Context::current()))` would fix a real, common, well-known bug class automatically. **[Added]** The native API improves the ceiling here: a spawned task's relationship to its spawner is naturally an OTel **span link**, which is the one capability [Appendix C.1](appendix-c-adversarial-review.md) confirmed `tracing` cannot express — so Phase 2 can model spawn fan-out properly rather than forcing it into parent/child. It is a strong candidate for the *second* rule we implement after generic function instrumentation, and it is a good demonstration of why call-site rules (not just definition rules) are needed. It is also a good argument for copying `otelc`'s `wrap_call` rule type rather than only `inject_hooks`.
 
 **[Open question]** Does `#[instrument]` on an `async fn` that internally spawns propagate to the spawned task? No — the spawned future is a separate future. Confirm with an experiment in Phase 1's test suite so we can document the limitation precisely.
 
@@ -150,7 +151,7 @@ At LLVM/binary level, inlined functions have no symbol and cannot be probed at a
 
 ### 6.11 `const fn`, and other hard exclusions
 
-**[Fact]** `#[instrument]` cannot be applied to `const fn` — it is a compile error. Also to exclude: functions in `const` contexts, `#[no_std]` crates without an allocator, `build.rs` scripts, proc-macro crates, and test harness code.
+**[Fact]** A `const fn` cannot be instrumented in either API — `#[instrument]` on one is a compile error, and a spliced call to a non-`const` runtime function is equally a compile error. Also to exclude: functions in `const` contexts, `#[no_std]` crates without an allocator, `build.rs` scripts, proc-macro crates, and test harness code.
 
 **[Inference]** The exclusion list is a first-class part of the design, not an afterthought. An auto-instrumentation tool that breaks the build on 3% of crates is useless, because "the build broke" is a much worse outcome than "no traces." The default posture must be: **when in doubt, do not instrument.**
 
