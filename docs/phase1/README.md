@@ -6,8 +6,35 @@
 
 **Milestones covered:** P1.1, P1.2, P1.3  
 **Status:** P1.1–P1.3 Complete; P1.4 Next  
-**Toolchain baseline:** Rust 1.97+ stable; Cargo 1.97+ stable; `syn` 2.0; `proc-macro2` 1.0; `quote` 1.0  
+**Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
+**Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
 **Test suite status:** 43 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
+
+---
+
+## Phase Progression
+
+```text
+Phase 0 — Research & Architecture (Frozen)
+          │
+          ▼
+Phase 1 — Compile-Time Instrumentation (In Progress — current focus)
+          │
+          ├── P1.1 RUSTC_WRAPPER Interception       ✅ Complete
+          ├── P1.2 Source Discovery & Classification ✅ Complete
+          ├── P1.3 syn AST + Exact Byte Spans       ✅ Complete
+          ├── P1.4 Surgical Source Transformation   → NEXT
+          ├── P1.5 Native OTel Code Generation      ○ Planned
+          ├── P1.6 Async Instrumentation            ○ Planned
+          ├── P1.7 Dependency Trampolines           ○ Planned
+          └── P1.8 End-to-End Validation            ○ Planned
+          │
+          ▼
+Phase 2 — Production Hardening (Planned)
+          │
+          ▼
+Phase 3 — Evaluation & Research (Planned)
+```
 
 ---
 
