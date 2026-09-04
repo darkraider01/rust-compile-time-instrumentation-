@@ -4,9 +4,9 @@
 
 ## 16. Instrumentation Semantics Specification
 
-**Status: normative for Phase 1.** Everything before this section is research; this section is the contract. It defines precisely what "automatic instrumentation" means for this tool — what a generated span *is*, when it starts and ends, what it is parented to, and what happens under async suspension, error, panic, cancellation, and concurrency.
+**Status: normative for Phase 1.** Everything before this section is research; this section is the contract. It defines precisely what "automatic instrumentation" means for this tool - what a generated span *is*, when it starts and ends, what it is parented to, and what happens under async suspension, error, panic, cancellation, and concurrency.
 
-**This document is the correctness oracle.** [§12.8](12-mvp-definition.md)'s test suite exists to verify the invariants below, and [§14.1](14-evaluation-plan.md) measures against them. A behaviour not specified here is not a bug when it differs between builds — it is an unspecified behaviour, and that distinction is deliberate ([§16.15](#1615-deliberately-unspecified-in-phase-1)).
+**This document is the correctness oracle.** [§12.8](12-mvp-definition.md)'s test suite exists to verify the invariants below, and [§14.1](14-evaluation-plan.md) measures against them. A behaviour not specified here is not a bug when it differs between builds - it is an unspecified behaviour, and that distinction is deliberate ([§16.15](#1615-deliberately-unspecified-in-phase-1)).
 
 **Reading convention.** **MUST** / **MUST NOT** are invariants a Phase 1 build has to satisfy to be considered correct. **SHOULD** is a default that a rule may override. Evidence tags follow the [README convention](../../README.md); a shape marked **[Design]** is a decision made here and *not yet* experimentally validated.
 
@@ -16,13 +16,13 @@
 
 | Term | Meaning in this document |
 | --- | --- |
-| **Instrumentation site** | A single syntactic location — one function or method definition — that the rule engine matched and the splicer edited. One site per *definition*, never per monomorphized instantiation ([§6.2](06-rust-specific-challenges.md)) |
-| **Invocation** | One runtime execution of an instrumented function body. For an `async fn`, one execution of the returned future to completion or drop — **not** one `poll()` |
+| **Instrumentation site** | A single syntactic location - one function or method definition - that the rule engine matched and the splicer edited. One site per *definition*, never per monomorphized instantiation ([§6.2](06-rust-specific-challenges.md)) |
+| **Invocation** | One runtime execution of an instrumented function body. For an `async fn`, one execution of the returned future to completion or drop - **not** one `poll()` |
 | **Span** | An `opentelemetry::trace::Span` created by the runtime on behalf of a site |
 | **Context** | An `opentelemetry::Context`, the ambient value the OTel SDK parents new spans against. Thread-local, per the OTel Rust API |
 | **Attach / detach** | Making a `Context` current on the executing thread, and restoring the previous one. `Context::attach()` returns a guard whose `Drop` detaches |
 | **Guard** | A generated RAII value whose `Drop` ends a span, detaches a context, or both |
-| **Tier 1 / Tier 2** | Whether the instrumented crate may name the `opentelemetry` crate. See [§16.3](#163-the-two-emission-tiers) — this distinction is load-bearing and was not previously stated |
+| **Tier 1 / Tier 2** | Whether the instrumented crate may name the `opentelemetry` crate. See [§16.3](#163-the-two-emission-tiers) - this distinction is load-bearing and was not previously stated |
 
 ---
 
@@ -35,13 +35,13 @@ These hold for every instrumented construct, in both tiers.
 | **S1** | **One span per invocation.** An instrumented function that is called once produces exactly one span, regardless of how many times its future is polled, how many return paths it has, or how many times it is inlined |
 | **S2** | **A span's start precedes its end**, and its `[start, end]` interval covers the whole logical operation ([§16.7](#167-async-functions--the-normative-lifecycle) makes "whole" precise for async) |
 | **S3** | **Parent = the context current at span creation.** The tool never constructs a parent relationship itself; it defers entirely to the SDK's context resolution |
-| **S4** | **A span MUST be ended on every exit path** — normal return, early `return`, `?` propagation, and unwind. Ending is therefore always via `Drop`, never via a statement appended to the end of a body |
+| **S4** | **A span MUST be ended on every exit path** - normal return, early `return`, `?` propagation, and unwind. Ending is therefore always via `Drop`, never via a statement appended to the end of a body |
 | **S5** | **No context outlives its invocation.** Every attach is paired with a detach on the same thread, in LIFO order. A generated site MUST NOT leave a context attached after the function returns or the future yields |
 | **S6** | **MUST NOT hold an attach guard across an `.await`.** This is the classic Rust instrumentation bug ([R5](13-technical-risks.md), [§6.3](06-rust-specific-challenges.md)); it corrupts other tasks' traces globally, not locally |
 | **S7** | **Argument and return values are never read.** Not formatted, not `Debug`-printed, not stored. This is a security property ([R17](13-technical-risks.md)) and a panic-safety property ([R18](13-technical-risks.md)), not a performance default |
 | **S8** | **Instrumentation MUST NOT change program behaviour.** Same stdout, same return values, same error paths, same panics. Verified by [§12.8](12-mvp-definition.md)'s "instrumented and uninstrumented builds produce the same program output" |
 | **S9** | **Instrumentation MUST NOT panic.** No allocation-failure paths, no unwrap on user data, no formatting of user types. A runtime that cannot start a span returns the null handle and the program continues untraced |
-| **S10** | **Idempotence.** A site already instrumented — by us, or by hand with `#[tracing::instrument]` or an explicit OTel span — MUST NOT be instrumented again ([R10](13-technical-risks.md), [§12.9](12-mvp-definition.md) O5) |
+| **S10** | **Idempotence.** A site already instrumented - by us, or by hand with `#[tracing::instrument]` or an explicit OTel span - MUST NOT be instrumented again ([R10](13-technical-risks.md), [§12.9](12-mvp-definition.md) O5) |
 | **S11** | **Fail open, per crate.** A crate that cannot be parsed, mirrored, or safely spliced is compiled **unmodified**, with the reason recorded in the plan. A missing span is always preferable to a broken build ([R2](13-technical-risks.md), [§6.11](06-rust-specific-challenges.md)) |
 | **S12** | **The disabled build is byte-equivalent to no tool.** With the `--cfg` gate off, no call site is spliced at all, so configuration B in [§14.2](14-evaluation-plan.md) must equal the uninstrumented baseline. This is the only compile-time removal mechanism the native OTel API allows ([R23](13-technical-risks.md)) |
 
@@ -49,28 +49,28 @@ These hold for every instrumented construct, in both tiers.
 
 ### 16.3 The two emission tiers
 
-**[Design — this resolves a contradiction the previous documents did not notice.]**
+**[Design - this resolves a contradiction the previous documents did not notice.]**
 
-[§12.1a](12-mvp-definition.md) specifies that an instrumented dependency receives **only** an `extern "C"` symbol declaration and **no** Cargo dependency edge — that is the whole point of the trampoline mechanism ([Appendix C.2](appendix-c-adversarial-review.md), [ADR-003](17-decision-records.md)). [§12.4](12-mvp-definition.md) specifies that async sites are wrapped with `opentelemetry::trace::FutureExt::with_context`.
+[§12.1a](12-mvp-definition.md) specifies that an instrumented dependency receives **only** an `extern "C"` symbol declaration and **no** Cargo dependency edge - that is the whole point of the trampoline mechanism ([Appendix C.2](appendix-c-adversarial-review.md), [ADR-003](17-decision-records.md)). [§12.4](12-mvp-definition.md) specifies that async sites are wrapped with `opentelemetry::trace::FutureExt::with_context`.
 
 **These two statements are incompatible for a dependency crate.** `with_context` is a trait method on a type from the `opentelemetry` crate; a crate that cannot name `opentelemetry` cannot call it. The `extern "C"` boundary carries no Rust futures.
 
 The resolution is two emission tiers with **one shared semantics**:
 
-| | **Tier 1 — the application / workspace crates** | **Tier 2 — third-party dependency crates** |
+| | **Tier 1 - the application / workspace crates** | **Tier 2 - third-party dependency crates** |
 | --- | --- | --- |
-| Can name `opentelemetry`? | Yes — it is the runtime owner and declares the dependency anyway ([§12.4](12-mvp-definition.md)) | **No** — no `--extern`, no `-L`, no manifest edit ([§12.1a](12-mvp-definition.md)) |
+| Can name `opentelemetry`? | Yes - it is the runtime owner and declares the dependency anyway ([§12.4](12-mvp-definition.md)) | **No** - no `--extern`, no `-L`, no manifest edit ([§12.1a](12-mvp-definition.md)) |
 | Sync emission | Native API: `tracer.start(...)` + `Context::attach` guard | `__otel_span_enter` / `__otel_span_exit` trampolines |
 | Async emission | **`FutureExt::with_context`**, literally | A spliced, `core`-only future wrapper reproducing the same lifecycle over the C ABI |
 | Semantics | **Identical.** [§16.7](#167-async-functions--the-normative-lifecycle) is written against `with_context`'s behaviour, and Tier 2 is required to match it | |
 
-**`FutureExt::with_context` is the normative reference.** Tier 1 emits it. Tier 2 emits source that must be observationally equivalent to it — the runtime, behind the C ABI, is the same OTel SDK either way.
+**`FutureExt::with_context` is the normative reference.** Tier 1 emits it. Tier 2 emits source that must be observationally equivalent to it - the runtime, behind the C ABI, is the same OTel SDK either way.
 
-**[Fact — updated, [Appendix E](appendix-e-experiment-matrix.md) E-8]** Tier-2 async over the C ABI has now been **demonstrated feasible** on a standalone harness using a `core`-only `OtelFuture` wrapper satisfying first-poll span start and verified zero context leakage under forced single-thread interleaving (closing FE-2). However, end-to-end integration through the automated byte-range splicer pipeline is separate work ([Appendix E](appendix-e-experiment-matrix.md) FE-13), so Tier-2 async remains scoped to Phase 2 to keep the Phase 1 MVP focused on synchronous dependency coverage ([§12.3](12-mvp-definition.md)).
+**[Fact - updated, [Appendix E](appendix-e-experiment-matrix.md) E-8]** Tier-2 async over the C ABI has now been **demonstrated feasible** on a standalone harness using a `core`-only `OtelFuture` wrapper satisfying first-poll span start and verified zero context leakage under forced single-thread interleaving (closing FE-2). However, end-to-end integration through the automated byte-range splicer pipeline is separate work ([Appendix E](appendix-e-experiment-matrix.md) FE-13), so Tier-2 async remains scoped to Phase 2 to keep the Phase 1 MVP focused on synchronous dependency coverage ([§12.3](12-mvp-definition.md)).
 
 #### The trampoline ABI
 
-**[Design — unvalidated beyond the sync pair.]** All symbols are `extern "C"`, take no Rust types, and are resolved at the application's final link ([§12.1a](12-mvp-definition.md)).
+**[Design - unvalidated beyond the sync pair.]** All symbols are `extern "C"`, take no Rust types, and are resolved at the application's final link ([§12.1a](12-mvp-definition.md)).
 
 ```c
 /* handle 0 is the null span: instrumentation disabled, or the runtime declined.
@@ -78,29 +78,29 @@ The resolution is two emission tiers with **one shared semantics**:
 
 uint64_t __otel_span_enter(const uint8_t *name, uintptr_t name_len,
                            const uint8_t *file, uintptr_t file_len,
-                           uint32_t line, uint8_t kind);   /* start + attach   — sync sites  */
-void     __otel_span_exit (uint64_t handle);               /* detach + end     — sync sites  */
+                           uint32_t line, uint8_t kind);   /* start + attach   - sync sites  */
+void     __otel_span_exit (uint64_t handle);               /* detach + end     - sync sites  */
 
 uint64_t __otel_span_start(const uint8_t *name, uintptr_t name_len,
                            const uint8_t *file, uintptr_t file_len,
-                           uint32_t line, uint8_t kind);   /* start, NOT attached — async    */
-void     __otel_span_end  (uint64_t handle);               /* end                 — async    */
-uint64_t __otel_ctx_attach(uint64_t handle);               /* per poll()          — async    */
-void     __otel_ctx_detach(uint64_t token);                /* per yield           — async    */
+                           uint32_t line, uint8_t kind);   /* start, NOT attached - async    */
+void     __otel_span_end  (uint64_t handle);               /* end                 - async    */
+uint64_t __otel_ctx_attach(uint64_t handle);               /* per poll()          - async    */
+void     __otel_ctx_detach(uint64_t token);                /* per yield           - async    */
 
-void     __otel_span_set_error(uint64_t handle);           /* status = Error      — §16.10   */
+void     __otel_span_set_error(uint64_t handle);           /* status = Error      - §16.10   */
 ```
 
 - All string pointers refer to `&'static str` data spliced as literals; no allocation crosses the boundary.
 - `kind` encodes `SpanKind` (`0 = Internal`, `1 = Server`, `2 = Client`, …), first-class in the native API and one of the reasons for [ADR-001](17-decision-records.md).
-- **Deferred optimization:** passing the name/file/line tuple on every invocation is wasteful; a site-registration call returning a site id, made once per site, is the obvious improvement. Not Phase 1 — measure first ([§14.2](14-evaluation-plan.md)).
+- **Deferred optimization:** passing the name/file/line tuple on every invocation is wasteful; a site-registration call returning a site id, made once per site, is the obvious improvement. Not Phase 1 - measure first ([§14.2](14-evaluation-plan.md)).
 
 #### Three constraints on spliced code that the earlier documents missed
 
-**[Fact]** Calling an `extern "C"` function is an unsafe operation, and a crate carrying `#![forbid(unsafe_code)]` **cannot** be given spliced trampoline calls — `forbid` cannot be lifted by an inner `#[allow]`, so the splice is a hard compile error (`E0453`). A non-trivial share of the ecosystem uses this attribute. Three consequences:
+**[Fact]** Calling an `extern "C"` function is an unsafe operation, and a crate carrying `#![forbid(unsafe_code)]` **cannot** be given spliced trampoline calls - `forbid` cannot be lifted by an inner `#[allow]`, so the splice is a hard compile error (`E0453`). A non-trivial share of the ecosystem uses this attribute. Three consequences:
 
 1. **Phase 1 behaviour: skip the crate** and record the reason in the plan (S11). Stripping the user's own safety lint to instrument them is not an acceptable alternative.
-2. **A possible escape, to be tested, not assumed.** Rust 1.82+ allows individual items in an `unsafe extern` block to be declared `safe fn`, which are then callable without an `unsafe` block. Whether that also avoids tripping the `unsafe_code` lint is **[Open question]** — scheduled as [Appendix E](appendix-e-experiment-matrix.md) FE-3, a cheap experiment with a material coverage payoff.
+2. **A possible escape, to be tested, not assumed.** Rust 1.82+ allows individual items in an `unsafe extern` block to be declared `safe fn`, which are then callable without an `unsafe` block. Whether that also avoids tripping the `unsafe_code` lint is **[Open question]** - scheduled as [Appendix E](appendix-e-experiment-matrix.md) FE-3, a cheap experiment with a material coverage payoff.
 3. **Declaration placement constraint ([Appendix E](appendix-e-experiment-matrix.md) E-11):** Splicing `extern "C"` declarations at file-top breaks crates carrying `#![...]` inner attributes or `//!` module doc comments (`E0753`). Trampoline declarations MUST be **block-scoped inside the target function body**, which is valid across all Rust editions and avoids interfering with file-level attributes.
 
 **[Fact]** `unsafe extern "C" { … }` is edition-2024 syntax; older editions require a bare `extern "C" { … }` block. The wrapper already receives `--edition` in its argv ([§3.3](03-rust-compiler-pipeline.md)), so the splicer **MUST** select the declaration form per crate edition rather than emitting one shape everywhere ([R4](13-technical-risks.md)).
@@ -111,7 +111,7 @@ void     __otel_span_set_error(uint64_t handle);           /* status = Error    
 
 **Semantics.** The span starts when the function body begins executing and ends when control leaves the body by any path. Its context is current for exactly that interval, so any instrumented call made from the body is its child (S3).
 
-**Generated shape** (Tier 1; non-normative illustration — only the semantics are normative):
+**Generated shape** (Tier 1; non-normative illustration - only the semantics are normative):
 
 ```rust
 fn handle(req: Request) -> Response {
@@ -121,7 +121,7 @@ fn handle(req: Request) -> Response {
 ```
 
 - The guard is the **first** statement of the body, so the span covers argument-destructuring side effects that occur inside the body but not the caller's argument evaluation.
-- The guard is bound to a named local, never `let _ = …`. **[Fact]** `let _ =` drops immediately, which would end the span before the body runs — a bug worth naming because it is easy to introduce and invisible in review.
+- The guard is bound to a named local, never `let _ = …`. **[Fact]** `let _ =` drops immediately, which would end the span before the body runs - a bug worth naming because it is easy to introduce and invisible in review.
 - `Drop` order guarantees S4: the guard is the first local declared, so it is the last dropped, on every path including unwind.
 
 ---
@@ -134,7 +134,7 @@ Same lifecycle as [§16.4](#164-synchronous-functions). Only naming differs ([§
 | --- | --- |
 | Inherent method | `my_crate::Foo::method` |
 | Trait impl method | `<my_crate::Foo as my_crate::Trait>::method` |
-| Trait *default* body | Not instrumented in Phase 1 — instrument `impl` blocks, not trait definitions ([§6.2](06-rust-specific-challenges.md)) |
+| Trait *default* body | Not instrumented in Phase 1 - instrument `impl` blocks, not trait definitions ([§6.2](06-rust-specific-challenges.md)) |
 
 **MUST NOT** read `self` (S7). A method's receiver is a value like any other.
 
@@ -149,7 +149,7 @@ Same lifecycle as [§16.4](#164-synchronous-functions). Only naming differs ([§
 
 ---
 
-### 16.7 Async functions — the normative lifecycle
+### 16.7 Async functions - the normative lifecycle
 
 This is the section the MVP is judged against.
 
@@ -159,7 +159,7 @@ This is the section the MVP is judged against.
 
 | Event | Required behaviour |
 | --- | --- |
-| Future **constructed** (the `async fn` is called) | **No span is started.** [Design — see below] |
+| Future **constructed** (the `async fn` is called) | **No span is started.** [Design - see below] |
 | **First `poll()`** | Span starts. Its parent is the context current *on the polling thread at that moment* (S3). Context attached for the duration of the poll |
 | Poll **returns `Pending`** (the task suspends) | Context detached. **The span remains open and its clock keeps running.** The context MUST NOT be current on that thread afterwards (S5) |
 | **Subsequent `poll()`**, possibly on a different worker thread | Context attached again, on that thread. Still the same single span (S1) |
@@ -168,7 +168,7 @@ This is the section the MVP is judged against.
 
 **Consequences that are testable, and are the MVP's success criteria ([§12.7](12-mvp-definition.md)):**
 
-- **Exactly one span** for a future polled N times — not N (S1).
+- **Exactly one span** for a future polled N times - not N (S1).
 - **Duration ≈ wall-clock** of the logical operation: an `async fn` awaiting a 100 ms sleep yields a span of ≈100 ms, not ≈0 ms of CPU-busy time.
 - **No busy/idle split.** `tracing-opentelemetry` synthesises that from enter/exit pairs; the OTel data model has no field for it ([§5.3](05-otel-rust.md)). Its absence is a diagnostic loss, not an incorrectness.
 - **Suspension does not leak.** While task A is suspended, an unrelated instrumented function running on the same worker thread MUST NOT become a child of A's span. This is the sharpest single test of `with_context` and the one that catches S6 violations.
@@ -176,12 +176,12 @@ This is the section the MVP is judged against.
 
 #### The one genuinely open semantic decision: when does the span start?
 
-**[Design — deliberate, and flagged for validation.]** The table above starts the span at **first poll**, not at future construction.
+**[Design - deliberate, and flagged for validation.]** The table above starts the span at **first poll**, not at future construction.
 
 - **Why:** Rust futures are lazy. `let fut = f(); expensive(); fut.await` would otherwise attribute all of `expensive()` to `f`'s span, and a future that is constructed and never awaited would produce a span for work that never happened.
 - **The cost:** queueing delay between construction and first poll is invisible. For a spawned task this is arguably information a user wants.
-- **The alternative** — start at construction — is simpler to generate but reports durations that are wrong in exactly the way [§5.4](05-otel-rust.md) accused the naive OTel approach of being wrong.
-- **Validation:** [Appendix E](appendix-e-experiment-matrix.md) FE-4 — construct a future, sleep 100 ms, then await it; assert the span's duration excludes the sleep. Add to the MVP suite.
+- **The alternative** - start at construction - is simpler to generate but reports durations that are wrong in exactly the way [§5.4](05-otel-rust.md) accused the naive OTel approach of being wrong.
+- **Validation:** [Appendix E](appendix-e-experiment-matrix.md) FE-4 - construct a future, sleep 100 ms, then await it; assert the span's duration excludes the sleep. Add to the MVP suite.
 
 ---
 
@@ -196,7 +196,7 @@ This is the section the MVP is judged against.
 ### 16.9 Recursion
 
 - **Directly self-recursive functions are excluded by default** ([§12.3](12-mvp-definition.md)), detected syntactically. A depth-*N* recursion would otherwise produce *N* nested spans and destroy the trace ([§6.8](06-rust-specific-challenges.md)).
-- **Mutual recursion is not detected**, and MUST be documented as such. If instrumented, the semantics are simply the ordinary nesting rule applied repeatedly — correct, but potentially enormous.
+- **Mutual recursion is not detected**, and MUST be documented as such. If instrumented, the semantics are simply the ordinary nesting rule applied repeatedly - correct, but potentially enormous.
 - If a rule explicitly opts a recursive function in, each level is one span, correctly nested. No depth guard in Phase 1.
 
 ---
@@ -204,7 +204,7 @@ This is the section the MVP is judged against.
 ### 16.10 Errors and `Result`
 
 - A function returning `Result<T, E>` **SHOULD** set span status `Error` when the value returned is `Err`, and leave the status unset otherwise (`record_error: true` in the rule vocabulary, [§12.6](12-mvp-definition.md)).
-- **The error value MUST NOT be formatted, stored, or transmitted** (S7). Status is set with **no description**. A `Display`/`Debug` impl on a user error type may allocate, may panic, and may contain credentials — all three are unacceptable inside injected code ([R17](13-technical-risks.md), [R18](13-technical-risks.md)).
+- **The error value MUST NOT be formatted, stored, or transmitted** (S7). Status is set with **no description**. A `Display`/`Debug` impl on a user error type may allocate, may panic, and may contain credentials - all three are unacceptable inside injected code ([R17](13-technical-risks.md), [R18](13-technical-risks.md)).
 - The check is a discriminant read on a borrowed value, made before the value is returned; the returned value MUST NOT be moved or cloned to perform it (S8).
 - `?`-propagation is an early return and is covered by S4. It is not separately detectable and produces no distinct signal.
 - **Not covered in Phase 1:** functions returning `Option`, custom result-like types, or error-carrying enums. Only `Result<_, _>` written syntactically at the site.
@@ -215,7 +215,7 @@ This is the section the MVP is judged against.
 
 | Configuration | Behaviour |
 | --- | --- |
-| `panic = "unwind"` (default) | Guards drop during unwind, so **the span ends** and is exported. Its status is **not** set to `Error` in Phase 1 — a panicking span is indistinguishable from a short successful one, and this MUST be documented |
+| `panic = "unwind"` (default) | Guards drop during unwind, so **the span ends** and is exported. Its status is **not** set to `Error` in Phase 1 - a panicking span is indistinguishable from a short successful one, and this MUST be documented |
 | `panic = "abort"` | `Drop` does not run. **The span never ends and is never exported.** Acceptable: the process is dying ([§6.6](06-rust-specific-challenges.md)) |
 
 `std::panic::catch_unwind` is **not** used. It is not free, it is a no-op under `panic=abort`, and swallowing a user's panic would violate S8.
@@ -224,7 +224,7 @@ This is the section the MVP is judged against.
 
 ### 16.12 Cancellation
 
-A future dropped before completion — `select!`, a timeout, a dropped `JoinHandle` — is a normal and frequent event in async Rust, not an error.
+A future dropped before completion - `select!`, a timeout, a dropped `JoinHandle` - is a normal and frequent event in async Rust, not an error.
 
 - **The span MUST end when the future is dropped** (S4). This is why the span-ending mechanism is a `Drop` guard *inside* the future rather than a statement at the end of the body: a body that never finishes never reaches its own last statement.
 - **Phase 1: a cancelled span is not distinguished from a completed one.** Status unset, no attribute.
@@ -242,11 +242,11 @@ A future dropped before completion — `select!`, a timeout, a dropped `JoinHand
 
 ### 16.14 Naming and attributes
 
-**Span name:** the fully-qualified path of the definition — `crate::module::function`, or `<Type as Trait>::method` for trait impls. Rule-overridable via the `name` template ([§12.6](12-mvp-definition.md)).
+**Span name:** the fully-qualified path of the definition - `crate::module::function`, or `<Type as Trait>::method` for trait impls. Rule-overridable via the `name` template ([§12.6](12-mvp-definition.md)).
 
-**Span kind:** `Internal` by default. `Server`/`Client` come from library-specific rules, which are Phase 2. First-class in the native API — one of the capabilities [ADR-001](17-decision-records.md) restored.
+**Span kind:** `Internal` by default. `Server`/`Client` come from library-specific rules, which are Phase 2. First-class in the native API - one of the capabilities [ADR-001](17-decision-records.md) restored.
 
-**Attributes** — **[Fact]** stable since semconv v1.33.0 ([§5.3](05-otel-rust.md)):
+**Attributes** - **[Fact]** stable since semconv v1.33.0 ([§5.3](05-otel-rust.md)):
 
 | Attribute | Value |
 | --- | --- |
@@ -254,7 +254,7 @@ A future dropped before completion — `select!`, a timeout, a dropped `JoinHand
 | `code.file.path` | Source path of the **original** file, not the mirrored/spliced copy |
 | `code.line.number` | Line of the original definition |
 
-`code.column.number` and `code.stacktrace` are not emitted in Phase 1. **No semantic-convention compliance is claimed beyond the `code.*` group** — there is no convention for "function `foo::bar` was called" ([§5.3](05-otel-rust.md)).
+`code.column.number` and `code.stacktrace` are not emitted in Phase 1. **No semantic-convention compliance is claimed beyond the `code.*` group** - there is no convention for "function `foo::bar` was called" ([§5.3](05-otel-rust.md)).
 
 **`code.file.path` and `code.line.number` MUST refer to the original source.** The splicer knows both, since it computed the byte range in the original buffer ([ADR-002](17-decision-records.md)). Reporting a location inside the mirrored tree would make every span unclickable and is the kind of detail that destroys trust in a tool.
 

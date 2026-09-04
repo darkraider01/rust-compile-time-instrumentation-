@@ -2,7 +2,10 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
-use cargo_instrument::{analyze_source_file, run_wrapper, WrapperConfig, DEBUG_ENV};
+use cargo_instrument::{
+    analyze_source_file, run_wrapper, transform_source_file, transform_source_str, WrapperConfig,
+    DEBUG_ENV,
+};
 
 const WRAPPER_MODE_ENV: &str = "CARGO_INSTRUMENT_WRAPPER_MODE";
 const DEFAULT_TARGET_DIR: &str = "target/instrumented";
@@ -47,6 +50,7 @@ fn is_wrapper_invocation(args: &[String]) -> bool {
     let first = &args[1];
     if first == "instrument"
         || first == "analyze"
+        || first == "transform"
         || first == "--help"
         || first == "-h"
         || first == "--version"
@@ -112,6 +116,83 @@ fn run_cli(args: &[String]) {
             Err(e) => {
                 eprintln!("Error analyzing {}: {e}", file_path.display());
                 process::exit(1);
+            }
+        }
+    }
+
+    // Subcommand: `transform <file.rs> [--output <dest.rs>]`
+    if cli_args[0] == "transform" {
+        if cli_args.len() < 2 {
+            eprintln!("Usage: cargo instrument transform <file.rs> [--output <destination.rs>]");
+            process::exit(1);
+        }
+        let file_path = PathBuf::from(&cli_args[1]);
+        let mut output_path = None;
+        let mut idx = 2;
+        while idx < cli_args.len() {
+            if cli_args[idx] == "--output" || cli_args[idx] == "-o" {
+                if idx + 1 < cli_args.len() {
+                    output_path = Some(PathBuf::from(&cli_args[idx + 1]));
+                    idx += 2;
+                    continue;
+                } else {
+                    eprintln!("Error: --output requires a path argument");
+                    process::exit(1);
+                }
+            } else if cli_args[idx].starts_with("--output=") {
+                let val = &cli_args[idx]["--output=".len()..];
+                output_path = Some(PathBuf::from(val));
+                idx += 1;
+                continue;
+            }
+            idx += 1;
+        }
+
+        let crate_name = file_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("crate");
+
+        let report = match analyze_source_file(crate_name, &file_path) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Error analyzing {}: {e}", file_path.display());
+                process::exit(1);
+            }
+        };
+
+        if let Some(dest) = output_path {
+            match transform_source_file(&file_path, &dest, &report.candidates) {
+                Ok(_) => process::exit(0),
+                Err(e) => {
+                    eprintln!("Error transforming {}: {e}", file_path.display());
+                    process::exit(1);
+                }
+            }
+        } else {
+            let source_bytes = match std::fs::read(&file_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Error reading {}: {e}", file_path.display());
+                    process::exit(1);
+                }
+            };
+            let source_text = match String::from_utf8(source_bytes) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Source {} is not valid UTF-8: {e}", file_path.display());
+                    process::exit(1);
+                }
+            };
+            match transform_source_str(&source_text, &report.candidates) {
+                Ok(transformed) => {
+                    print!("{transformed}");
+                    process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("Error transforming {}: {e}", file_path.display());
+                    process::exit(1);
+                }
             }
         }
     }
@@ -190,13 +271,15 @@ Compile-time OpenTelemetry instrumentation wrapper for Rust
 USAGE:
     cargo instrument [OPTIONS] -- <cargo-args...>
     cargo instrument analyze <path.rs>
+    cargo instrument transform <path.rs> [--output <destination.rs>]
 
 OPTIONS:
     -h, --help       Print help information
     -V, --version    Print version information
 
 SUBCOMMANDS:
-    analyze <path.rs>    Analyze a source file and print discovered candidates
+    analyze <path.rs>                        Analyze a source file and print discovered candidates
+    transform <path.rs> [--output <dest.rs>] Deterministically transform source file using candidate byte ranges
 
 ENVIRONMENT:
     INSTRUMENT_DEBUG     Set to 1 to enable candidate debug output during builds
