@@ -136,3 +136,56 @@ fn test_paths_containing_spaces_and_backslashes() {
         other => panic!("expected RustCrate, got {:?}", other),
     }
 }
+
+#[test]
+fn test_classify_real_cargo_build_invocation() {
+    let args = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "cargo_instrument".to_string(),
+        "--edition=2021".to_string(),
+        "src/main.rs".to_string(),
+        "--error-format=json".to_string(),
+        "--json=diagnostic-rendered-ansi,artifacts,future-incompat".to_string(),
+        "--diagnostic-width=120".to_string(),
+        "--crate-type".to_string(),
+        "bin".to_string(),
+        "--emit=dep-info,link".to_string(),
+        "-C".to_string(),
+        "embed-bitcode=no".to_string(),
+        "-C".to_string(),
+        "debuginfo=2".to_string(),
+        "-C".to_string(),
+        "split-debuginfo=unpacked".to_string(),
+        "--check-cfg".to_string(),
+        "cfg(docsrs,test)".to_string(),
+        "-C".to_string(),
+        "metadata=701614f19eecece4".to_string(),
+        "-C".to_string(),
+        "extra-filename=-701614f19eecece4".to_string(),
+        "--out-dir".to_string(),
+        "target/debug/deps".to_string(),
+        "-L".to_string(),
+        "dependency=target/debug/deps".to_string(),
+    ];
+
+    let invocation = CrateInvocation::parse(&args).expect("parsing real cargo argv must succeed");
+    match &invocation.unit {
+        CompilationUnit::RustCrate {
+            crate_name,
+            edition,
+            source_file,
+            out_dir,
+            is_test,
+            ..
+        } => {
+            assert_eq!(crate_name, "cargo_instrument");
+            assert_eq!(edition.as_deref(), Some("2021"));
+            assert_eq!(source_file, &PathBuf::from("src/main.rs"));
+            assert_eq!(out_dir, &Some(PathBuf::from("target/debug/deps")));
+            assert!(!is_test);
+            assert!(invocation.unit.is_eligible_for_analysis());
+        }
+        other => panic!("expected RustCrate, got {:?}", other),
+    }
+}

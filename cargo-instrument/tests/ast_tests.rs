@@ -241,3 +241,235 @@ fn test_unsafe_policy_detection() {
         analyze_source_str("test_crate", Path::new("src/lib.rs"), code_clean).unwrap();
     assert_eq!(report_clean.unsafe_policy, UnsafePolicy::Allowed);
 }
+
+#[test]
+fn test_c2_anyhow_with_context_is_candidate() {
+    // Closure-based with_context is anyhow::Context, NOT opentelemetry::trace::FutureExt
+    let code = r#"
+pub fn load_config() -> Result<String, anyhow::Error> {
+    read_file().with_context(|| "failed to read configuration")
+}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].function_name, "load_config");
+}
+
+#[test]
+fn test_c2_otel_with_context_is_excluded() {
+    // Non-closure with_context is opentelemetry::trace::FutureExt::with_context
+    let code = r#"
+pub async fn send_telemetry() {
+    async {}.with_context(cx).await;
+}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    assert_eq!(report.candidates.len(), 0);
+}
+
+#[test]
+fn test_c2_timer_start_and_ray_tracer_are_candidates() {
+    // .start() without opentelemetry import and ray_tracer::render without bare "tracer" false positive
+    let code = r#"
+pub fn run_benchmark() {
+    let mut timer = Timer::new();
+    timer.start();
+}
+
+pub fn render_scene() {
+    ray_tracer::render();
+}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    assert_eq!(report.candidates.len(), 2);
+    assert_eq!(report.candidates[0].function_name, "run_benchmark");
+    assert_eq!(report.candidates[1].function_name, "render_scene");
+}
+
+#[test]
+fn test_c2_tracer_start_with_otel_import_is_excluded() {
+    let code = r#"
+use opentelemetry::trace::Tracer;
+
+pub fn perform_work(tracer: &impl Tracer) {
+    let _span = tracer.start("perform_work");
+}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    assert_eq!(report.candidates.len(), 0);
+}
+
+#[test]
+fn test_h3_qualified_direct_self_recursion() {
+    let code = r#"
+pub struct Service;
+
+impl Service {
+    pub fn self_qualified_recurse(&self, n: u32) {
+        if n > 0 {
+            Self::self_qualified_recurse(self, n - 1);
+        }
+    }
+}
+
+pub fn crate_qualified_recurse(n: u32) {
+    if n > 0 {
+        crate::crate_qualified_recurse(n - 1);
+    }
+}
+
+pub fn super_qualified_recurse(n: u32) {
+    if n > 0 {
+        super::super_qualified_recurse(n - 1);
+    }
+}
+
+pub fn clean_fn() {}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].function_name, "clean_fn");
+}
+
+#[test]
+fn test_h3_conservative_lookalike_recursion_tradeoff() {
+    // Documented R7 tradeoff: calling OtherType::helper() inside fn helper() is treated as recursive
+    let code = r#"
+pub fn helper() {
+    OtherType::helper();
+}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    // Per R7, intentionally excluded as a conservative false positive
+    assert_eq!(
+        report.candidates.len(),
+        0,
+        "R7 conservative tradeoff: look-alike helper() is intentionally excluded"
+    );
+}
+
+#[test]
+fn test_c1_module_resolution_root_and_submodules() {
+    use cargo_instrument::ast::analyze_source_file;
+    use std::fs;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let src = temp_dir.path().join("src");
+    fs::create_dir_all(&src).expect("create src");
+
+    let lib_code = "pub mod helpers;\npub fn lib_fn() {}\n";
+    let helpers_code = "pub fn helper_fn() {}\n";
+
+    fs::write(src.join("lib.rs"), lib_code).expect("write lib.rs");
+    fs::write(src.join("helpers.rs"), helpers_code).expect("write helpers.rs");
+
+    let report = analyze_source_file("my_crate", &src.join("lib.rs")).expect("analyze");
+    assert_eq!(report.candidates.len(), 2);
+    let names: Vec<&str> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+    assert!(names.contains(&"lib_fn"));
+    assert!(names.contains(&"helper_fn"));
+}
+
+#[test]
+fn test_c1_module_resolution_non_main_root() {
+    use cargo_instrument::ast::analyze_source_file;
+    use std::fs;
+
+    // C1: Test that a non-main crate root (e.g. src/bin/other_tool.rs) resolves submodules as siblings!
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let bin_dir = temp_dir.path().join("src").join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin");
+
+    let tool_code = "mod tool_sibling;\npub fn tool_main() {}\n";
+    let sibling_code = "pub fn sibling_fn() {}\n";
+
+    fs::write(bin_dir.join("other_tool.rs"), tool_code).expect("write other_tool.rs");
+    fs::write(bin_dir.join("tool_sibling.rs"), sibling_code).expect("write tool_sibling.rs");
+
+    let report =
+        analyze_source_file("other_tool", &bin_dir.join("other_tool.rs")).expect("analyze");
+    assert_eq!(report.candidates.len(), 2);
+    let names: Vec<&str> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+    assert!(names.contains(&"tool_main"));
+    assert!(names.contains(&"sibling_fn"));
+}
+
+#[test]
+fn test_c1_module_resolution_three_level_nested() {
+    use cargo_instrument::ast::analyze_source_file;
+    use std::fs;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let src = temp_dir.path().join("src");
+    let a_dir = src.join("a");
+    fs::create_dir_all(&a_dir).expect("create a_dir");
+
+    fs::write(src.join("main.rs"), "mod a;\nfn main() {}\n").expect("write main.rs");
+    fs::write(a_dir.join("mod.rs"), "pub mod b;\npub fn a_fn() {}\n").expect("write a/mod.rs");
+    fs::write(a_dir.join("b.rs"), "pub fn b_fn() {}\n").expect("write a/b.rs");
+
+    let report = analyze_source_file("app", &src.join("main.rs")).expect("analyze");
+    assert_eq!(report.candidates.len(), 3);
+    let names: Vec<&str> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+    assert!(names.contains(&"main"));
+    assert!(names.contains(&"a_fn"));
+    assert!(names.contains(&"b_fn"));
+}
+
+#[test]
+fn test_c1_module_resolution_path_attribute() {
+    use cargo_instrument::ast::analyze_source_file;
+    use std::fs;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let src = temp_dir.path().join("src");
+    let custom_dir = src.join("custom");
+    fs::create_dir_all(&custom_dir).expect("create custom");
+
+    fs::write(
+        src.join("lib.rs"),
+        r#"#[path = "custom/my_file.rs"] mod custom; pub fn root_fn() {}"#,
+    )
+    .expect("write lib.rs");
+    fs::write(custom_dir.join("my_file.rs"), "pub fn custom_fn() {}\n").expect("write my_file.rs");
+
+    let report = analyze_source_file("app", &src.join("lib.rs")).expect("analyze");
+    assert_eq!(report.candidates.len(), 2);
+    let names: Vec<&str> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+    assert!(names.contains(&"root_fn"));
+    assert!(names.contains(&"custom_fn"));
+}

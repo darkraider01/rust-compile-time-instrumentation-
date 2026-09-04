@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use syn::spanned::Spanned;
@@ -17,28 +18,55 @@ pub enum AstError {
     Parse { path: PathBuf, source: syn::Error },
 }
 
-/// Analyze a Rust source file and discover all eligible instrumentation candidates.
+/// Analyze a Rust crate's root source file and discover all eligible instrumentation candidates
+/// across the primary file and any referenced submodules.
 ///
 /// Strictly preserves the original source buffer and computes exact byte ranges
 /// suitable for later surgical byte-splicing.
 pub fn analyze_source_file(
     crate_name: &str,
-    source_path: &Path,
+    root_path: &Path,
 ) -> Result<DiscoveryReport, AstError> {
-    let source_bytes = fs::read(source_path).map_err(|e| AstError::Io {
-        path: source_path.to_path_buf(),
+    let source_bytes = fs::read(root_path).map_err(|e| AstError::Io {
+        path: root_path.to_path_buf(),
         source: e,
     })?;
 
     let source_text = String::from_utf8(source_bytes).map_err(|e| AstError::Io {
-        path: source_path.to_path_buf(),
+        path: root_path.to_path_buf(),
         source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
     })?;
 
-    analyze_source_str(crate_name, source_path, &source_text)
+    let root_syn = syn::parse_file(&source_text).map_err(|e| AstError::Parse {
+        path: root_path.to_path_buf(),
+        source: e,
+    })?;
+
+    // 1. Inspect root file-level inner attributes for unsafe policies (R26)
+    let unsafe_policy = detect_unsafe_policy(&root_syn.attrs);
+
+    // 2. Discover candidates across the root file and recursively in submodules
+    let mut visited = HashSet::new();
+    let mut candidates = Vec::new();
+
+    analyze_file_and_submodules(
+        root_path,
+        &root_syn,
+        /* is_root: */ true,
+        &mut visited,
+        &mut candidates,
+    );
+
+    Ok(DiscoveryReport {
+        crate_name: crate_name.to_string(),
+        source_file: root_path.to_path_buf(),
+        unsafe_policy,
+        candidates,
+    })
 }
 
 /// Analyze Rust source text and discover all eligible instrumentation candidates.
+/// Primarily used for in-memory analysis and unit tests.
 pub fn analyze_source_str(
     crate_name: &str,
     source_path: &Path,
@@ -49,25 +77,203 @@ pub fn analyze_source_str(
         source: e,
     })?;
 
-    // 1. Inspect file-level inner attributes for unsafe policies (R26)
     let unsafe_policy = detect_unsafe_policy(&syn_file.attrs);
 
-    // 2. Visit syntax tree to locate eligible function items
-    let mut visitor = CandidateFinder {
-        source_path: source_path.to_path_buf(),
-        candidates: Vec::new(),
-        current_impl: None,
-        inside_fn_body: false,
-    };
+    let mut visited = HashSet::new();
+    let mut candidates = Vec::new();
 
-    visitor.visit_file(&syn_file);
+    analyze_file_and_submodules(
+        source_path,
+        &syn_file,
+        /* is_root: */ true,
+        &mut visited,
+        &mut candidates,
+    );
 
     Ok(DiscoveryReport {
         crate_name: crate_name.to_string(),
         source_file: source_path.to_path_buf(),
         unsafe_policy,
-        candidates: visitor.candidates,
+        candidates,
     })
+}
+
+/// Recursively analyze a file's AST items and discover child submodules.
+///
+/// Threading `is_root: bool` ensures module resolution follows Rust's crate root rules:
+/// for crate roots (e.g. `src/main.rs`, `src/lib.rs`, `src/bin/tool.rs`, `tests/integ.rs`),
+/// child modules are siblings in `current_file.parent()`. For non-root files,
+/// child modules resolve under `current_file.parent().join(file_stem)` (or parent if `mod.rs`).
+fn analyze_file_and_submodules(
+    file_path: &Path,
+    syn_file: &syn::File,
+    is_root: bool,
+    visited: &mut HashSet<PathBuf>,
+    candidates: &mut Vec<Candidate>,
+) {
+    let canonical = file_path
+        .canonicalize()
+        .unwrap_or_else(|_| file_path.to_path_buf());
+    if !visited.insert(canonical) {
+        return;
+    }
+
+    // 1. Visit syntax tree of this file
+    let file_has_otel = file_has_otel_import(syn_file);
+    let mut visitor = CandidateFinder {
+        source_path: file_path.to_path_buf(),
+        candidates: Vec::new(),
+        current_impl: None,
+        inside_fn_body: false,
+        file_has_otel,
+    };
+    visitor.visit_file(syn_file);
+    candidates.extend(visitor.candidates);
+
+    // 2. Determine base directory for resolving submodules declared directly in this file
+    let base_dir = if is_root || file_path.file_name().and_then(|s| s.to_str()) == Some("mod.rs") {
+        file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        file_path.parent().unwrap_or(Path::new(".")).join(stem)
+    };
+
+    // 3. Recursively discover and analyze submodules
+    discover_submodules(file_path, &syn_file.items, &base_dir, visited, candidates);
+}
+
+/// Discover submodules declared in an item list (either in a file or inside an inline module).
+fn discover_submodules(
+    current_file: &Path,
+    items: &[syn::Item],
+    current_dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    candidates: &mut Vec<Candidate>,
+) {
+    for item in items {
+        if let syn::Item::Mod(item_mod) = item {
+            // NOTE on #[cfg(...)] modules:
+            // In this analysis-only milestone, we follow every module unconditionally (ignoring cfg attributes).
+            // While the wrapper does have access to the compiler's --cfg flags from rustc argv, evaluating cfg
+            // expressions at this stage is intentionally deferred. Following all modules ensures comprehensive
+            // candidate discovery regardless of active target_os or feature flags.
+
+            if let Some((_, inner_items)) = &item_mod.content {
+                // Inline module: mod foo { ... }
+                // Base directory for any out-of-line submodules declared inside this inline module
+                let sub_dir = if let Some(custom_path) = extract_path_attribute(&item_mod.attrs) {
+                    current_file
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join(custom_path)
+                } else {
+                    current_dir.join(item_mod.ident.to_string())
+                };
+                discover_submodules(current_file, inner_items, &sub_dir, visited, candidates);
+            } else {
+                // Out-of-line module: mod foo;
+                let submod_name = item_mod.ident.to_string();
+                let submod_path = if let Some(custom_path) = extract_path_attribute(&item_mod.attrs)
+                {
+                    let p = current_file
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join(custom_path);
+                    if p.exists() {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                } else {
+                    let candidate1 = current_dir.join(format!("{}.rs", submod_name));
+                    let candidate2 = current_dir.join(&submod_name).join("mod.rs");
+                    if candidate1.exists() {
+                        Some(candidate1)
+                    } else if candidate2.exists() {
+                        Some(candidate2)
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(target_file) = submod_path {
+                    match fs::read(&target_file) {
+                        Ok(bytes) => match String::from_utf8(bytes) {
+                            Ok(text) => match syn::parse_file(&text) {
+                                Ok(sub_syn) => {
+                                    analyze_file_and_submodules(
+                                        &target_file,
+                                        &sub_syn,
+                                        /* is_root: */ false,
+                                        visited,
+                                        candidates,
+                                    );
+                                }
+                                Err(e) => {
+                                    // S11 fail-open: unparseable submodules warn and skip without failing crate
+                                    eprintln!(
+                                        "warning: cargo-instrument: failed to parse submodule '{}': {e}",
+                                        target_file.display()
+                                    );
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!(
+                                    "warning: cargo-instrument: submodule '{}' is not valid UTF-8: {e}",
+                                    target_file.display()
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!(
+                                "warning: cargo-instrument: failed to read submodule '{}': {e}",
+                                target_file.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Extract `#[path = "..."]` attribute string if present on an item.
+fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if attr.path().is_ident("path") {
+            if let syn::Meta::NameValue(nv) = &attr.meta {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
+                    return Some(s.value());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Check if the file imports OpenTelemetry types or tracing utilities.
+fn file_has_otel_import(file: &syn::File) -> bool {
+    struct UseFinder {
+        has_otel: bool,
+    }
+
+    impl<'ast> Visit<'ast> for UseFinder {
+        fn visit_item_use(&mut self, item_use: &'ast syn::ItemUse) {
+            let use_str = quote::quote!(#item_use).to_string();
+            if use_str.contains("opentelemetry") || use_str.contains("Tracer") {
+                self.has_otel = true;
+            }
+            syn::visit::visit_item_use(self, item_use);
+        }
+    }
+
+    let mut finder = UseFinder { has_otel: false };
+    finder.visit_file(file);
+    finder.has_otel
 }
 
 /// Detect whether the file specifies `#![forbid(unsafe_code)]` or `#![deny(unsafe_code)]`.
@@ -116,6 +322,7 @@ struct CandidateFinder {
     /// Tracks if traversal is currently inside a function body.
     /// Per §12.2 / §16.14, nested functions inside blocks are excluded.
     inside_fn_body: bool,
+    file_has_otel: bool,
 }
 
 impl<'ast> Visit<'ast> for CandidateFinder {
@@ -158,7 +365,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
             return;
         }
 
-        if body_has_handwritten_otel(&i.block) {
+        if body_has_handwritten_otel(&i.block, self.file_has_otel) {
             return;
         }
 
@@ -203,7 +410,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
             return;
         }
 
-        if body_has_handwritten_otel(&i.block) {
+        if body_has_handwritten_otel(&i.block, self.file_has_otel) {
             return;
         }
 
@@ -282,6 +489,13 @@ fn has_instrument_attribute(attrs: &[syn::Attribute]) -> bool {
 }
 
 /// Detect if the function is directly self-recursive (calls itself by name in its body).
+///
+/// NOTE on conservative recursion detection (R7):
+/// We match if the path's last segment matches the function name (e.g., `foo()`, `Self::foo()`,
+/// `crate::foo()`, `super::foo()`). As documented in R7, this intentionally accepts a conservative
+/// false positive: calling `OtherType::helper()` inside a function named `fn helper()` will be
+/// classified as recursive and skipped. This is preferred over accidentally recursing infinitely
+/// on genuine self-recursive functions.
 fn is_directly_self_recursive(fn_ident: &syn::Ident, block: &syn::Block) -> bool {
     struct RecursionDetector<'a> {
         target: &'a syn::Ident,
@@ -291,9 +505,11 @@ fn is_directly_self_recursive(fn_ident: &syn::Ident, block: &syn::Block) -> bool
     impl<'ast> Visit<'ast> for RecursionDetector<'_> {
         fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
             if let syn::Expr::Path(expr_path) = &*call.func {
-                if expr_path.path.is_ident(self.target) {
-                    self.found = true;
-                    return;
+                if let Some(last_segment) = expr_path.path.segments.last() {
+                    if last_segment.ident == *self.target {
+                        self.found = true;
+                        return;
+                    }
                 }
             }
             syn::visit::visit_expr_call(self, call);
@@ -316,20 +532,54 @@ fn is_directly_self_recursive(fn_ident: &syn::Ident, block: &syn::Block) -> bool
     detector.found
 }
 
+/// Check whether the receiver expression is literally an identifier named `tracer`.
+fn is_receiver_tracer(expr: &syn::Expr) -> bool {
+    if let syn::Expr::Path(expr_path) = expr {
+        if expr_path.path.is_ident("tracer") {
+            return true;
+        }
+    }
+    false
+}
+
 /// Detect if the body already contains hand-written OpenTelemetry span creation or attachment.
 ///
 /// Per R10: prevents double-instrumenting functions that manually start spans via
 /// `tracer.start(...)`, wrap futures with `.with_context(...)`, or invoke `__otel_` hooks.
-fn body_has_handwritten_otel(block: &syn::Block) -> bool {
+fn body_has_handwritten_otel(block: &syn::Block, file_has_otel: bool) -> bool {
     struct OtelDetector {
+        file_has_otel: bool,
         found: bool,
     }
 
     impl<'ast> Visit<'ast> for OtelDetector {
         fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-            if call.method == "with_context" || call.method == "start" {
-                self.found = true;
-                return;
+            if call.method == "with_context" {
+                // Check if argument is a closure (e.g. `anyhow::Context::with_context(self, || "msg")`).
+                // OTel's FutureExt::with_context takes a Context value, NOT a closure:
+                // `FutureExt::with_context(self, cx: Context)`.
+                // Anyhow/Eyre takes: `with_context<C, F>(self, f: F) where F: FnOnce() -> C`.
+                // Since OTel's signature structurally cannot accept a closure argument,
+                // `arg is Expr::Closure => this is anyhow/eyre, not OTel`.
+                let is_closure = call.args.len() == 1
+                    && matches!(call.args.first(), Some(syn::Expr::Closure(_)));
+                if !is_closure {
+                    self.found = true;
+                    return;
+                }
+            } else if call.method == "start" {
+                // RESIDUAL TRADEOFF NOTE:
+                // Unlike `with_context`, which is disambiguated call-by-call by closure argument shape,
+                // `.start()` corroboration is file-scoped ("does the file import opentelemetry").
+                // A file with one genuinely-instrumented async function (which imports opentelemetry)
+                // and an unrelated `Timer::start()` call elsewhere in the same file will still misfire
+                // on the timer call, because the corroborating check is file-scoped rather than call-scoped.
+                // This significantly reduces false positives across the crate graph (since files calling
+                // unrelated .start() rarely import opentelemetry), but is a documented residual tradeoff.
+                if self.file_has_otel || is_receiver_tracer(&call.receiver) {
+                    self.found = true;
+                    return;
+                }
             }
             syn::visit::visit_expr_method_call(self, call);
         }
@@ -337,7 +587,9 @@ fn body_has_handwritten_otel(block: &syn::Block) -> bool {
         fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
             if let syn::Expr::Path(expr_path) = &*call.func {
                 let s = quote::quote!(#expr_path).to_string();
-                if s.contains("__otel_") || s.contains("tracer") {
+                // Match exact ABI symbols or paths containing opentelemetry.
+                // NOTE: We deliberately do NOT match bare "tracer" substring (e.g. ray_tracer::render()).
+                if s.contains("__otel_") || s.contains("opentelemetry") {
                     self.found = true;
                     return;
                 }
@@ -346,7 +598,10 @@ fn body_has_handwritten_otel(block: &syn::Block) -> bool {
         }
     }
 
-    let mut detector = OtelDetector { found: false };
+    let mut detector = OtelDetector {
+        file_has_otel,
+        found: false,
+    };
     detector.visit_block(block);
     detector.found
 }
