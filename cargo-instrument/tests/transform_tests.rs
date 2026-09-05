@@ -446,6 +446,8 @@ fn test_overlapping_candidate_rejection() {
         is_generic: false,
         has_enclosing_generics: false,
         returns_result: false,
+        returns_mut_reference: false,
+        returns_reference_or_lifetime: false,
     };
     let c2 = Candidate {
         function_name: "foo_inner".to_string(),
@@ -457,6 +459,8 @@ fn test_overlapping_candidate_rejection() {
         is_generic: false,
         has_enclosing_generics: false,
         returns_result: false,
+        returns_mut_reference: false,
+        returns_reference_or_lifetime: false,
     };
 
     // H2 Fail-Open: Plan builds, accepts c1, safely skips c2 with OverlappingWithPrevious diagnostic
@@ -530,6 +534,8 @@ fn test_invalid_utf8_boundary_rejection() {
         is_generic: false,
         has_enclosing_generics: false,
         returns_result: false,
+        returns_mut_reference: false,
+        returns_reference_or_lifetime: false,
     };
 
     // H2 Fail-Open: Bad candidate is skipped with structured diagnostic
@@ -666,6 +672,8 @@ fn test_h2_missing_opening_brace_skipped() {
         is_generic: false,
         has_enclosing_generics: false,
         returns_result: false,
+        returns_mut_reference: false,
+        returns_reference_or_lifetime: false,
     };
 
     let plan = TransformationPlan::build(source, &[candidate]).expect("plan should build");
@@ -702,6 +710,8 @@ fn valid_two() -> i32 { 2 }
         is_generic: false,
         has_enclosing_generics: false,
         returns_result: false,
+        returns_mut_reference: false,
+        returns_reference_or_lifetime: false,
     };
 
     let mut candidates = report.candidates;

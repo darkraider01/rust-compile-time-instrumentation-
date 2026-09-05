@@ -8,7 +8,7 @@
 **Status:** P1.1–P1.5 Complete; P1.6 Next  
 **Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
 **Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
-**Test suite status:** 93 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
+**Test suite status:** 99 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
 
 ---
 
@@ -318,28 +318,56 @@ Milestone P1.5 delivers native OpenTelemetry synchronous instrumentation code ge
    - `ast.rs` normalizes token-stream formatting in `Candidate.function_name` and `Candidate.kind` via `normalize_type_str`, collapsing stray spaces around `::`, `<`, `>`, and `>>` while preserving `" as "` (e.g. producing `<MyErr as From<std::num::ParseIntError>>::from` conforming strictly to §16.14).
    - Standardized `transform_source_str_with_native_otel(source, crate_name, candidates)` and `TransformationPlan::build_with_native_otel(source, crate_name, candidates)` with leading `source: &str`, matching all sibling transformation helpers.
 
+9. **Reference and Explicit Lifetime Fallback (Adversarial C1 & Type-Aliased &mut)**:
+   When a function returns a mutable reference (e.g. `Result<&mut T, E>` or `&mut T`), wrapping the original body in a closure causes rustc to infer an `FnMut` closure where captured references cannot escape (`error: captured variable cannot escape FnMut closure body`). Furthermore, mutable references hidden behind type aliases (e.g. `pub type MutName<'a> = &'a mut String; Result<MutName<'_>, E>`) are invisible to a naive `&mut` syntactic scan.
+   To eliminate this entire build-break class, `ast.rs` inspects the return type via `returns_reference_or_lifetime(output)` and flags `Candidate.returns_reference_or_lifetime`. Any non-static reference (`&`) or explicit non-static lifetime argument (`'_`, `'a`, etc.) triggers fallback to prefix-only instrumentation (pure RAII scope cleanup via LIFO guard drop) without closure wrapping. §16.10 error-status recording is a SHOULD, so falling back to prefix-only strictly conforms to normative specifications.
+   *Safety & Future Tuning (Phase 2)*: Purely syntactic AST analysis cannot resolve type aliases with zero lifetime parameters (e.g. `type StaticMut = &'static mut String;`), though moving such a value out leaves the closure `FnOnce` and compiles cleanly; reborrowing behind a lifetime-less alias is close to unreachable in practice. Conversely, bare shared references (`Result<&str, E>`) currently degrade to prefix-only; in Phase 2, coverage can be recovered by refining the fallback to `&mut` anywhere or path types carrying lifetime arguments, preserving full error status on `Result<&str, E>` while continuing to safely protect `MutName<'_>`.
+
+10. **Runtime Span Execution Proofs (Adversarial H1)**:
+    Added `opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }` to `[dev-dependencies]` and introduced live execution proofs using `InMemorySpanExporter`. These tests execute real instrumented functions and verify:
+    - Exactly 1 span created per call.
+    - Span kind is `SpanKind::Internal`.
+    - Instrumentation scope matches the crate name (`proof_crate`).
+    - Fallible calls returning `Err` record `Status::error("")`.
+    - Successful calls returning `Ok` and non-Result calls leave `Status::Unset`.
+
+11. **Direct Architecture Data Flow (Adversarial M1)**:
+    Removed vestigial `InstrumentationIntent`. The operational compilation pipeline is directly:
+    ```text
+    Candidate ──► Emitter ──► ByteEdit
+    ```
+
+12. **Per-Invocation Tracer Acquisition Cost (Adversarial M2)**:
+    `NativeOtelEmitter` generates `let __otel_tracer = opentelemetry::global::tracer("{crate_name}")` inside each instrumented function body. On each call, this performs a global `RwLock` read, an `Arc` clone, and a `Box` allocation (`BoxedTracer`). In accordance with §16.3 ("Not Phase 1 — measure first"), caching the tracer via `static` or `OnceLock` is deferred to Phase 2 performance profiling.
+
+13. **Fail-Open Gating Scope (Adversarial M3)**:
+    Fail-open to uninstrumented source occurs when native OpenTelemetry enforcement is requested (`CARGO_INSTRUMENT_NATIVE_OTEL=1`) and `opentelemetry` is missing from `--extern`. When not enforced and `opentelemetry` is absent, the wrapper safely defaults to `SentinelEmitter`, ensuring backward compatibility for legacy non-OTel compilation units.
+
+14. **CRLF Line-Ending Preservation (Adversarial L1)**:
+    Added `test_native_otel_crlf_preservation` verifying that `NativeOtelEmitter` preserves `\r\n` line endings bit-for-bit without introducing orphan `\n` characters.
+
 ---
 
 ## 7. Verification Matrix
 
-The milestone implementation is verified by **93 automated tests** across 7 test suites:
+The milestone implementation is verified by **99 automated tests** across 7 test suites:
 
 | Test Suite | Tests | Scope |
 |---|---|---|
-| [`ast_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/ast_tests.rs) | 22 | Free/inherent/trait functions, async, generics, exclusions, idempotence, unsafe policies, module resolution (root, non-main, nested, path attr), Result return detection, span name normalization, error handling |
+| [`ast_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/ast_tests.rs) | 24 | Free/inherent/trait functions, async, generics, exclusions, idempotence, unsafe policies, module resolution (root, non-main, nested, path attr), Result return detection, `&mut` detection (C1), type-aliased lifetime detection, span name normalization, error handling |
 | [`discovery_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/discovery_tests.rs) | 9 | Classification (ordinary crate, proc macro, build script, queries), real captured cargo argv, paths with spaces, `--extern opentelemetry` detection (separated, equals, noprelude), error handling |
 | [`wrapper_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/wrapper_tests.rs) | 5 | Config parsing, argument forwarding, exit code propagation, recursion guard, serial execution |
 | [`byte_span_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/byte_span_tests.rs) | 4 | Exact UTF-8 buffer slicing, emoji/multibyte offsets, multiline formatting, comment preservation |
 | [`transform_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/transform_tests.rs) | 35 | Surgical byte splicing, comments/formatting preservation, unicode offsets, exclusions, idempotence, overlap rejection, permutation invariance, rustc & Cargo compilation proofs, CLI transform, C1 cross-file basename collisions, H1 live wrapper pipeline and absolute source path handling, H2 fail-open skips, H3 emitter substitution, M1 CRLF preservation, M3 string literal idempotence, diverging `!`, unsafe fn, empty bodies |
-| [`cargo_integration_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/cargo_integration_tests.rs) | 5 | Real wrapped Cargo subprocesses, multi-file discovery on disk, SHA-256 byte-for-byte source preservation, isolated target dir wiring, CLI analyze subcommand |
-| [`native_otel_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/native_otel_tests.rs) | 13 | Synchronous OpenTelemetry generation: ordinary functions, inherent/trait methods, generics, unsafe fn, Result return with `clone().attach()`, `?` operator propagation, explicit early return, diverging bodies (`always_panics`), diverging `!`, tracer acquisition scope, idempotence (splicer & AST), marker false-positive protection, async deferral (`AsyncDeferred`), dependency gate fail-open, comments preservation, and live compilation under `rustc -D warnings` and `cargo clippy -- -D warnings` against real `opentelemetry 0.32.0` |
+| [`cargo_integration_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-integration/tests/cargo_integration_tests.rs) | 5 | Real wrapped Cargo subprocesses, multi-file discovery on disk, SHA-256 byte-for-byte source preservation, isolated target dir wiring, CLI analyze subcommand |
+| [`native_otel_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/native_otel_tests.rs) | 17 | Synchronous OpenTelemetry generation: ordinary functions, inherent/trait methods, generics, unsafe fn, Result return with `clone().attach()`, `?` operator propagation, explicit early return, diverging bodies (`always_panics`), diverging `!`, `&mut` return prefix-only fallback (C1), type-aliased `&mut` fallback, CRLF preservation (L1), tracer acquisition scope, idempotence (splicer & AST), marker false-positive protection, async deferral (`AsyncDeferred`), dependency gate fail-open, comments preservation, `InMemorySpanExporter` direct SDK proof (H1), and live compilation under `rustc -D warnings` and `cargo clippy -- -D warnings` + live runtime test execution with `InMemorySpanExporter` verifying span counts (8 spans for 8 calls), kinds, and status against real `opentelemetry 0.32.0` |
 
 ---
 
 ## 8. Status & Handoff to Milestone P1.6
 
 ### Milestone P1.5 Status: COMPLETE
-Milestone P1.5 is implemented, verified, and passing all automated test suites with 0 compiler warnings, 0 clippy warnings, and 93/93 tests passing across the workspace.
+Milestone P1.5 is implemented, verified, and passing all automated test suites with 0 compiler warnings, 0 clippy warnings, and 99/99 tests passing across the workspace.
 
 ### What Is Next: P1.6 - Async Function Instrumentation
 Milestone P1.5 successfully instrumented synchronous Rust functions and cleanly deferred async functions via `handles_async(&self) -> bool { false }` and `SkipReason::AsyncDeferred`.

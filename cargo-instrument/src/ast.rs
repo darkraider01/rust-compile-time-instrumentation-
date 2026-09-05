@@ -401,6 +401,8 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         let is_async = i.sig.asyncness.is_some();
         let is_generic = !i.sig.generics.params.is_empty();
         let returns_result = is_result_return_type(&i.sig.output);
+        let returns_mut_reference = returns_mut_reference(&i.sig.output);
+        let returns_reference_or_lifetime = returns_reference_or_lifetime(&i.sig.output);
 
         self.candidates.push(Candidate {
             function_name,
@@ -412,6 +414,8 @@ impl<'ast> Visit<'ast> for CandidateFinder {
             is_generic,
             has_enclosing_generics: false,
             returns_result,
+            returns_mut_reference,
+            returns_reference_or_lifetime,
         });
 
         // Visit body to allow visiting sub-items (e.g. inner modules or impls, but marking inside_fn_body)
@@ -447,6 +451,8 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         let is_async = i.sig.asyncness.is_some();
         let is_generic = !i.sig.generics.params.is_empty();
         let returns_result = is_result_return_type(&i.sig.output);
+        let returns_mut_reference = returns_mut_reference(&i.sig.output);
+        let returns_reference_or_lifetime = returns_reference_or_lifetime(&i.sig.output);
 
         let (kind, function_name, has_enclosing_generics) = match &self.current_impl {
             Some(imp) => match &imp.trait_name {
@@ -479,6 +485,8 @@ impl<'ast> Visit<'ast> for CandidateFinder {
             is_generic,
             has_enclosing_generics,
             returns_result,
+            returns_mut_reference,
+            returns_reference_or_lifetime,
         });
 
         let prev = self.inside_fn_body;
@@ -495,6 +503,95 @@ fn is_result_return_type(output: &syn::ReturnType) -> bool {
             if let Some(last_seg) = type_path.path.segments.last() {
                 return last_seg.ident == "Result";
             }
+        }
+    }
+    false
+}
+
+/// Check if the function return type contains a mutable reference (`&mut`).
+///
+/// Functions returning `&mut` (e.g. `Result<&mut T, E>` or `&mut T`) cannot be
+/// wrapped in an immediately-invoked closure without tripping borrow-checker errors
+/// (C1: captured variable cannot escape `FnMut` closure body). Such functions fall
+/// back to prefix-only instrumentation.
+pub(crate) fn returns_mut_reference(output: &syn::ReturnType) -> bool {
+    struct MutRefVisitor {
+        has_mut_ref: bool,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for MutRefVisitor {
+        fn visit_type_reference(&mut self, node: &'ast syn::TypeReference) {
+            if node.mutability.is_some() {
+                self.has_mut_ref = true;
+                return;
+            }
+            syn::visit::visit_type_reference(self, node);
+        }
+    }
+
+    if let syn::ReturnType::Type(_, ty) = output {
+        let mut visitor = MutRefVisitor { has_mut_ref: false };
+        syn::visit::visit_type(&mut visitor, ty);
+        if visitor.has_mut_ref {
+            return true;
+        }
+        let s = quote::quote!(#output).to_string();
+        if s.contains("& mut") || s.contains("&mut") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if the function return type contains any non-static reference (`&`) or explicit lifetime argument (`'a`, `'_`).
+///
+/// Functions returning references or carrying lifetimes (e.g. `&T`, `&mut T`, `Result<MutName<'_>, E>`)
+/// fall back to prefix-only instrumentation to prevent `FnMut` closure escape borrow errors
+/// on mutable accessors (including aliased `&mut`).
+pub(crate) fn returns_reference_or_lifetime(output: &syn::ReturnType) -> bool {
+    struct RefOrLifetimeVisitor {
+        has_ref_or_lifetime: bool,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for RefOrLifetimeVisitor {
+        fn visit_type_reference(&mut self, node: &'ast syn::TypeReference) {
+            // Any mutable reference triggers the fallback
+            if node.mutability.is_some() {
+                self.has_ref_or_lifetime = true;
+                return;
+            }
+            // Non-static shared reference triggers fallback (&str, &'a str, etc.)
+            if let Some(lt) = &node.lifetime {
+                if lt.ident != "static" {
+                    self.has_ref_or_lifetime = true;
+                    return;
+                }
+            } else {
+                // Anonymous/elided shared reference
+                self.has_ref_or_lifetime = true;
+                return;
+            }
+            syn::visit::visit_type_reference(self, node);
+        }
+
+        fn visit_lifetime(&mut self, node: &'ast syn::Lifetime) {
+            if node.ident != "static" {
+                self.has_ref_or_lifetime = true;
+            }
+        }
+    }
+
+    if let syn::ReturnType::Type(_, ty) = output {
+        let mut visitor = RefOrLifetimeVisitor {
+            has_ref_or_lifetime: false,
+        };
+        syn::visit::visit_type(&mut visitor, ty);
+        if visitor.has_ref_or_lifetime {
+            return true;
+        }
+        let s = quote::quote!(#output).to_string();
+        if s.contains("& mut") || s.contains("&mut") || s.contains("'_") {
+            return true;
         }
     }
     false

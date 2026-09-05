@@ -570,31 +570,18 @@ pub enum SpanKind {
     Internal,
 }
 
-/// High-level description of instrumentation intent for a candidate function.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstrumentationIntent {
-    pub span_name: String,
-    pub tracer_name: String,
-    pub span_kind: SpanKind,
-    pub returns_result: bool,
-}
-
-impl InstrumentationIntent {
-    /// Derive instrumentation intent from a candidate and tracer name.
-    pub fn from_candidate(candidate: &Candidate, tracer_name: impl Into<String>) -> Self {
-        Self {
-            span_name: candidate.function_name.clone(),
-            tracer_name: tracer_name.into(),
-            span_kind: SpanKind::Internal,
-            returns_result: candidate.returns_result,
-        }
-    }
-}
-
 /// Native OpenTelemetry emitter generating zero-dependency-on-tracing instrumentation code (P1.5).
 ///
 /// Emits pure synchronous OpenTelemetry 0.32.0 API calls with fully-qualified trait methods
 /// to ensure clean compilation under both `rustc -D warnings` and `cargo clippy -D warnings`.
+///
+/// ### Documented Runtime Cost & Deferred Optimization (M2 / §16.3)
+/// Tracer acquisition (`let __otel_tracer = opentelemetry::global::tracer("{crate_name}");`)
+/// is currently performed at the entry of each instrumented function body. Per invocation, this
+/// acquires a global `RwLock` read lock, clones the `Arc<TracerProvider>`, and allocates a
+/// `BoxedTracer` on the heap. While optimal for crate boundary isolation without global static
+/// boilerplate, pre-caching the tracer in a crate-level `static` / `OnceLock` is formally
+/// deferred per the §16.3 precedent ("Not Phase 1 — measure first").
 #[derive(Debug, Clone)]
 pub struct NativeOtelEmitter {
     /// The crate name used as the OpenTelemetry tracer name (instrumentation scope).
@@ -616,7 +603,11 @@ impl Emitter for NativeOtelEmitter {
         let crate_name = &self.crate_name;
         let nl = line_ending;
 
-        if candidate.returns_result {
+        // C1 & Aliased &mut: Functions returning references or carrying lifetimes
+        // (&mut T, Result<&mut T, E>, Result<MutName<'_>, E>) cannot be wrapped in
+        // closures (captured variable cannot escape FnMut closure body).
+        // They fall back to prefix-only instrumentation per §16.10.
+        if candidate.returns_result && !candidate.returns_reference_or_lifetime {
             format!(
                 "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
                  {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
@@ -642,7 +633,7 @@ impl Emitter for NativeOtelEmitter {
     }
 
     fn emit_body_suffix(&self, candidate: &Candidate, line_ending: &str) -> String {
-        if candidate.returns_result {
+        if candidate.returns_result && !candidate.returns_reference_or_lifetime {
             let nl = line_ending;
             format!(
                 "{nl}    }})();\
