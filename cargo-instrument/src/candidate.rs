@@ -74,6 +74,15 @@ pub struct Candidate {
 
     /// Whether this function returns `Result<T, E>`.
     pub returns_result: bool,
+
+    /// Whether this function returns a mutable reference (e.g. `&mut T` or `Result<&mut T, E>`).
+    /// Functions returning mutable references cannot be wrapped in closures (C1) and fall back to prefix-only instrumentation.
+    pub returns_mut_reference: bool,
+
+    /// Whether this function returns any reference or explicit lifetime parameter (e.g. `&T`, `&mut T`, `Result<MutName<'_>, E>`).
+    /// Functions returning references or lifetimes fall back to prefix-only instrumentation
+    /// to prevent `FnMut` closure escape borrow errors on mutable accessors (including aliased `&mut`).
+    pub returns_reference_or_lifetime: bool,
 }
 
 /// Summary report of AST candidate discovery for a single compilation unit.

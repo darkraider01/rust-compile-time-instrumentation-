@@ -532,6 +532,8 @@ fn test_discovery_report_format_debug() {
             is_generic: false,
             has_enclosing_generics: false,
             returns_result: false,
+            returns_mut_reference: false,
+            returns_reference_or_lifetime: false,
         }],
     };
     let formatted_c = report_with_candidate.format_debug();
@@ -564,4 +566,66 @@ impl From<std::num::ParseIntError> for MyErr {
     assert!(!report.candidates[0].function_name.contains(" < "));
     assert!(!report.candidates[0].function_name.contains(" > "));
     assert!(!report.candidates[0].function_name.contains(" >>"));
+}
+
+#[test]
+fn test_returns_mut_reference_detection() {
+    let code = r#"
+pub struct MyStruct;
+
+impl MyStruct {
+    pub fn get_mut(&mut self) -> Result<&mut String, String> {
+        todo!()
+    }
+    pub fn get_ref(&self) -> Result<&String, String> {
+        todo!()
+    }
+    pub fn raw_mut(&mut self) -> &mut i32 {
+        todo!()
+    }
+    pub fn plain(&self) -> i32 {
+        42
+    }
+}
+
+pub fn slice_mut(s: &mut [u8]) -> Result<&mut u8, String> {
+    todo!()
+}
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    assert_eq!(report.candidates.len(), 5);
+    assert!(report.candidates[0].returns_mut_reference); // get_mut
+    assert!(!report.candidates[1].returns_mut_reference); // get_ref
+    assert!(report.candidates[2].returns_mut_reference); // raw_mut
+    assert!(!report.candidates[3].returns_mut_reference); // plain
+    assert!(report.candidates[4].returns_mut_reference); // slice_mut
+
+    // returns_reference_or_lifetime covers both &mut, shared references, and lifetimes
+    assert!(report.candidates[0].returns_reference_or_lifetime); // get_mut
+    assert!(report.candidates[1].returns_reference_or_lifetime); // get_ref
+    assert!(report.candidates[2].returns_reference_or_lifetime); // raw_mut
+    assert!(!report.candidates[3].returns_reference_or_lifetime); // plain
+    assert!(report.candidates[4].returns_reference_or_lifetime); // slice_mut
+}
+
+#[test]
+fn test_returns_reference_or_lifetime_type_alias_mut() {
+    let code = r#"
+pub type MutName<'a> = &'a mut String;
+pub struct Aliased {
+    pub v: String,
+}
+impl Aliased {
+    pub fn alias_mut(&mut self) -> Result<MutName<'_>, String> {
+        Ok(&mut self.v)
+    }
+}
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+    assert_eq!(report.candidates.len(), 1);
+    assert!(report.candidates[0].returns_result);
+    assert!(report.candidates[0].returns_reference_or_lifetime);
 }

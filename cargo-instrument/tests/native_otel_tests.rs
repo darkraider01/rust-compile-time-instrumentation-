@@ -5,9 +5,11 @@ use std::process::Command;
 use cargo_instrument::ast::analyze_source_str;
 use cargo_instrument::discovery::CrateInvocation;
 use cargo_instrument::transform::{
-    transform_source_str_with_native_otel, Emitter, InstrumentationIntent, NativeOtelEmitter,
-    SkipReason, SpanKind, TransformationPlan,
+    detect_line_ending, transform_source_str_with_native_otel, Emitter, NativeOtelEmitter,
+    SkipReason, TransformationPlan,
 };
+use opentelemetry::trace::Span as _;
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
 #[test]
 fn test_native_otel_ordinary_sync_function() {
@@ -205,19 +207,15 @@ fn panicking_result() -> Result<i32, String> {
 }
 
 #[test]
-fn test_native_otel_tracer_name_and_intent() {
+fn test_native_otel_tracer_name_and_scope() {
     let source = "fn task() {}\n";
     let report = analyze_source_str("telemetry_app", Path::new("src/lib.rs"), source)
         .expect("analyze source");
     let c = &report.candidates[0];
 
-    let intent = InstrumentationIntent::from_candidate(c, "telemetry_app");
-    assert_eq!(intent.span_name, "task");
-    assert_eq!(intent.tracer_name, "telemetry_app");
-    assert_eq!(intent.span_kind, SpanKind::Internal);
-    assert!(!intent.returns_result);
-
     let emitter = NativeOtelEmitter::new("telemetry_app");
+    assert_eq!(emitter.crate_name, "telemetry_app");
+
     let prefix = emitter.emit_body_prefix(c, "\n");
     assert!(prefix.contains("opentelemetry::global::tracer(\"telemetry_app\")"));
     assert!(prefix.contains("span_builder(&__otel_tracer, \"task\")"));
@@ -395,11 +393,137 @@ fn formatted_fn(x: i32) -> i32 {
 }
 
 #[test]
+fn test_native_otel_mut_ref_return_fallback_c1() {
+    let source = r#"
+pub struct Holder {
+    pub name: String,
+}
+
+impl Holder {
+    pub fn get_mut(&mut self) -> Result<&mut String, String> {
+        Ok(&mut self.name)
+    }
+}
+
+pub fn nth_mut(s: &mut [u8], i: usize) -> Result<&mut u8, String> {
+    s.get_mut(i).ok_or_else(|| "out of bounds".to_string())
+}
+"#;
+    let report =
+        analyze_source_str("c1_crate", Path::new("src/lib.rs"), source).expect("analyze source");
+    assert_eq!(report.candidates.len(), 2);
+
+    // Both candidates return Result AND return mutable references / references
+    assert!(report.candidates[0].returns_result);
+    assert!(report.candidates[0].returns_mut_reference);
+    assert!(report.candidates[0].returns_reference_or_lifetime);
+    assert!(report.candidates[1].returns_result);
+    assert!(report.candidates[1].returns_mut_reference);
+    assert!(report.candidates[1].returns_reference_or_lifetime);
+
+    let transformed = transform_source_str_with_native_otel(source, "c1_crate", &report.candidates)
+        .expect("transform source");
+
+    // Both functions MUST contain anchors and span creation
+    assert!(transformed.contains("/* __cargo_instrument_anchor: \"Holder::get_mut\" */"));
+    assert!(transformed.contains("/* __cargo_instrument_anchor: \"nth_mut\" */"));
+
+    // Crucial C1 invariant: mutable reference returners MUST fall back to prefix-only instrumentation
+    // and MUST NOT be wrapped in closure (`let __otel_res: Result<_, _> = (|| {`)
+    assert!(!transformed.contains("__otel_res"));
+    assert!(transformed.contains("let __otel_guard = __otel_cx.attach();"));
+    assert!(!transformed.contains("__otel_cx.clone().attach()"));
+}
+
+#[test]
+fn test_native_otel_type_aliased_mut_ref_fallback() {
+    let source = r#"
+pub type MutName<'a> = &'a mut String;
+pub struct Aliased {
+    pub v: String,
+}
+impl Aliased {
+    pub fn alias_mut(&mut self) -> Result<MutName<'_>, String> {
+        Ok(&mut self.v)
+    }
+}
+"#;
+    let report = analyze_source_str("aliased_crate", Path::new("src/lib.rs"), source)
+        .expect("analyze source");
+    assert_eq!(report.candidates.len(), 1);
+    assert!(report.candidates[0].returns_result);
+    assert!(report.candidates[0].returns_reference_or_lifetime);
+
+    let transformed =
+        transform_source_str_with_native_otel(source, "aliased_crate", &report.candidates)
+            .expect("transform source");
+
+    assert!(transformed.contains("/* __cargo_instrument_anchor: \"Aliased::alias_mut\" */"));
+    assert!(transformed.contains("let __otel_guard = __otel_cx.attach();"));
+    assert!(!transformed.contains("__otel_res"));
+    assert!(!transformed.contains("redundant_closure_call"));
+}
+
+#[test]
+fn test_native_otel_crlf_preservation() {
+    let crlf_source = "pub fn crlf_sync() -> i32 {\r\n    let a = 100;\r\n    a\r\n}\r\n";
+    assert_eq!(detect_line_ending(crlf_source), "\r\n");
+
+    let report = analyze_source_str("crlf_crate", Path::new("src/lib.rs"), crlf_source)
+        .expect("analyze CRLF");
+    assert_eq!(report.candidates.len(), 1);
+
+    let transformed =
+        transform_source_str_with_native_otel(crlf_source, "crlf_crate", &report.candidates)
+            .expect("transform CRLF");
+
+    // Invariant: every newline in the transformed output must be preceded by \r
+    let bare_lf_count = transformed
+        .as_bytes()
+        .windows(2)
+        .filter(|w| w[1] == b'\n' && w[0] != b'\r')
+        .count();
+    assert_eq!(
+        bare_lf_count, 0,
+        "CRLF invariant violated: found bare LF without CR in transformed output"
+    );
+
+    assert!(transformed.contains("\r\n    /* __cargo_instrument_anchor: \"crlf_sync\" */\r\n"));
+    assert!(transformed.contains("\r\n    let __otel_guard = __otel_cx.attach();\r\n"));
+}
+
+#[test]
+fn test_native_otel_in_memory_exporter_sdk_proof() {
+    use opentelemetry::trace::TracerProvider as _;
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("direct_test_scope");
+
+    // Exercise the exact pattern generated by NativeOtelEmitter
+    let mut span = opentelemetry::trace::Tracer::span_builder(&tracer, "direct_proof")
+        .with_kind(opentelemetry::trace::SpanKind::Internal)
+        .start(&tracer);
+    span.set_status(opentelemetry::trace::Status::error(""));
+    drop(span);
+
+    let spans = exporter.get_finished_spans().expect("get finished spans");
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].name, "direct_proof");
+    assert_eq!(spans[0].instrumentation_scope.name(), "direct_test_scope");
+    assert_eq!(spans[0].span_kind, opentelemetry::trace::SpanKind::Internal);
+    assert_eq!(spans[0].status, opentelemetry::trace::Status::error(""));
+}
+
+#[test]
 fn test_native_otel_live_rustc_and_clippy_compilation_proof() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_root = temp_dir.path().join("proof_crate");
     let src_dir = project_root.join("src");
+    let tests_dir = project_root.join("tests");
     fs::create_dir_all(&src_dir).expect("create src dir");
+    fs::create_dir_all(&tests_dir).expect("create tests dir");
 
     let cargo_toml = r#"
 [package]
@@ -409,10 +533,13 @@ edition = "2021"
 
 [dependencies]
 opentelemetry = "0.32.0"
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
 "#;
     fs::write(project_root.join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
 
-    // All 8 core function shapes in a single source file
+    // Comprehensive function shapes in a single source file including C1 and unsafe Result
     let source = r#"#![deny(warnings)]
 
 // 1. Diverging body in Result
@@ -478,12 +605,74 @@ pub fn terminates() -> ! {
 pub unsafe fn raw_deref(p: *const i32) -> i32 {
     *p
 }
+
+// 10. C1 Inherent Method: &mut self returning Result<&mut String, String>
+pub struct Holder {
+    pub name: String,
+}
+
+impl Holder {
+    pub fn get_mut(&mut self) -> Result<&mut String, String> {
+        Ok(&mut self.name)
+    }
+}
+
+// 11. C1 Free Function: &mut [u8] returning Result<&mut u8, String>
+pub fn nth_mut(s: &mut [u8], i: usize) -> Result<&mut u8, String> {
+    s.get_mut(i).ok_or_else(|| "x".into())
+}
+
+// 12. Unsafe function returning Result
+/// # Safety
+/// Caller must ensure pointer is valid if non-null.
+pub unsafe fn unsafe_fallible(ptr: *const i32) -> Result<i32, String> {
+    if ptr.is_null() {
+        Err("null".into())
+    } else {
+        Ok(*ptr)
+    }
+}
+
+// 13. Type-aliased mutable reference return (aliased &mut)
+pub type MutName<'a> = &'a mut String;
+pub struct Aliased {
+    pub v: String,
+}
+impl Aliased {
+    pub fn alias_mut(&mut self) -> Result<MutName<'_>, String> {
+        Ok(&mut self.v)
+    }
+}
 "#;
 
     // 1. Analyze candidates
     let report =
         analyze_source_str("proof_crate", Path::new("src/lib.rs"), source).expect("analyze source");
-    assert_eq!(report.candidates.len(), 10);
+    assert_eq!(report.candidates.len(), 14);
+
+    // Verify C1 & aliased mutable reference candidates
+    let holder_get_mut = report
+        .candidates
+        .iter()
+        .find(|c| c.function_name == "Holder::get_mut")
+        .unwrap();
+    assert!(holder_get_mut.returns_mut_reference);
+    assert!(holder_get_mut.returns_reference_or_lifetime);
+
+    let nth_mut_c = report
+        .candidates
+        .iter()
+        .find(|c| c.function_name == "nth_mut")
+        .unwrap();
+    assert!(nth_mut_c.returns_mut_reference);
+    assert!(nth_mut_c.returns_reference_or_lifetime);
+
+    let alias_mut_c = report
+        .candidates
+        .iter()
+        .find(|c| c.function_name == "Aliased::alias_mut")
+        .unwrap();
+    assert!(alias_mut_c.returns_reference_or_lifetime);
 
     // 2. Transform with NativeOtelEmitter
     let transformed =
@@ -517,5 +706,100 @@ pub unsafe fn raw_deref(p: *const i32) -> i32 {
         clippy_output.status.success(),
         "Live cargo clippy failed on native OpenTelemetry instrumented code! stderr:\n{}",
         String::from_utf8_lossy(&clippy_output.stderr)
+    );
+
+    // 5. Live verification 3 (H1 runtime execution proof):
+    // Write an integration test using InMemorySpanExporter to prove runtime execution,
+    // span creation, kind == Internal, scope name attribution, and Err -> Error / Ok -> Unset status
+    let runtime_test_code = r#"
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+use proof_crate::*;
+
+#[test]
+fn test_runtime_spans_execution() {
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let _ = opentelemetry::global::set_tracer_provider(provider);
+
+    // 1. Plain sync non-Result function: 2 calls
+    assert_eq!(non_result(10), 11);
+    assert_eq!(non_result(20), 21);
+
+    // 2. Fallible calls returning Err: 2 calls
+    assert!(early_return(-5).is_err());
+    assert!(early_return(-10).is_err());
+
+    // 3. Fallible calls returning Ok: 2 calls
+    assert_eq!(early_return(5), Ok(10));
+    assert_eq!(early_return(10), Ok(20));
+
+    // 4. C1 &mut accessor: 1 call
+    let mut h = Holder { name: "initial".to_string() };
+    let r = h.get_mut().expect("get_mut should succeed");
+    r.push_str("_updated");
+    assert_eq!(h.name, "initial_updated");
+
+    // 5. Aliased &mut accessor: 1 call
+    let mut a = Aliased { v: "initial".to_string() };
+    let m = a.alias_mut().expect("alias_mut should succeed");
+    m.push_str("_aliased");
+    assert_eq!(a.v, "initial_aliased");
+
+    // Retrieve spans from in-memory exporter
+    let spans = exporter.get_finished_spans().expect("get finished spans");
+    assert_eq!(spans.len(), 8, "expected exactly 8 spans for 8 calls");
+
+    // Spans 0..2: non_result (Unset status, scope proof_crate, kind Internal)
+    for s in &spans[0..2] {
+        assert_eq!(s.name, "non_result");
+        assert_eq!(s.instrumentation_scope.name(), "proof_crate");
+        assert_eq!(s.span_kind, opentelemetry::trace::SpanKind::Internal);
+        assert_eq!(s.status, opentelemetry::trace::Status::Unset);
+    }
+
+    // Spans 2..4: early_return returning Err (Error status per §16.10, scope proof_crate, kind Internal)
+    for s in &spans[2..4] {
+        assert_eq!(s.name, "early_return");
+        assert_eq!(s.instrumentation_scope.name(), "proof_crate");
+        assert_eq!(s.span_kind, opentelemetry::trace::SpanKind::Internal);
+        assert_eq!(s.status, opentelemetry::trace::Status::error(""));
+    }
+
+    // Spans 4..6: early_return returning Ok (Unset status, scope proof_crate, kind Internal)
+    for s in &spans[4..6] {
+        assert_eq!(s.name, "early_return");
+        assert_eq!(s.instrumentation_scope.name(), "proof_crate");
+        assert_eq!(s.span_kind, opentelemetry::trace::SpanKind::Internal);
+        assert_eq!(s.status, opentelemetry::trace::Status::Unset);
+    }
+
+    // Span 6: Holder::get_mut (C1 prefix-only fallback, Unset status, scope proof_crate, kind Internal)
+    let s_mut = &spans[6];
+    assert_eq!(s_mut.name, "Holder::get_mut");
+    assert_eq!(s_mut.instrumentation_scope.name(), "proof_crate");
+    assert_eq!(s_mut.span_kind, opentelemetry::trace::SpanKind::Internal);
+    assert_eq!(s_mut.status, opentelemetry::trace::Status::Unset);
+
+    // Span 7: Aliased::alias_mut (prefix-only fallback for aliased &mut, Unset status, scope proof_crate, kind Internal)
+    let s_alias = &spans[7];
+    assert_eq!(s_alias.name, "Aliased::alias_mut");
+    assert_eq!(s_alias.instrumentation_scope.name(), "proof_crate");
+    assert_eq!(s_alias.span_kind, opentelemetry::trace::SpanKind::Internal);
+    assert_eq!(s_alias.status, opentelemetry::trace::Status::Unset);
+}
+"#;
+    fs::write(tests_dir.join("runtime_test.rs"), runtime_test_code).expect("write runtime_test.rs");
+
+    let test_output = Command::new("cargo")
+        .arg("test")
+        .current_dir(&project_root)
+        .output()
+        .expect("execute cargo test in proof_crate");
+    assert!(
+        test_output.status.success(),
+        "Live cargo test failed on runtime proof! stderr:\n{}",
+        String::from_utf8_lossy(&test_output.stderr)
     );
 }
