@@ -307,6 +307,32 @@ fn detect_unsafe_policy(attrs: &[syn::Attribute]) -> UnsafePolicy {
     }
 }
 
+/// Normalize token-stream-to-string representation of types and paths.
+///
+/// `quote!(#node).to_string()` inserts spaces between punctuation tokens (e.g.
+/// `From < std :: num :: ParseIntError >`). This function collapses those stray
+/// spaces around `::`, `<`, `>`, and `>>` while preserving intentional spaces
+/// like `" as "`.
+pub(crate) fn normalize_type_str(s: &str) -> String {
+    let mut out = s.trim().to_string();
+    let mut prev = String::new();
+    while prev != out {
+        prev = out.clone();
+        out = out
+            .replace(" :: ", "::")
+            .replace(":: ", "::")
+            .replace(" ::", "::")
+            .replace(" < ", "<")
+            .replace(" <", "<")
+            .replace("< ", "<")
+            .replace(" >>", ">>")
+            .replace(" >", ">")
+            .replace(" , ", ", ")
+            .replace(" ,", ",");
+    }
+    out
+}
+
 /// Information about an enclosing `impl` block during AST traversal.
 struct EnclosingImpl {
     type_name: String,
@@ -328,11 +354,11 @@ struct CandidateFinder {
 impl<'ast> Visit<'ast> for CandidateFinder {
     fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
         let self_ty = &i.self_ty;
-        let type_name = quote::quote!(#self_ty).to_string();
+        let type_name = normalize_type_str(&quote::quote!(#self_ty).to_string());
         let trait_name = i
             .trait_
             .as_ref()
-            .map(|(_, path, _)| quote::quote!(#path).to_string());
+            .map(|(_, path, _)| normalize_type_str(&quote::quote!(#path).to_string()));
         let is_generic = !i.generics.params.is_empty();
 
         let prev = self.current_impl.replace(EnclosingImpl {
@@ -374,6 +400,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         let body_byte_range = i.block.span().byte_range();
         let is_async = i.sig.asyncness.is_some();
         let is_generic = !i.sig.generics.params.is_empty();
+        let returns_result = is_result_return_type(&i.sig.output);
 
         self.candidates.push(Candidate {
             function_name,
@@ -384,6 +411,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
             is_async,
             is_generic,
             has_enclosing_generics: false,
+            returns_result,
         });
 
         // Visit body to allow visiting sub-items (e.g. inner modules or impls, but marking inside_fn_body)
@@ -418,6 +446,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         let body_byte_range = i.block.span().byte_range();
         let is_async = i.sig.asyncness.is_some();
         let is_generic = !i.sig.generics.params.is_empty();
+        let returns_result = is_result_return_type(&i.sig.output);
 
         let (kind, function_name, has_enclosing_generics) = match &self.current_impl {
             Some(imp) => match &imp.trait_name {
@@ -426,14 +455,14 @@ impl<'ast> Visit<'ast> for CandidateFinder {
                         trait_name: tr.clone(),
                         type_name: imp.type_name.clone(),
                     },
-                    format!("<{} as {}>::{}", imp.type_name, tr, i.sig.ident),
+                    normalize_type_str(&format!("<{} as {}>::{}", imp.type_name, tr, i.sig.ident)),
                     imp.is_generic,
                 ),
                 None => (
                     FunctionKind::InherentMethod {
                         type_name: imp.type_name.clone(),
                     },
-                    format!("{}::{}", imp.type_name, i.sig.ident),
+                    normalize_type_str(&format!("{}::{}", imp.type_name, i.sig.ident)),
                     imp.is_generic,
                 ),
             },
@@ -449,6 +478,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
             is_async,
             is_generic,
             has_enclosing_generics,
+            returns_result,
         });
 
         let prev = self.inside_fn_body;
@@ -456,6 +486,18 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         syn::visit::visit_impl_item_fn(self, i);
         self.inside_fn_body = prev;
     }
+}
+
+/// Check if the function return type is syntactically a `Result` per §16.10.
+fn is_result_return_type(output: &syn::ReturnType) -> bool {
+    if let syn::ReturnType::Type(_, ty) = output {
+        if let syn::Type::Path(type_path) = &**ty {
+            if let Some(last_seg) = type_path.path.segments.last() {
+                return last_seg.ident == "Result";
+            }
+        }
+    }
+    false
 }
 
 /// Check signature exclusions:

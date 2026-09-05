@@ -215,3 +215,49 @@ fn test_discovery_passthrough_when_no_source_file() {
     ));
     assert!(!invocation.unit.is_eligible_for_analysis());
 }
+
+#[test]
+fn test_discovery_has_opentelemetry_separated_and_equals() {
+    let args1 = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "my_crate".to_string(),
+        "src/lib.rs".to_string(),
+        "--extern".to_string(),
+        "opentelemetry=target/debug/deps/libopentelemetry.rlib".to_string(),
+    ];
+    let inv1 = CrateInvocation::parse(&args1).expect("parse args1");
+    assert!(inv1.unit.has_opentelemetry());
+
+    let args2 = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "my_crate".to_string(),
+        "src/lib.rs".to_string(),
+        "--extern=opentelemetry=target/debug/deps/libopentelemetry.rlib".to_string(),
+    ];
+    let inv2 = CrateInvocation::parse(&args2).expect("parse args2");
+    assert!(inv2.unit.has_opentelemetry());
+
+    let args3 = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "my_crate".to_string(),
+        "src/lib.rs".to_string(),
+        "--extern".to_string(),
+        "noprelude:opentelemetry=target/debug/deps/libopentelemetry.rlib".to_string(),
+    ];
+    let inv3 = CrateInvocation::parse(&args3).expect("parse args3");
+    assert!(inv3.unit.has_opentelemetry());
+
+    let args4 = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "my_crate".to_string(),
+        "src/lib.rs".to_string(),
+        "--extern".to_string(),
+        "serde=target/debug/deps/libserde.rlib".to_string(),
+    ];
+    let inv4 = CrateInvocation::parse(&args4).expect("parse args4");
+    assert!(!inv4.unit.has_opentelemetry());
+}
