@@ -71,6 +71,9 @@ pub struct Candidate {
 
     /// Whether this function resides within a generic `impl<...>` block.
     pub has_enclosing_generics: bool,
+
+    /// Whether this function returns `Result<T, E>`.
+    pub returns_result: bool,
 }
 
 /// Summary report of AST candidate discovery for a single compilation unit.

@@ -531,10 +531,37 @@ fn test_discovery_report_format_debug() {
             is_async: true,
             is_generic: false,
             has_enclosing_generics: false,
+            returns_result: false,
         }],
     };
     let formatted_c = report_with_candidate.format_debug();
     assert!(formatted_c.contains("crate: sample_crate"));
     assert!(formatted_c.contains("unsafe_policy: Forbidden"));
     assert!(formatted_c.contains("compute: bytes 10..50 (src/main.rs)"));
+}
+
+#[test]
+fn test_trait_impl_method_function_name_normalization() {
+    let code = r#"
+pub struct MyErr(std::num::ParseIntError);
+
+impl From<std::num::ParseIntError> for MyErr {
+    fn from(e: std::num::ParseIntError) -> Self {
+        MyErr(e)
+    }
+}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(
+        report.candidates[0].function_name,
+        "<MyErr as From<std::num::ParseIntError>>::from"
+    );
+    assert!(!report.candidates[0].function_name.contains(" :: "));
+    assert!(!report.candidates[0].function_name.contains(" < "));
+    assert!(!report.candidates[0].function_name.contains(" > "));
+    assert!(!report.candidates[0].function_name.contains(" >>"));
 }

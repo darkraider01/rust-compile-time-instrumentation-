@@ -8,7 +8,10 @@ use thiserror::Error;
 use crate::ast::analyze_source_file;
 use crate::candidate::{Candidate, DiscoveryReport};
 use crate::discovery::{CrateInvocation, DiscoveryError};
-use crate::transform::{paths_are_identical, transform_source_file_scoped};
+use crate::transform::{
+    paths_are_identical, transform_source_file_scoped_with_emitter, Emitter, NativeOtelEmitter,
+    SentinelEmitter, SkipReason,
+};
 
 pub const RECURSION_GUARD_ENV: &str = "CARGO_INSTRUMENT_ACTIVE";
 pub const DEBUG_ENV: &str = "INSTRUMENT_DEBUG";
@@ -125,35 +128,57 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                 );
                             }
 
+                            // S11 / C3: Dependency check before transformation
+                            let has_otel = invocation.unit.has_opentelemetry();
+                            let use_sentinel = env::var("CARGO_INSTRUMENT_SENTINEL_MODE").is_ok();
+                            let native_otel_enforced =
+                                env::var("CARGO_INSTRUMENT_NATIVE_OTEL").is_ok();
+
                             // H1: Splicing pipeline integration
                             if !report.candidates.is_empty() {
-                                match mirror_and_transform_crate_sources(
-                                    &current_dir,
-                                    source_file,
-                                    crate_name,
-                                    invocation.unit.out_dir(),
-                                    &report,
-                                    config.debug_output,
-                                ) {
-                                    Ok(new_root) => {
-                                        // Replace root source file argument with mirrored instrumented root
-                                        for arg in &mut args_to_run {
-                                            let p = Path::new(arg);
-                                            if p == source_file
-                                                || p == resolved_path
-                                                || paths_are_identical(p, &resolved_path)
-                                            {
-                                                *arg = new_root.to_string_lossy().to_string();
-                                                break;
+                                if !use_sentinel && native_otel_enforced && !has_otel {
+                                    eprintln!(
+                                        "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry'. \
+                                        Skipping instrumentation per S11 fail-open."
+                                    );
+                                } else {
+                                    let emitter: Box<dyn Emitter> = if use_sentinel {
+                                        Box::new(SentinelEmitter)
+                                    } else if has_otel {
+                                        Box::new(NativeOtelEmitter::new(crate_name))
+                                    } else {
+                                        Box::new(SentinelEmitter)
+                                    };
+
+                                    match mirror_and_transform_crate_sources(
+                                        &current_dir,
+                                        source_file,
+                                        crate_name,
+                                        invocation.unit.out_dir(),
+                                        &report,
+                                        emitter.as_ref(),
+                                        config.debug_output,
+                                    ) {
+                                        Ok(new_root) => {
+                                            // Replace root source file argument with mirrored instrumented root
+                                            for arg in &mut args_to_run {
+                                                let p = Path::new(arg);
+                                                if p == source_file
+                                                    || p == resolved_path
+                                                    || paths_are_identical(p, &resolved_path)
+                                                {
+                                                    *arg = new_root.to_string_lossy().to_string();
+                                                    break;
+                                                }
                                             }
                                         }
-                                    }
-                                    Err(e) => {
-                                        // S11 fail-open per crate: log warning and compile unmodified
-                                        eprintln!(
-                                            "warning: cargo-instrument: failed to instrument '{crate_name}': {e}. \
-                                            Compiling original source unmodified per S11."
-                                        );
+                                        Err(e) => {
+                                            // S11 fail-open per crate: log warning and compile unmodified
+                                            eprintln!(
+                                                "warning: cargo-instrument: failed to instrument '{crate_name}': {e}. \
+                                                Compiling original source unmodified per S11."
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -181,6 +206,7 @@ fn mirror_and_transform_crate_sources(
     crate_name: &str,
     out_dir: Option<&Path>,
     report: &DiscoveryReport,
+    emitter: &dyn Emitter,
     debug_output: bool,
 ) -> Result<PathBuf, Box<dyn std::error::Error>> {
     // 1. Determine destination mirror directory
@@ -225,7 +251,15 @@ fn mirror_and_transform_crate_sources(
     };
 
     if scan_dir.exists() && scan_dir.is_dir() {
-        mirror_dir_recursive(&scan_dir, current_dir, &mirror_base, &candidates_by_file)?;
+        mirror_dir_recursive(
+            &scan_dir,
+            current_dir,
+            &mirror_base,
+            &candidates_by_file,
+            emitter,
+            crate_name,
+            debug_output,
+        )?;
     }
 
     // 4. Also mirror any candidate files that were out-of-line / outside scan_dir (e.g. #[path = "..."])
@@ -246,7 +280,27 @@ fn mirror_and_transform_crate_sources(
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                transform_source_file_scoped(canon_path, &dest, file_candidates)?;
+                let plan = transform_source_file_scoped_with_emitter(
+                    canon_path,
+                    &dest,
+                    file_candidates,
+                    emitter,
+                )?;
+                if debug_output {
+                    let deferred = plan
+                        .skipped
+                        .iter()
+                        .filter(|s| matches!(s.reason, SkipReason::AsyncDeferred))
+                        .count();
+                    if deferred > 0 {
+                        eprintln!(
+                            "[cargo-instrument PID={} crate={}] deferred {} async candidates to P1.6",
+                            std::process::id(),
+                            crate_name,
+                            deferred,
+                        );
+                    }
+                }
             }
         }
     }
@@ -313,12 +367,23 @@ fn mirror_dir_recursive(
     current_dir: &Path,
     mirror_base: &Path,
     candidates_by_file: &HashMap<PathBuf, Vec<Candidate>>,
+    emitter: &dyn Emitter,
+    crate_name: &str,
+    debug_output: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            mirror_dir_recursive(&path, current_dir, mirror_base, candidates_by_file)?;
+            mirror_dir_recursive(
+                &path,
+                current_dir,
+                mirror_base,
+                candidates_by_file,
+                emitter,
+                crate_name,
+                debug_output,
+            )?;
         } else if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
             let rel = if let Ok(r) = path.strip_prefix(current_dir) {
                 r.to_path_buf()
@@ -339,7 +404,27 @@ fn mirror_dir_recursive(
             }
             let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
             if let Some(file_candidates) = candidates_by_file.get(&canon) {
-                transform_source_file_scoped(&path, &dest, file_candidates)?;
+                let plan = transform_source_file_scoped_with_emitter(
+                    &path,
+                    &dest,
+                    file_candidates,
+                    emitter,
+                )?;
+                if debug_output {
+                    let deferred = plan
+                        .skipped
+                        .iter()
+                        .filter(|s| matches!(s.reason, SkipReason::AsyncDeferred))
+                        .count();
+                    if deferred > 0 {
+                        eprintln!(
+                            "[cargo-instrument PID={} crate={}] deferred {} async candidates to P1.6",
+                            std::process::id(),
+                            crate_name,
+                            deferred,
+                        );
+                    }
+                }
             } else {
                 fs::copy(&path, &dest)?;
             }

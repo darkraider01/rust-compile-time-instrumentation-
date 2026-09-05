@@ -46,6 +46,7 @@ pub enum SkipReason {
         current: Range<usize>,
     },
     AlreadyInstrumented,
+    AsyncDeferred,
 }
 
 /// Diagnostic record of an individual candidate that was skipped during transformation planning.
@@ -69,6 +70,19 @@ pub trait Emitter: Send + Sync {
     ///
     /// `line_ending` indicates the detected line ending of the source file (`"\n"` or `"\r\n"`).
     fn emit_body_prefix(&self, candidate: &Candidate, line_ending: &str) -> String;
+
+    /// Generate replacement text to inject immediately before the closing brace `}` of `candidate`.
+    /// Default implementation returns an empty string (pure prefix/RAII emission).
+    fn emit_body_suffix(&self, _candidate: &Candidate, _line_ending: &str) -> String {
+        String::new()
+    }
+
+    /// Whether this emitter supports instrumenting asynchronous functions.
+    /// Defaults to `true` so general emitters (e.g. `SentinelEmitter`) are unaffected.
+    /// `NativeOtelEmitter` returns `false` to explicitly defer async functions to P1.6.
+    fn handles_async(&self) -> bool {
+        true
+    }
 }
 
 /// Default minimal sentinel emitter for Milestone P1.4.
@@ -136,6 +150,16 @@ impl TransformationPlan {
         Self::build_with_emitter(source, candidates, &SentinelEmitter)
     }
 
+    /// Build and validate a transformation plan using the `NativeOtelEmitter` for a given crate.
+    pub fn build_with_native_otel(
+        source: &str,
+        crate_name: &str,
+        candidates: &[Candidate],
+    ) -> Result<Self, TransformError> {
+        let emitter = NativeOtelEmitter::new(crate_name);
+        Self::build_with_emitter(source, candidates, &emitter)
+    }
+
     /// Build and validate a transformation plan using a pluggable `Emitter` (ADR-006).
     ///
     /// Architectural guarantees:
@@ -171,6 +195,16 @@ impl TransformationPlan {
 
         for c in sorted_candidates {
             let r = &c.body_byte_range;
+
+            // Check 0: Async capability check (ADR-006 / P1.5 scope boundary)
+            if c.is_async && !emitter.handles_async() {
+                skipped.push(SkippedCandidate {
+                    function_name: c.function_name.clone(),
+                    candidate_range: r.clone(),
+                    reason: SkipReason::AsyncDeferred,
+                });
+                continue;
+            }
 
             // Check 1: Candidate bounds in buffer
             if r.start >= r.end || r.end > source_len {
@@ -256,13 +290,51 @@ impl TransformationPlan {
             }
 
             // 7. Emit replacement using pluggable emitter and detected line ending
-            let replacement = emitter.emit_body_prefix(c, line_ending);
+            let prefix = emitter.emit_body_prefix(c, line_ending);
+            let suffix = emitter.emit_body_suffix(c, line_ending);
 
-            edits.push(ByteEdit {
-                start: insert_offset,
-                end: insert_offset,
-                replacement,
-            });
+            if !suffix.is_empty() {
+                let suffix_offset = r.end.saturating_sub(1);
+                if suffix_offset <= insert_offset || !source.is_char_boundary(suffix_offset) {
+                    skipped.push(SkippedCandidate {
+                        function_name: c.function_name.clone(),
+                        candidate_range: r.clone(),
+                        reason: SkipReason::InvalidUtf8Boundary {
+                            offset: suffix_offset,
+                        },
+                    });
+                    continue;
+                }
+                let last_byte = source.as_bytes()[suffix_offset];
+                if last_byte != b'}' {
+                    skipped.push(SkippedCandidate {
+                        function_name: c.function_name.clone(),
+                        candidate_range: r.clone(),
+                        reason: SkipReason::MissingOpeningBrace {
+                            offset: suffix_offset,
+                            found: last_byte,
+                        },
+                    });
+                    continue;
+                }
+
+                edits.push(ByteEdit {
+                    start: insert_offset,
+                    end: insert_offset,
+                    replacement: prefix,
+                });
+                edits.push(ByteEdit {
+                    start: suffix_offset,
+                    end: suffix_offset,
+                    replacement: suffix,
+                });
+            } else {
+                edits.push(ByteEdit {
+                    start: insert_offset,
+                    end: insert_offset,
+                    replacement: prefix,
+                });
+            }
 
             last_valid_range = Some(r.clone());
         }
@@ -363,6 +435,17 @@ pub fn transform_source_str_with_emitter<E: Emitter + ?Sized>(
     plan.apply(source)
 }
 
+/// Convenience helper: create plan and transform source text using native OpenTelemetry emitter.
+pub fn transform_source_str_with_native_otel(
+    source: &str,
+    crate_name: &str,
+    candidates: &[Candidate],
+) -> Result<String, TransformError> {
+    let emitter = NativeOtelEmitter::new(crate_name);
+    let plan = TransformationPlan::build_with_emitter(source, candidates, &emitter)?;
+    plan.apply(source)
+}
+
 /// Transform a source file from disk using candidates that have already been scoped to this file.
 ///
 /// NON-NEGOTIABLE INVARIANT:
@@ -372,6 +455,25 @@ pub fn transform_source_file_scoped(
     input_path: &Path,
     output_path: &Path,
     scoped_candidates: &[Candidate],
+) -> Result<TransformationPlan, TransformError> {
+    transform_source_file_scoped_with_emitter(
+        input_path,
+        output_path,
+        scoped_candidates,
+        &SentinelEmitter,
+    )
+}
+
+/// Transform a source file from disk using a custom emitter and scoped candidates.
+///
+/// NON-NEGOTIABLE INVARIANT:
+/// The input source file must NEVER be modified in-place. If `input_path` and `output_path`
+/// resolve to the same file, this function immediately returns an error.
+pub fn transform_source_file_scoped_with_emitter<E: Emitter + ?Sized>(
+    input_path: &Path,
+    output_path: &Path,
+    scoped_candidates: &[Candidate],
+    emitter: &E,
 ) -> Result<TransformationPlan, TransformError> {
     // 1. Guard against in-place modification
     if paths_are_identical(input_path, output_path) {
@@ -392,7 +494,7 @@ pub fn transform_source_file_scoped(
     })?;
 
     // 3. Perform transformation
-    let plan = TransformationPlan::build(&source_text, scoped_candidates)?;
+    let plan = TransformationPlan::build_with_emitter(&source_text, scoped_candidates, emitter)?;
     let transformed = plan.apply(&source_text)?;
 
     // 4. Ensure parent directories exist for output path
@@ -458,4 +560,104 @@ pub fn normalize_path(p: &Path) -> PathBuf {
         }
     }
     out
+}
+
+/// OpenTelemetry span kind for compile-time generated spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SpanKind {
+    /// Internal span representing in-process execution (default for P1.5).
+    #[default]
+    Internal,
+}
+
+/// High-level description of instrumentation intent for a candidate function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstrumentationIntent {
+    pub span_name: String,
+    pub tracer_name: String,
+    pub span_kind: SpanKind,
+    pub returns_result: bool,
+}
+
+impl InstrumentationIntent {
+    /// Derive instrumentation intent from a candidate and tracer name.
+    pub fn from_candidate(candidate: &Candidate, tracer_name: impl Into<String>) -> Self {
+        Self {
+            span_name: candidate.function_name.clone(),
+            tracer_name: tracer_name.into(),
+            span_kind: SpanKind::Internal,
+            returns_result: candidate.returns_result,
+        }
+    }
+}
+
+/// Native OpenTelemetry emitter generating zero-dependency-on-tracing instrumentation code (P1.5).
+///
+/// Emits pure synchronous OpenTelemetry 0.32.0 API calls with fully-qualified trait methods
+/// to ensure clean compilation under both `rustc -D warnings` and `cargo clippy -D warnings`.
+#[derive(Debug, Clone)]
+pub struct NativeOtelEmitter {
+    /// The crate name used as the OpenTelemetry tracer name (instrumentation scope).
+    pub crate_name: String,
+}
+
+impl NativeOtelEmitter {
+    /// Create a new native OpenTelemetry emitter with the given crate name.
+    pub fn new(crate_name: impl Into<String>) -> Self {
+        Self {
+            crate_name: crate_name.into(),
+        }
+    }
+}
+
+impl Emitter for NativeOtelEmitter {
+    fn emit_body_prefix(&self, candidate: &Candidate, line_ending: &str) -> String {
+        let name = &candidate.function_name;
+        let crate_name = &self.crate_name;
+        let nl = line_ending;
+
+        if candidate.returns_result {
+            format!(
+                "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                 {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
+                 {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
+                 {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
+                 {nl}        .start(&__otel_tracer);\
+                 {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
+                 {nl}    let __otel_guard = __otel_cx.clone().attach();\
+                 {nl}    #[allow(clippy::redundant_closure_call)]\
+                 {nl}    let __otel_res: Result<_, _> = (|| {{"
+            )
+        } else {
+            format!(
+                "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                 {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
+                 {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
+                 {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
+                 {nl}        .start(&__otel_tracer);\
+                 {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
+                 {nl}    let __otel_guard = __otel_cx.attach();"
+            )
+        }
+    }
+
+    fn emit_body_suffix(&self, candidate: &Candidate, line_ending: &str) -> String {
+        if candidate.returns_result {
+            let nl = line_ending;
+            format!(
+                "{nl}    }})();\
+                 {nl}    if __otel_res.is_err() {{\
+                 {nl}        opentelemetry::trace::TraceContextExt::span(&__otel_cx)\
+                 {nl}            .set_status(opentelemetry::trace::Status::error(\"\"));\
+                 {nl}    }}\
+                 {nl}    __otel_res{nl}"
+            )
+        } else {
+            String::new()
+        }
+    }
+
+    fn handles_async(&self) -> bool {
+        false
+    }
 }

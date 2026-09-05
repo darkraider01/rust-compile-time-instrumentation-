@@ -22,6 +22,7 @@ pub enum CompilationUnit {
         out_dir: Option<PathBuf>,
         source_file: PathBuf,
         is_test: bool,
+        has_opentelemetry: bool,
     },
 
     /// A build script compilation (e.g. `build_script_build` or `build.rs`).
@@ -80,6 +81,16 @@ impl CompilationUnit {
             _ => None,
         }
     }
+
+    /// Whether the compilation unit includes opentelemetry as an extern dependency.
+    pub fn has_opentelemetry(&self) -> bool {
+        match self {
+            CompilationUnit::RustCrate {
+                has_opentelemetry, ..
+            } => *has_opentelemetry,
+            _ => false,
+        }
+    }
 }
 
 /// Parsed representation of a rustc invocation received from Cargo.
@@ -134,6 +145,7 @@ impl CrateInvocation {
         let mut target: Option<String> = None;
         let mut out_dir: Option<PathBuf> = None;
         let mut is_test = false;
+        let mut has_opentelemetry = false;
         let mut positional_source: Option<PathBuf> = None;
 
         let mut i = 0;
@@ -168,6 +180,27 @@ impl CrateInvocation {
 
             if let Some(val) = extract_opt_value(args, &mut i, "--out-dir") {
                 out_dir = Some(PathBuf::from(val));
+                continue;
+            }
+
+            if arg == "--extern" {
+                if i + 1 < args.len() {
+                    let spec = &args[i + 1];
+                    let extern_name = spec.split('=').next().unwrap_or(spec);
+                    let extern_crate = extern_name.rsplit(':').next().unwrap_or(extern_name);
+                    if extern_crate == "opentelemetry" {
+                        has_opentelemetry = true;
+                    }
+                    i += 2;
+                    continue;
+                }
+            } else if let Some(spec) = arg.strip_prefix("--extern=") {
+                let extern_name = spec.split('=').next().unwrap_or(spec);
+                let extern_crate = extern_name.rsplit(':').next().unwrap_or(extern_name);
+                if extern_crate == "opentelemetry" {
+                    has_opentelemetry = true;
+                }
+                i += 1;
                 continue;
             }
 
@@ -261,6 +294,7 @@ impl CrateInvocation {
                 out_dir,
                 source_file,
                 is_test,
+                has_opentelemetry,
             },
             original_args,
         })
@@ -289,7 +323,6 @@ fn is_argument_consuming_flag(arg: &str) -> bool {
     matches!(
         arg,
         "-o" | "-L"
-            | "--extern"
             | "-C"
             | "-A"
             | "-W"

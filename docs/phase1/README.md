@@ -4,11 +4,11 @@
 
 # Phase 1 - Compile-Time Instrumentation Tool (`cargo-instrument`)
 
-**Milestones covered:** P1.1, P1.2, P1.3, P1.4  
-**Status:** P1.1–P1.4 Complete; P1.5 Next  
+**Milestones covered:** P1.1, P1.2, P1.3, P1.4, P1.5  
+**Status:** P1.1–P1.5 Complete; P1.6 Next  
 **Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
 **Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
-**Test suite status:** 78 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
+**Test suite status:** 93 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
 
 ---
 
@@ -24,8 +24,8 @@ Phase 1 - Compile-Time Instrumentation (In Progress - current focus)
           ├── P1.2 Source Discovery & Classification ✅ Complete
           ├── P1.3 syn AST + Exact Byte Spans       ✅ Complete
           ├── P1.4 Surgical Source Transformation   ✅ Complete
-          ├── P1.5 Native OTel Code Generation      → NEXT
-          ├── P1.6 Async Instrumentation            ○ Planned
+          ├── P1.5 Native OTel Code Generation      ✅ Complete
+          ├── P1.6 Async Instrumentation            → NEXT
           ├── P1.7 Dependency Trampolines           ○ Planned
           └── P1.8 End-to-End Validation            ○ Planned
           │
@@ -42,11 +42,12 @@ Phase 3 - Evaluation & Research (Planned)
 
 Phase 1 translates the frozen architecture from [Phase 0](../research/README.md) into a working, stable-Rust compile-time instrumentation CLI and wrapper tool (`cargo-instrument`).
 
-This document records the design decisions, implementation architecture, empirical findings, and verification proofs for the first four Phase 1 milestones:
+This document records the design decisions, implementation architecture, empirical findings, and verification proofs for the Phase 1 milestones:
 - **P1.1 - Cargo / `RUSTC_WRAPPER` interception**
 - **P1.2 - Source discovery & compilation-unit classification**
 - **P1.3 - `syn` AST & exact byte-span analysis**
 - **P1.4 - Surgical byte-range source transformation**
+- **P1.5 - Native OpenTelemetry synchronous code generation**
 
 ### Invariant Boundaries for P1.1–P1.3
 Per Phase 0 normative specifications ([§16](../research/16-instrumentation-semantics.md)):
@@ -238,30 +239,112 @@ Milestone P1.4 takes the candidates produced by the frozen P1.3 AST analysis and
 
 ---
 
-## 6. Verification Matrix
+---
 
-The milestone implementation is verified by **78 automated tests** across 6 test suites:
+## 6. Milestone P1.5 - Native OpenTelemetry Synchronous Code Generation
+
+Milestone P1.5 delivers native OpenTelemetry synchronous instrumentation code generation, substituting the P1.4 `SentinelEmitter` via the pluggable `Emitter` seam without modifying the core byte-splicing engine.
+
+### Key Architectural Invariants & Implementation Details
+
+1. **Pluggable Emitter Seam & Async Capability (`handles_async`)**:
+   In accordance with ADR-006, the `Emitter` trait was extended with `emit_body_suffix` and `handles_async(&self) -> bool`:
+   - `SentinelEmitter` inherits `handles_async() -> true` (preserving 100% of P1.4 behavior, including `test_async_function`).
+   - `NativeOtelEmitter` overrides `handles_async() -> false`.
+   - `TransformationPlan::build_with_emitter` filters candidates where `c.is_async && !emitter.handles_async()`, recording `SkipReason::AsyncDeferred` in `plan.skipped` and emitting a diagnostic note in the wrapper.
+   - P1.6 async instrumentation will simply override `handles_async() -> true` with zero modifications to the splicing engine.
+
+2. **Verified OpenTelemetry 0.32.0 Trace Lifecycle API Surface**:
+   Generated code invokes the 9 verified OpenTelemetry 0.32.0 trace lifecycle APIs using fully-qualified trait paths to eliminate unused trait import warnings under `#![deny(warnings)]`:
+   - Tracer acquisition: `opentelemetry::global::tracer("{crate_name}")`
+   - Span construction: `opentelemetry::trace::Tracer::span_builder(&__otel_tracer, "{name}")`
+   - Span kind: `.with_kind(opentelemetry::trace::SpanKind::Internal)`
+   - Span start: `.start(&__otel_tracer)`
+   - Context creation: `<opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span)`
+   - Context attachment: `__otel_cx.attach()` (non-Result) / `__otel_cx.clone().attach()` (Result)
+   - Span status extraction: `opentelemetry::trace::TraceContextExt::span(&__otel_cx)`
+   - Error status setting: `.set_status(opentelemetry::trace::Status::error(""))`
+
+3. **Non-Result Synchronous Functions (Pure RAII Scope Cleanup)**:
+   For functions returning `()`, arbitrary types `T`, generic functions, unsafe functions, and diverging functions (`-> !`):
+   ```rust
+   /* __cargo_instrument_anchor: "{name}" */
+   let __otel_tracer = opentelemetry::global::tracer("{crate_name}");
+   let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, "{name}")
+       .with_kind(opentelemetry::trace::SpanKind::Internal)
+       .start(&__otel_tracer);
+   let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);
+   let __otel_guard = __otel_cx.attach();
+   // original body (suffix is empty)
+   ```
+   On normal return, early `return val;`, `?` operator propagation, or unwinding panics, `__otel_guard` drops in LIFO order, detaching the context and ending the span automatically.
+
+4. **Result-Returning Functions (Error Status Interception & Clippy Hygiene)**:
+   For functions returning `Result<T, E>`:
+   ```rust
+   /* __cargo_instrument_anchor: "{name}" */
+   let __otel_tracer = opentelemetry::global::tracer("{crate_name}");
+   let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, "{name}")
+       .with_kind(opentelemetry::trace::SpanKind::Internal)
+       .start(&__otel_tracer);
+   let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);
+   let __otel_guard = __otel_cx.clone().attach();
+   #[allow(clippy::redundant_closure_call)]
+   let __otel_res: Result<_, _> = (|| {
+       // original body
+   })();
+   if __otel_res.is_err() {
+       opentelemetry::trace::TraceContextExt::span(&__otel_cx)
+           .set_status(opentelemetry::trace::Status::error(""));
+   }
+   __otel_res
+   ```
+   - `#[allow(clippy::redundant_closure_call)]` eliminates clippy linting failures on immediately-invoked closures.
+   - `let __otel_res: Result<_, _>` pins the type for `.is_err()` on diverging bodies (`always_panics` / `panic!()`) without breaking `impl Trait` return types (avoiding E0562).
+   - `.is_err()` eliminates `redundant_pattern_matching` warnings.
+   - Symmetrical scope-end drop: eliminating explicit `drop(__otel_guard)` eliminates `drop_non_drop` warnings while LIFO scope drop cleans up `__otel_guard` automatically.
+   - Leading underscore on `__otel_guard` suppresses unused variable warnings under `#![deny(warnings)]`.
+
+5. **`opentelemetry` Dependency Gate (S11 Fail-Open)**:
+   `discovery.rs` parses `--extern` flags (both `--extern name` and `--extern name=path`). In `wrapper.rs`, if native OpenTelemetry mode is active and `has_opentelemetry` is false, the wrapper logs a diagnostic warning and compiles the original crate source unmodified, preserving S11 fail-open behavior and preventing E0433 errors.
+
+6. **InstrumentationScope Per-Crate Attribution**:
+   Tracer acquisition uses the instrumented crate's canonical rustc name (`opentelemetry::global::tracer("{crate_name}")`), preserving OpenTelemetry `InstrumentationScope` attribution across multi-crate builds.
+
+7. **§16.14 Attribute Boundary & Rationale**:
+   `code.function.name`, `code.file.path`, and `code.line.number` attributes require `opentelemetry::KeyValue` and are deferred to P1.8 (End-to-End Validation / Telemetry Export) where in-memory/OTLP span exporter and collector harnesses provide verification visibility.
+
+8. **Span Name Normalization & Parameter Consistency**:
+   - `ast.rs` normalizes token-stream formatting in `Candidate.function_name` and `Candidate.kind` via `normalize_type_str`, collapsing stray spaces around `::`, `<`, `>`, and `>>` while preserving `" as "` (e.g. producing `<MyErr as From<std::num::ParseIntError>>::from` conforming strictly to §16.14).
+   - Standardized `transform_source_str_with_native_otel(source, crate_name, candidates)` and `TransformationPlan::build_with_native_otel(source, crate_name, candidates)` with leading `source: &str`, matching all sibling transformation helpers.
+
+---
+
+## 7. Verification Matrix
+
+The milestone implementation is verified by **93 automated tests** across 7 test suites:
 
 | Test Suite | Tests | Scope |
 |---|---|---|
-| [`ast_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/ast_tests.rs) | 21 | Free/inherent/trait functions, async, generics, exclusions, idempotence, unsafe policies, module resolution (root, non-main, nested, path attr), error handling |
-| [`discovery_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/discovery_tests.rs) | 8 | Classification (ordinary crate, proc macro, build script, queries), real captured cargo argv, paths with spaces, error handling |
+| [`ast_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/ast_tests.rs) | 22 | Free/inherent/trait functions, async, generics, exclusions, idempotence, unsafe policies, module resolution (root, non-main, nested, path attr), Result return detection, span name normalization, error handling |
+| [`discovery_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/discovery_tests.rs) | 9 | Classification (ordinary crate, proc macro, build script, queries), real captured cargo argv, paths with spaces, `--extern opentelemetry` detection (separated, equals, noprelude), error handling |
 | [`wrapper_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/wrapper_tests.rs) | 5 | Config parsing, argument forwarding, exit code propagation, recursion guard, serial execution |
 | [`byte_span_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/byte_span_tests.rs) | 4 | Exact UTF-8 buffer slicing, emoji/multibyte offsets, multiline formatting, comment preservation |
 | [`transform_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/transform_tests.rs) | 35 | Surgical byte splicing, comments/formatting preservation, unicode offsets, exclusions, idempotence, overlap rejection, permutation invariance, rustc & Cargo compilation proofs, CLI transform, C1 cross-file basename collisions, H1 live wrapper pipeline and absolute source path handling, H2 fail-open skips, H3 emitter substitution, M1 CRLF preservation, M3 string literal idempotence, diverging `!`, unsafe fn, empty bodies |
 | [`cargo_integration_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/cargo_integration_tests.rs) | 5 | Real wrapped Cargo subprocesses, multi-file discovery on disk, SHA-256 byte-for-byte source preservation, isolated target dir wiring, CLI analyze subcommand |
+| [`native_otel_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/native_otel_tests.rs) | 13 | Synchronous OpenTelemetry generation: ordinary functions, inherent/trait methods, generics, unsafe fn, Result return with `clone().attach()`, `?` operator propagation, explicit early return, diverging bodies (`always_panics`), diverging `!`, tracer acquisition scope, idempotence (splicer & AST), marker false-positive protection, async deferral (`AsyncDeferred`), dependency gate fail-open, comments preservation, and live compilation under `rustc -D warnings` and `cargo clippy -- -D warnings` against real `opentelemetry 0.32.0` |
 
 ---
 
-## 7. Status & Handoff to Milestone P1.5
+## 8. Status & Handoff to Milestone P1.6
 
-### Milestone P1.4 Status: COMPLETE
-All 7 adversarial review findings (C1, H1, H2, H3, M1, M2, M3) have been addressed, implemented, and verified with zero compiler/clippy warnings and 78/78 tests passing across the workspace. Milestone P1.4 is complete and frozen.
+### Milestone P1.5 Status: COMPLETE
+Milestone P1.5 is implemented, verified, and passing all automated test suites with 0 compiler warnings, 0 clippy warnings, and 93/93 tests passing across the workspace.
 
-### What Is Next: P1.5 - Native OpenTelemetry Code Generation
-Milestones P1.1–P1.4 establish that the tool intercepts compiler invocations, discovers source candidates across multi-file crates, computes exact byte spans, and executes surgical byte-range transformations that compile cleanly under both `rustc` and `Cargo` via the live compiler wrapper.
+### What Is Next: P1.6 - Async Function Instrumentation
+Milestone P1.5 successfully instrumented synchronous Rust functions and cleanly deferred async functions via `handles_async(&self) -> bool { false }` and `SkipReason::AsyncDeferred`.
 
-Milestone P1.5 will plug into the `Emitter` seam to provide **native OpenTelemetry API span generation**:
-1. **Synchronous spans (§16.4):** Inject `tracer.start(...)` and RAII drop guard for context attachment/detachment.
-2. **Metadata binding:** Site registration passing function name, source file, line number, and `SpanKind`.
-3. **No pretty-printing:** Generated code is inserted via surgical byte splicing into the original source buffer.
+Milestone P1.6 will implement native OpenTelemetry span generation for asynchronous functions:
+1. **Async Span Instrumentation (§16.5):** Wrap future bodies using `opentelemetry::trace::FutureExt::with_context` or equivalent native context propagation across `.await` points.
+2. **Emitter Integration:** Implement async handling in `NativeOtelEmitter` by returning `handles_async() -> true` and generating async context-attachment wrappers.
+3. **No `tracing` or Macro Dependencies:** Preserve the direct OpenTelemetry API approach without intermediate tracing layers or runtime macro bloat.
