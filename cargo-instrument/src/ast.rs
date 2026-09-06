@@ -172,29 +172,7 @@ fn discover_submodules(
                 discover_submodules(current_file, inner_items, &sub_dir, visited, candidates);
             } else {
                 // Out-of-line module: mod foo;
-                let submod_name = item_mod.ident.to_string();
-                let submod_path = if let Some(custom_path) = extract_path_attribute(&item_mod.attrs)
-                {
-                    let p = current_file
-                        .parent()
-                        .unwrap_or(Path::new("."))
-                        .join(custom_path);
-                    if p.exists() {
-                        Some(p)
-                    } else {
-                        None
-                    }
-                } else {
-                    let candidate1 = current_dir.join(format!("{}.rs", submod_name));
-                    let candidate2 = current_dir.join(&submod_name).join("mod.rs");
-                    if candidate1.exists() {
-                        Some(candidate1)
-                    } else if candidate2.exists() {
-                        Some(candidate2)
-                    } else {
-                        None
-                    }
-                };
+                let submod_path = resolve_submodule_path(current_file, current_dir, item_mod);
 
                 if let Some(target_file) = submod_path {
                     match fs::read(&target_file) {
@@ -237,6 +215,36 @@ fn discover_submodules(
     }
 }
 
+/// Resolve the file path of an out-of-line submodule declaration (`mod foo;`).
+fn resolve_submodule_path(
+    current_file: &Path,
+    current_dir: &Path,
+    item_mod: &syn::ItemMod,
+) -> Option<PathBuf> {
+    if let Some(custom_path) = extract_path_attribute(&item_mod.attrs) {
+        let p = current_file
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(custom_path);
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
+    } else {
+        let submod_name = item_mod.ident.to_string();
+        let candidate1 = current_dir.join(format!("{}.rs", submod_name));
+        let candidate2 = current_dir.join(&submod_name).join("mod.rs");
+        if candidate1.exists() {
+            Some(candidate1)
+        } else if candidate2.exists() {
+            Some(candidate2)
+        } else {
+            None
+        }
+    }
+}
+
 /// Extract `#[path = "..."]` attribute string if present on an item.
 fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
@@ -253,6 +261,175 @@ fn extract_path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
         }
     }
     None
+}
+
+/// Verify that an application crate declaring `otel-shim` contains a genuine Rust item path
+/// into `otel_shim` (e.g. `otel_shim::init()`), preventing rustc from pruning `libotel_shim.rlib`
+/// from the linker command line (ADR-003 / E-10).
+///
+/// Recursively inspects the entire module tree starting at `root_path`.
+pub fn check_application_preflight(crate_name: &str, root_path: &Path) -> Result<(), String> {
+    let source_bytes = fs::read(root_path).map_err(|e| {
+        format!(
+            "Failed to read application root source '{path}': {e}",
+            path = root_path.display()
+        )
+    })?;
+
+    let source_text = String::from_utf8(source_bytes).map_err(|e| {
+        format!(
+            "Application root source '{path}' is not valid UTF-8: {e}",
+            path = root_path.display()
+        )
+    })?;
+
+    let root_syn = syn::parse_file(&source_text).map_err(|e| {
+        format!(
+            "Failed to parse application root source '{path}': {e}",
+            path = root_path.display()
+        )
+    })?;
+
+    let mut visited = HashSet::new();
+    let found = check_file_and_submodules_for_otel_shim(root_path, &root_syn, true, &mut visited);
+
+    if found {
+        Ok(())
+    } else {
+        Err(format!(
+            "cargo-instrument: application crate '{crate_name}' must reference `otel_shim` \
+            (e.g. `otel_shim::init()`) to prevent rustc extern-crate pruning when dependencies \
+            are instrumented (ADR-003 / E-10). Add `otel_shim::init();` in '{path}' or a child module.",
+            path = root_path.display()
+        ))
+    }
+}
+
+/// Check whether `otel_shim` is referenced in this file or any recursively declared submodules.
+fn check_file_and_submodules_for_otel_shim(
+    file_path: &Path,
+    syn_file: &syn::File,
+    is_root: bool,
+    visited: &mut HashSet<PathBuf>,
+) -> bool {
+    let canonical = file_path
+        .canonicalize()
+        .unwrap_or_else(|_| file_path.to_path_buf());
+    if !visited.insert(canonical) {
+        return false;
+    }
+
+    let mut visitor = OtelShimVisitor { found: false };
+    visitor.visit_file(syn_file);
+    if visitor.found {
+        return true;
+    }
+
+    let base_dir = if is_root || file_path.file_name().and_then(|s| s.to_str()) == Some("mod.rs") {
+        file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        file_path.parent().unwrap_or(Path::new(".")).join(stem)
+    };
+
+    discover_submodules_for_otel_shim(file_path, &syn_file.items, &base_dir, visited)
+}
+
+fn discover_submodules_for_otel_shim(
+    current_file: &Path,
+    items: &[syn::Item],
+    current_dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+) -> bool {
+    for item in items {
+        if let syn::Item::Mod(item_mod) = item {
+            if let Some((_, inner_items)) = &item_mod.content {
+                let sub_dir = if let Some(custom_path) = extract_path_attribute(&item_mod.attrs) {
+                    current_file
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join(custom_path)
+                } else {
+                    current_dir.join(item_mod.ident.to_string())
+                };
+                if discover_submodules_for_otel_shim(current_file, inner_items, &sub_dir, visited) {
+                    return true;
+                }
+            } else {
+                let submod_path = resolve_submodule_path(current_file, current_dir, item_mod);
+                if let Some(target_file) = submod_path {
+                    if let Ok(bytes) = fs::read(&target_file) {
+                        if let Ok(text) = String::from_utf8(bytes) {
+                            if let Ok(sub_syn) = syn::parse_file(&text) {
+                                if check_file_and_submodules_for_otel_shim(
+                                    &target_file,
+                                    &sub_syn,
+                                    /* is_root: */ false,
+                                    visited,
+                                ) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// AST visitor that checks whether `otel_shim` is referenced anywhere in the syntax tree.
+struct OtelShimVisitor {
+    found: bool,
+}
+
+impl<'ast> Visit<'ast> for OtelShimVisitor {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        if let Some(first) = path.segments.first() {
+            if first.ident == "otel_shim" {
+                self.found = true;
+                return;
+            }
+        }
+        syn::visit::visit_path(self, path);
+    }
+
+    fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+        if item.ident == "otel_shim" {
+            self.found = true;
+            return;
+        }
+        syn::visit::visit_item_extern_crate(self, item);
+    }
+
+    fn visit_use_tree(&mut self, tree: &'ast syn::UseTree) {
+        match tree {
+            syn::UseTree::Path(use_path) => {
+                if use_path.ident == "otel_shim" {
+                    self.found = true;
+                    return;
+                }
+                self.visit_use_tree(&use_path.tree);
+            }
+            syn::UseTree::Name(use_name) => {
+                if use_name.ident == "otel_shim" {
+                    self.found = true;
+                }
+            }
+            syn::UseTree::Rename(use_rename) => {
+                if use_rename.ident == "otel_shim" {
+                    self.found = true;
+                }
+            }
+            syn::UseTree::Glob(_) => {}
+            syn::UseTree::Group(use_group) => {
+                for item in &use_group.items {
+                    self.visit_use_tree(item);
+                }
+            }
+        }
+    }
 }
 
 /// Check if the file imports OpenTelemetry types or tracing utilities.

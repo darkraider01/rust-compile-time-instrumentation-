@@ -261,3 +261,109 @@ fn test_discovery_has_opentelemetry_separated_and_equals() {
     let inv4 = CrateInvocation::parse(&args4).expect("parse args4");
     assert!(!inv4.unit.has_opentelemetry());
 }
+
+#[test]
+fn test_discovery_has_otel_shim() {
+    let args1 = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "app".to_string(),
+        "src/main.rs".to_string(),
+        "--extern".to_string(),
+        "otel_shim=target/debug/deps/libotel_shim.rlib".to_string(),
+    ];
+    let inv1 = CrateInvocation::parse(&args1).expect("parse args1");
+    assert!(inv1.unit.has_otel_shim());
+
+    let args2 = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "app".to_string(),
+        "src/main.rs".to_string(),
+        "--extern=otel-shim=target/debug/deps/libotel_shim.rlib".to_string(),
+    ];
+    let inv2 = CrateInvocation::parse(&args2).expect("parse args2");
+    assert!(inv2.unit.has_otel_shim());
+
+    let args3 = vec![
+        "rustc".to_string(),
+        "--crate-name".to_string(),
+        "app".to_string(),
+        "src/main.rs".to_string(),
+        "--extern".to_string(),
+        "serde=target/debug/deps/libserde.rlib".to_string(),
+    ];
+    let inv3 = CrateInvocation::parse(&args3).expect("parse args3");
+    assert!(!inv3.unit.has_otel_shim());
+}
+
+#[test]
+fn test_crate_role_classification() {
+    use cargo_instrument::discovery::CrateRole;
+    use std::path::Path;
+
+    let root = Path::new("C:\\workspace\\my_project");
+
+    // 1. Direct opentelemetry dependency -> Application
+    let app_args = vec![
+        "--crate-name".to_string(),
+        "app".to_string(),
+        "src/main.rs".to_string(),
+        "--extern".to_string(),
+        "opentelemetry=target/debug/deps/libopentelemetry.rlib".to_string(),
+    ];
+    let app_inv = CrateInvocation::parse(&app_args).unwrap();
+    assert_eq!(app_inv.unit.role(root), CrateRole::Application);
+
+    // 2. Local path dependency outside workspace
+    let path_dep_args = vec![
+        "--crate-name".to_string(),
+        "dep_a".to_string(),
+        "C:\\other\\dep_a\\src\\lib.rs".to_string(),
+    ];
+    let path_dep_inv = CrateInvocation::parse(&path_dep_args).unwrap();
+    assert_eq!(path_dep_inv.unit.role(root), CrateRole::LocalPathDependency);
+
+    // 3. Workspace member dependency inside workspace root
+    let ws_dep_args = vec![
+        "--crate-name".to_string(),
+        "dep_b".to_string(),
+        "crates/dep_b/src/lib.rs".to_string(),
+    ];
+    let ws_dep_inv = CrateInvocation::parse(&ws_dep_args).unwrap();
+    assert_eq!(
+        ws_dep_inv.unit.role(root),
+        CrateRole::WorkspaceMemberDependency
+    );
+
+    // 4. Registry dependency
+    let reg_dep_args = vec![
+        "--crate-name".to_string(),
+        "serde".to_string(),
+        "C:\\Users\\user\\.cargo\\registry\\src\\index.crates.io-6f17d22bba15001f\\serde-1.0.219\\src\\lib.rs".to_string(),
+    ];
+    let reg_dep_inv = CrateInvocation::parse(&reg_dep_args).unwrap();
+    assert_eq!(reg_dep_inv.unit.role(root), CrateRole::RegistryDependency);
+
+    // 5. Registry dependency that itself depends on opentelemetry (e.g. opentelemetry_sdk) -> RegistryDependency
+    let reg_otel_args = vec![
+        "--crate-name".to_string(),
+        "opentelemetry_sdk".to_string(),
+        "C:\\Users\\user\\.cargo\\registry\\src\\index.crates.io-6f17d22bba15001f\\opentelemetry_sdk-0.32.0\\src\\lib.rs".to_string(),
+        "--extern".to_string(),
+        "opentelemetry=target/debug/deps/libopentelemetry.rlib".to_string(),
+    ];
+    let reg_otel_inv = CrateInvocation::parse(&reg_otel_args).unwrap();
+    assert_eq!(reg_otel_inv.unit.role(root), CrateRole::RegistryDependency);
+
+    // 6. Runtime shim self (otel_shim) -> RegistryDependency (never Application)
+    let shim_args = vec![
+        "--crate-name".to_string(),
+        "otel_shim".to_string(),
+        "otel-shim/src/lib.rs".to_string(),
+        "--extern".to_string(),
+        "opentelemetry=target/debug/deps/libopentelemetry.rlib".to_string(),
+    ];
+    let shim_inv = CrateInvocation::parse(&shim_args).unwrap();
+    assert_eq!(shim_inv.unit.role(root), CrateRole::RegistryDependency);
+}

@@ -693,3 +693,191 @@ impl Emitter for NativeOtelEmitter {
         true
     }
 }
+
+/// Tier-2 OpenTelemetry trampoline emitter for dependency crates (Milestone P1.7).
+///
+/// Splices calls to `extern "C"` trampoline functions (`__otel_span_enter`, `__otel_span_exit`,
+/// and conditionally `__otel_span_set_error`) without introducing any Cargo dependencies into
+/// the target crate's `Cargo.toml`.
+///
+/// Features:
+/// - M1: Block-scoped minimal symbol declarations per call site (2 symbols for non-Result, 3 for Result).
+/// - Edition-aware: Emits `unsafe extern "C"` in 2024 edition, `extern "C"` in earlier editions.
+/// - G3: Emits `#[allow(unsafe_code)]` when `unsafe_policy == UnsafePolicy::Denied` to recover ecosystem coverage.
+/// - RAII guard: Implements `Drop` to guarantee LIFO `__otel_span_exit` on normal return or unwind.
+/// - Result handling: Wraps function body in a closure to inspect status without modifying return values,
+///   calling `__otel_span_set_error(handle)` on `Err`.
+/// - Async deferred: `handles_async() -> false`, skipping async candidates per §12.3 / §16.3 / FE-13.
+#[derive(Debug, Clone)]
+pub struct TrampolineEmitter {
+    pub crate_name: String,
+    pub edition: Option<String>,
+    pub unsafe_policy: crate::candidate::UnsafePolicy,
+}
+
+impl TrampolineEmitter {
+    pub fn new(
+        crate_name: impl Into<String>,
+        edition: Option<String>,
+        unsafe_policy: crate::candidate::UnsafePolicy,
+    ) -> Self {
+        Self {
+            crate_name: crate_name.into(),
+            edition,
+            unsafe_policy,
+        }
+    }
+}
+
+impl Emitter for TrampolineEmitter {
+    fn emit_body_prefix(&self, candidate: &Candidate, line_ending: &str) -> String {
+        let name = &candidate.function_name;
+        let nl = line_ending;
+        let is_2024 = self.edition.as_deref() == Some("2024");
+        let extern_kw = if is_2024 {
+            "unsafe extern \"C\""
+        } else {
+            "extern \"C\""
+        };
+
+        let allow_unsafe = if self.unsafe_policy == crate::candidate::UnsafePolicy::Denied {
+            format!("{nl}    #[allow(unsafe_code)]")
+        } else {
+            String::new()
+        };
+
+        let allow_unsafe_in_drop = if self.unsafe_policy == crate::candidate::UnsafePolicy::Denied {
+            format!("{nl}                #[allow(unsafe_code)]")
+        } else {
+            String::new()
+        };
+
+        if candidate.returns_result && !candidate.returns_reference_or_lifetime {
+            // Sync Result: 3 symbols (enter, exit, set_error) + closure wrapper
+            format!(
+                "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                 {allow_unsafe}\
+                 {nl}    {extern_kw} {{\
+                 {nl}        fn __otel_span_enter(\
+                 {nl}            name: *const u8,\
+                 {nl}            name_len: usize,\
+                 {nl}            file: *const u8,\
+                 {nl}            file_len: usize,\
+                 {nl}            line: u32,\
+                 {nl}            kind: u8,\
+                 {nl}        ) -> u64;\
+                 {nl}        fn __otel_span_exit(handle: u64);\
+                 {nl}        fn __otel_span_set_error(handle: u64);\
+                 {nl}    }}\
+                 {nl}    struct __OtelGuard(u64);\
+                 {nl}    impl Drop for __OtelGuard {{\
+                 {nl}        fn drop(&mut self) {{\
+                 {nl}            if self.0 != 0 {{\
+                 {allow_unsafe_in_drop}\
+                 {nl}                unsafe {{\
+                 {nl}                    __otel_span_exit(self.0);\
+                 {nl}                }}\
+                 {nl}            }}\
+                 {nl}        }}\
+                 {nl}    }}\
+                 {nl}    let __otel_name = \"{name}\";\
+                 {nl}    let __otel_file = file!();\
+                 {allow_unsafe}\
+                 {nl}    let __otel_guard = __OtelGuard(unsafe {{\
+                 {nl}        __otel_span_enter(\
+                 {nl}            __otel_name.as_ptr(),\
+                 {nl}            __otel_name.len(),\
+                 {nl}            __otel_file.as_ptr(),\
+                 {nl}            __otel_file.len(),\
+                 {nl}            line!(),\
+                 {nl}            0u8,\
+                 {nl}        )\
+                 {nl}    }});\
+                 {nl}    #[allow(clippy::redundant_closure_call)]\
+                 {nl}    let __otel_res: core::result::Result<_, _> = (|| {{"
+            )
+        } else {
+            // Sync non-Result / returns_reference_or_lifetime: 2 symbols (enter, exit)
+            format!(
+                "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                 {allow_unsafe}\
+                 {nl}    {extern_kw} {{\
+                 {nl}        fn __otel_span_enter(\
+                 {nl}            name: *const u8,\
+                 {nl}            name_len: usize,\
+                 {nl}            file: *const u8,\
+                 {nl}            file_len: usize,\
+                 {nl}            line: u32,\
+                 {nl}            kind: u8,\
+                 {nl}        ) -> u64;\
+                 {nl}        fn __otel_span_exit(handle: u64);\
+                 {nl}    }}\
+                 {nl}    struct __OtelGuard(u64);\
+                 {nl}    impl Drop for __OtelGuard {{\
+                 {nl}        fn drop(&mut self) {{\
+                 {nl}            if self.0 != 0 {{\
+                 {allow_unsafe_in_drop}\
+                 {nl}                unsafe {{\
+                 {nl}                    __otel_span_exit(self.0);\
+                 {nl}                }}\
+                 {nl}            }}\
+                 {nl}        }}\
+                 {nl}    }}\
+                 {nl}    let __otel_name = \"{name}\";\
+                 {nl}    let __otel_file = file!();\
+                 {allow_unsafe}\
+                 {nl}    let _otel_guard = __OtelGuard(unsafe {{\
+                 {nl}        __otel_span_enter(\
+                 {nl}            __otel_name.as_ptr(),\
+                 {nl}            __otel_name.len(),\
+                 {nl}            __otel_file.as_ptr(),\
+                 {nl}            __otel_file.len(),\
+                 {nl}            line!(),\
+                 {nl}            0u8,\
+                 {nl}        )\
+                 {nl}    }});"
+            )
+        }
+    }
+
+    fn emit_body_suffix(&self, candidate: &Candidate, line_ending: &str) -> String {
+        let nl = line_ending;
+        let allow_unsafe = if self.unsafe_policy == crate::candidate::UnsafePolicy::Denied {
+            format!("{nl}        #[allow(unsafe_code)]")
+        } else {
+            String::new()
+        };
+
+        if candidate.returns_result && !candidate.returns_reference_or_lifetime {
+            format!(
+                "{nl}    }})();\
+                 {nl}    if __otel_res.is_err() && __otel_guard.0 != 0 {{\
+                 {allow_unsafe}\
+                 {nl}        unsafe {{\
+                 {nl}            __otel_span_set_error(__otel_guard.0);\
+                 {nl}        }}\
+                 {nl}    }}\
+                 {nl}    __otel_res{nl}"
+            )
+        } else {
+            String::new()
+        }
+    }
+
+    fn handles_async(&self) -> bool {
+        false
+    }
+}
+
+/// Convenience helper: create plan and transform source text using trampoline emitter.
+pub fn transform_source_str_with_trampoline(
+    source: &str,
+    crate_name: &str,
+    edition: Option<String>,
+    unsafe_policy: crate::candidate::UnsafePolicy,
+    candidates: &[Candidate],
+) -> Result<String, TransformError> {
+    let emitter = TrampolineEmitter::new(crate_name, edition, unsafe_policy);
+    let plan = TransformationPlan::build_with_emitter(source, candidates, &emitter)?;
+    plan.apply(source)
+}

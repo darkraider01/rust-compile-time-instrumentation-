@@ -20,7 +20,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | Phase | Status | Focus |
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
-| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.6 complete (native async OpenTelemetry code generation verified); P1.7 is next |
+| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.7 complete (dependency instrumentation with extern "C" trampolines and standalone otel-shim verified); P1.8 is next |
 | **Phase 2 - Production Hardening** | **Planned** | Workspace coverage, MSRV/toolchain compatibility, incremental compilation, large dependency graphs, cross-platform validation |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
@@ -65,9 +65,9 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
   Generates native OpenTelemetry 0.32.0 API calls for synchronous functions with zero dependencies on tracing abstractions, handling tracer acquisition per-crate (`opentelemetry::global::tracer("{crate_name}")`), RAII context attachment, Result error recording with pinned `Result<_, _>`, clippy-clean closure wrapping, `--extern` dependency gating with S11 fail-open, and normalized span naming.
 - [x] **P1.6 - Async instrumentation** - COMPLETE
   Instruments async functions using `opentelemetry::trace::FutureExt::with_context`, preserving trace context across future suspension points and multi-threaded executor task migration without holding `!Send` guards. Features Send-bound preservation, `#[async_trait]` compatibility, cancellation-on-drop span export, post-await Result error status recording, wall-clock duration measurement (§16.7), and zero clippy warnings.
-- [ ] **P1.7 - Dependency instrumentation / `extern "C"` trampolines** - NEXT
-  Extend instrumentation to upstream Cargo dependencies using `extern "C"` ABI trampolines (`__otel_span_enter` / `__otel_span_exit`), resolved at final application link time.
-- [ ] **P1.8 - End-to-end validation**
+- [x] **P1.7 - Dependency instrumentation / `extern "C"` trampolines** - COMPLETE
+  Extends instrumentation across third-party Cargo crate boundaries without manifest mutation or Cargo dependency injection using `extern "C"` ABI trampolines (`__otel_span_enter`, `__otel_span_exit`, `__otel_span_set_error`). Includes standalone `otel-shim` runtime crate exporting C ABI on native OpenTelemetry SDK with thread-local LIFO matching, compile-time application preflight checking (`otel_shim::init()`) to prevent extern-crate pruning (ADR-003 / E-10), edition 2021 vs 2024 awareness, `UnsafePolicy` handling, and live multi-threaded end-to-end integration proof.
+- [ ] **P1.8 - End-to-end validation** - NEXT
   Validate emitted spans against an OpenTelemetry collector, measure compile-time overhead, verify build-cache isolation, and test across sample multi-crate applications.
 
 ---

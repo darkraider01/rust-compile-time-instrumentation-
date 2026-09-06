@@ -9,6 +9,19 @@ pub enum DiscoveryError {
     MissingSourceFile(Vec<String>),
 }
 
+/// Classification of an eligible crate's role in the compilation graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrateRole {
+    /// Application or workspace crate declaring direct OpenTelemetry dependency (Tier 1).
+    Application,
+    /// Local path dependency referenced via a local directory path (Tier 2).
+    LocalPathDependency,
+    /// Workspace member dependency without direct OpenTelemetry dependency (Tier 2).
+    WorkspaceMemberDependency,
+    /// Third-party dependency from .cargo/registry or git cache (Tier 2).
+    RegistryDependency,
+}
+
 /// The classification of a rustc compiler invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompilationUnit {
@@ -23,6 +36,7 @@ pub enum CompilationUnit {
         source_file: PathBuf,
         is_test: bool,
         has_opentelemetry: bool,
+        has_otel_shim: bool,
     },
 
     /// A build script compilation (e.g. `build_script_build` or `build.rs`).
@@ -91,6 +105,62 @@ impl CompilationUnit {
             _ => false,
         }
     }
+
+    /// Whether the compilation unit includes otel_shim as an extern dependency.
+    pub fn has_otel_shim(&self) -> bool {
+        match self {
+            CompilationUnit::RustCrate { has_otel_shim, .. } => *has_otel_shim,
+            _ => false,
+        }
+    }
+
+    /// The edition string, if specified in compiler arguments.
+    pub fn edition(&self) -> Option<&str> {
+        match self {
+            CompilationUnit::RustCrate { edition, .. } => edition.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Classify the crate's role in the compilation graph.
+    pub fn role(&self, current_dir: &Path) -> CrateRole {
+        match self {
+            CompilationUnit::RustCrate {
+                crate_name,
+                crate_types,
+                has_opentelemetry,
+                has_otel_shim,
+                source_file,
+                ..
+            } => {
+                let path_str = source_file.to_string_lossy();
+                if path_str.contains(".cargo/registry")
+                    || path_str.contains(".cargo\\registry")
+                    || path_str.contains(".cargo/git")
+                    || path_str.contains(".cargo\\git")
+                    || crate_name == "opentelemetry"
+                    || crate_name.starts_with("opentelemetry_")
+                    || crate_name == "otel_shim" // ← the telemetry runtime must never instrument itself
+                    || crate_name == "otel-shim"
+                    || crate_name == "cargo_instrument"
+                    || crate_name == "cargo-instrument"
+                {
+                    CrateRole::RegistryDependency
+                } else if *has_opentelemetry
+                    || *has_otel_shim
+                    || crate_types.iter().any(|t| t == "bin")
+                    || source_file.file_name().is_some_and(|f| f == "main.rs")
+                {
+                    CrateRole::Application
+                } else if source_file.is_relative() || source_file.starts_with(current_dir) {
+                    CrateRole::WorkspaceMemberDependency
+                } else {
+                    CrateRole::LocalPathDependency
+                }
+            }
+            _ => CrateRole::Application,
+        }
+    }
 }
 
 /// Parsed representation of a rustc invocation received from Cargo.
@@ -146,6 +216,7 @@ impl CrateInvocation {
         let mut out_dir: Option<PathBuf> = None;
         let mut is_test = false;
         let mut has_opentelemetry = false;
+        let mut has_otel_shim = false;
         let mut positional_source: Option<PathBuf> = None;
 
         let mut i = 0;
@@ -190,6 +261,8 @@ impl CrateInvocation {
                     let extern_crate = extern_name.rsplit(':').next().unwrap_or(extern_name);
                     if extern_crate == "opentelemetry" {
                         has_opentelemetry = true;
+                    } else if extern_crate == "otel_shim" || extern_crate == "otel-shim" {
+                        has_otel_shim = true;
                     }
                     i += 2;
                     continue;
@@ -199,6 +272,8 @@ impl CrateInvocation {
                 let extern_crate = extern_name.rsplit(':').next().unwrap_or(extern_name);
                 if extern_crate == "opentelemetry" {
                     has_opentelemetry = true;
+                } else if extern_crate == "otel_shim" || extern_crate == "otel-shim" {
+                    has_otel_shim = true;
                 }
                 i += 1;
                 continue;
@@ -265,7 +340,7 @@ impl CrateInvocation {
             });
         }
 
-        // B. Build script
+        // C. Build script
         let is_build_script_name = resolved_crate_name == "build_script_build"
             || resolved_crate_name.starts_with("build_script_");
         let is_build_rs_file = source_file
@@ -284,7 +359,7 @@ impl CrateInvocation {
             });
         }
 
-        // C. Ordinary Rust crate (eligible)
+        // D. Ordinary Rust crate (eligible)
         Ok(CrateInvocation {
             unit: CompilationUnit::RustCrate {
                 crate_name: resolved_crate_name,
@@ -295,6 +370,7 @@ impl CrateInvocation {
                 source_file,
                 is_test,
                 has_opentelemetry,
+                has_otel_shim,
             },
             original_args,
         })
