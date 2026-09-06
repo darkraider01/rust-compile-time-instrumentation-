@@ -574,11 +574,13 @@ fn compute_dir_sha256_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, St
 
 #[test]
 #[serial]
+#[ignore = "requires CARGO_INSTRUMENT_REGISTRY=1 and cached census-0.4.2"]
 fn test_registry_source_cache_immutability() {
     // M2: Gate execution on explicit opt-in to preserve clean CI runners
-    if std::env::var("CARGO_INSTRUMENT_REGISTRY").is_err() {
-        return;
-    }
+    assert!(
+        std::env::var("CARGO_INSTRUMENT_REGISTRY").is_ok(),
+        "CARGO_INSTRUMENT_REGISTRY=1 must be set to run registry cache immutability test"
+    );
 
     let cargo_home = std::env::var("CARGO_HOME")
         .map(PathBuf::from)

@@ -47,7 +47,7 @@ jobs:
         run: cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
 
       - name: Run registry source cache immutability guard
-        run: cargo test --workspace --test trampoline_tests test_registry_source_cache_immutability -- --nocapture
+        run: cargo test --workspace --test trampoline_tests test_registry_source_cache_immutability -- --ignored --nocapture
 
       - name: Run overhead benchmarks (A17)
         run: cargo bench --bench bench_overhead

@@ -1,0 +1,36 @@
+===============================================================================
+P1.8 VALIDATION ENVIRONMENT EVIDENCE
+===============================================================================
+
+[Operating System]
+OS: Microsoft Windows 11 CoreSingleLanguage (10.0.26200) [64-bit]
+Architecture: x86_64
+Host: x86_64-pc-windows-msvc
+
+[Rust Toolchain]
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+binary: rustc
+commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+commit-date: 2026-07-14
+host: x86_64-pc-windows-msvc
+release: 1.97.1
+LLVM version: 22.1.6
+
+[Cargo Toolchain]
+cargo 1.97.1 (c980f4866 2026-06-30)
+release: 1.97.1
+commit-hash: c980f4866141969fab6254a680546a277789d6f0
+commit-date: 2026-06-30
+host: x86_64-pc-windows-msvc
+libgit2: 1.9.2 (sys:0.20.4 vendored)
+libcurl: 8.20.0-DEV (sys:0.4.88+curl-8.20.0 vendored ssl:Schannel)
+os: Windows 10.0.26200 (Windows 11 CoreSingleLanguage) [64-bit]
+
+[Core Workspace Dependencies]
+syn: 2.0 / 3.0
+quote: 1.0.47
+proc-macro2: 1.0.107
+thiserror: 2.0.20
+opentelemetry: 0.32.0
+opentelemetry_sdk: 0.32.1
+otel-shim: workspace local crate
