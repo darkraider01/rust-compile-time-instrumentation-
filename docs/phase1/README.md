@@ -626,6 +626,62 @@ The Phase 1 implementation is verified by **143 automated tests** across 10 test
 
 **Total Test Count:** **143 tests** across 10 suites (140 passed in default offline run, 3 gated registry tests ignored in default and verified with `-- --ignored`; 0 failures, 0 clippy warnings).
 
+### Prototype CLI Commands & Demonstration Workflows
+
+All components of the Phase 1 prototype can be demonstrated interactively via `cargo run --bin cargo-instrument`:
+
+1. **Live End-to-End Dependency Telemetry (`examples/demo_app`)**:
+   - PowerShell:
+     ```powershell
+     $env:CARGO_INSTRUMENT_REGISTRY="1"; cargo run --bin cargo-instrument -- -- run --manifest-path examples/demo_app/Cargo.toml
+     ```
+   - Bash (Linux/macOS):
+     ```bash
+     CARGO_INSTRUMENT_REGISTRY=1 cargo run --bin cargo-instrument -- -- run --manifest-path examples/demo_app/Cargo.toml
+     ```
+   - *Proves:* 26 OpenTelemetry spans captured across the crate boundary from unmodified dependency `census = "=0.4.2"` parented directly to the caller app span, with 0 leaked handles.
+
+2. **AST Candidate Analysis (`analyze`)**:
+   ```bash
+   # Analyze portable checked-in census fixture
+   cargo run --bin cargo-instrument -- analyze cargo-instrument/tests/fixtures/census_lib.rs
+
+   # Or analyze cached registry crate on disk:
+   # PowerShell:
+   cargo run --bin cargo-instrument -- analyze (Resolve-Path "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\census-0.4.2\src\lib.rs").Path
+   # Bash:
+   cargo run --bin cargo-instrument -- analyze ~/.cargo/registry/src/index.crates.io-*/census-0.4.2/src/lib.rs
+   ```
+   - *Proves:* 16 candidates identified, 16 exclusions categorized (`adapter_trait: 3`, `drop_implementation: 1`, `cfg_test: 9`, `self_recursive: 3`), confirming universal reconciliation identity ($16 + 16 = 32$).
+
+3. **Surgical Source Splicer Preview (`transform`)**:
+   ```bash
+   cargo run --bin cargo-instrument -- transform cargo-instrument/tests/fixtures/census_lib.rs
+   ```
+   - *Proves:* Non-destructive byte-level insertion of C-ABI trampoline guards (`__OtelGuard`) without modifying surrounding comments or formatting.
+
+4. **Transparent Compiler Driver (`-- <cargo args>`)**:
+   ```bash
+   cargo run --bin cargo-instrument -- -- build
+   cargo run --bin cargo-instrument -- -- check
+   ```
+   - *Proves:* Automatic `RUSTC_WRAPPER` interception and compilation output isolation inside `target/instrumented`.
+
+5. **Automated Test Suites & Benchmarks**:
+   ```bash
+   # 140 default offline unit & integration tests
+   cargo test --workspace
+
+   # Gated real-registry E2E integration tests
+   # PowerShell:
+   $env:CARGO_INSTRUMENT_REGISTRY="1"; cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
+   # Bash:
+   CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
+
+   # Performance & overhead benchmark suite (A17)
+   cargo bench --bench bench_overhead
+   ```
+
 ---
 
 ## 9. Status & Handoff to Phase 2
