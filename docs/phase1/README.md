@@ -4,11 +4,11 @@
 
 # Phase 1 - Compile-Time Instrumentation Tool (`cargo-instrument`)
 
-**Milestones covered:** P1.1, P1.2, P1.3, P1.4, P1.5  
-**Status:** P1.1–P1.5 Complete; P1.6 Next  
+**Milestones covered:** P1.1, P1.2, P1.3, P1.4, P1.5, P1.6  
+**Status:** P1.1–P1.6 Complete; P1.7 Next  
 **Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
 **Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
-**Test suite status:** 99 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
+**Test suite status:** 106 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
 
 ---
 
@@ -25,8 +25,8 @@ Phase 1 - Compile-Time Instrumentation (In Progress - current focus)
           ├── P1.3 syn AST + Exact Byte Spans       ✅ Complete
           ├── P1.4 Surgical Source Transformation   ✅ Complete
           ├── P1.5 Native OTel Code Generation      ✅ Complete
-          ├── P1.6 Async Instrumentation            → NEXT
-          ├── P1.7 Dependency Trampolines           ○ Planned
+          ├── P1.6 Async Instrumentation            ✅ Complete
+          ├── P1.7 Dependency Trampolines           → NEXT
           └── P1.8 End-to-End Validation            ○ Planned
           │
           ▼
@@ -348,9 +348,92 @@ Milestone P1.5 delivers native OpenTelemetry synchronous instrumentation code ge
 
 ---
 
-## 7. Verification Matrix
+## 7. Milestone P1.6 - Native OpenTelemetry Asynchronous Code Generation
 
-The milestone implementation is verified by **99 automated tests** across 7 test suites:
+Milestone P1.6 delivers native OpenTelemetry asynchronous code generation for `async fn` items, wrapping future execution with `opentelemetry::trace::FutureExt::with_context` without requiring any AST byte-splicer changes.
+
+### Key Architectural Invariants & Lifecycle Semantics
+
+1. **The Core Async Challenge: The `!Send` Context Trap**:
+   In Rust, an `async fn` body compiles into an anonymous generator state machine. A naive RAII span guard (`__otel_guard`) created at the top of the function lives across `.await` suspension points. Because `opentelemetry::ContextGuard` contains `PhantomData<*const ()>`, it is **`!Send`**, causing executor task spawning (e.g. `tokio::spawn`) to fail compilation (`E0277`). Furthermore, holding an attach guard across suspension leaks trace context onto the executor worker thread (**S6 violation**), falsely adopting unrelated concurrent tasks.
+
+2. **Resolution via `opentelemetry::trace::FutureExt::with_context`**:
+   `FutureExt::with_context(fut, cx)` moves context attachment inside `WithContext::poll`:
+   - An `Arc<Context>` clone is attached at the start of each `poll()`.
+   - The guard is dropped at the end of `poll()` when the future yields (`Pending`).
+   - Because the guard is strictly poll-local and never held across suspension, `WithContext<F>: Send` whenever `F: Send`.
+   - Trace context is current exclusively while the task executes on a worker thread and absent while suspended.
+
+3. **Zero Splicer Changes**:
+   The two-point byte splicer from P1.4 directly produces this wrapped future architecture:
+   - `emit_body_prefix` (inserted after `{`): Starts the span, creates `__otel_cx`, and opens `opentelemetry::trace::FutureExt::with_context(async move {`.
+   - `emit_body_suffix` (inserted before `}`): Closes `}, __otel_cx).await` (with post-await status recording for `Result`).
+
+4. **Normative Async Lifecycle**:
+   | Lifecycle Stage | Runtime Behavior | Invariant Enforced |
+   |---|---|---|
+   | **Future construction** | Body does not run; zero tracer calls, zero spans created | §16.7 / SQ1 / FE-4 |
+   | **First `poll()`** | Prefix executes on worker thread: tracer acquired, span started, `WithContext` constructed and polled | S1 (single span start) |
+   | **Yield (`Poll::Pending`)** | `_guard` drops at end of `poll()`; context detached from thread; span clock continues | S6 (no cross-task pollution) |
+   | **Resume (`poll()` on any worker)** | Context re-attached from stored `Context` on current worker thread | §16.5 (thread migration safety) |
+   | **Ready (`Poll::Ready`)** | Guard drops; status recorded on Result path; `WithContext` drops → span ends | S1 (single span end) |
+   | **Drop / Cancellation** | `WithContext` drops mid-flight → `Context` drops → SDK `Span::drop` hook ends and exports | §16.12 (cancellation export) |
+
+5. **Generated Code Shapes**:
+   - **Async Non-Result Functions**:
+     ```rust
+     /* __cargo_instrument_anchor: "{name}" */
+     let __otel_tracer = opentelemetry::global::tracer("{crate_name}");
+     let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, "{name}")
+         .with_kind(opentelemetry::trace::SpanKind::Internal)
+         .start(&__otel_tracer);
+     let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);
+     opentelemetry::trace::FutureExt::with_context(async move {
+         // original body
+     }, __otel_cx).await
+     ```
+   - **Async Result-Returning Functions**:
+     ```rust
+     /* __cargo_instrument_anchor: "{name}" */
+     let __otel_tracer = opentelemetry::global::tracer("{crate_name}");
+     let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, "{name}")
+         .with_kind(opentelemetry::trace::SpanKind::Internal)
+         .start(&__otel_tracer);
+     let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);
+     let __otel_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {
+         // original body
+     }, __otel_cx.clone()).await;
+     if __otel_res.is_err() {
+         opentelemetry::trace::TraceContextExt::span(&__otel_cx)
+             .set_status(opentelemetry::trace::Status::error(""));
+     }
+     __otel_res
+     ```
+
+6. **Unified Error and Return Handling**:
+   In Rust, both early `return` and the `?` operator inside an `async move` block evaluate the inner block to `Result<T, E>` and complete the block's future. Awaiting the block yields `__otel_res: Result<_, _>`, which is inspected for `.is_err()` and recorded via `set_status(Status::error(""))`. `__otel_cx.clone()` (an Arc clone) preserves context access for the post-await status update.
+
+7. **Exclusion of Async from Reference-Return Fallback (F3)**:
+   In synchronous P1.5, `(|| { ... })()` triggered closure escape errors when returning `&mut` references, requiring fallback to prefix-only instrumentation (`returns_reference_or_lifetime`). In async functions, `async move { ... }` produces a generator that shares lifetime bounds with the outer future. Functions returning `Result<&mut T, E>` compile cleanly under `rustc -D warnings`. Therefore, `returns_reference_or_lifetime` is strictly exclusive to the synchronous path; async branches test `returns_result` only.
+
+8. **Clippy & Compiler Hygiene (F1)**:
+   The async block is an argument to `with_context(...)`, not a directly-awaited future, so `clippy::redundant_async_block` does not fire. No superfluous `#[allow]` attributes are injected into generated code.
+
+9. **Empirical Verification Proofs**:
+   - **Span duration (Matrix item 11 / §16.7)**: A 100 ms sleep inside an instrumented future produces span duration >= 90 ms (empirically measured ~109 ms), proving span duration measures wall-clock time across suspension points rather than ~0 ms CPU-busy time.
+   - **`#[async_trait]` compatibility (R1)**: Verified that source spliced with `with_context(async move { ... })` compiles cleanly under `#[async_trait]` macro expansion and emits normalized `<Type as Trait>::method` spans.
+
+10. **Deferred Scope**:
+    - **Tier-2 async dependency instrumentation**: Crossing `extern "C"` ABI boundaries inside dependencies without transitively adding OTel dependencies is deferred to P1.7.
+    - **Stream / Sink item instrumentation**: Deferred to Phase 2.
+    - **Cross-task `tokio::spawn` propagation (§16.8)**: Deferred to Phase 2.
+    - **Cancelled-vs-completed span status distinction (§16.12)**: Deferred to Phase 2.
+
+---
+
+## 8. Verification Matrix
+
+The Phase 1 implementation is verified by **106 automated tests** across 7 test suites:
 
 | Test Suite | Tests | Scope |
 |---|---|---|
@@ -359,20 +442,20 @@ The milestone implementation is verified by **99 automated tests** across 7 test
 | [`wrapper_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/wrapper_tests.rs) | 5 | Config parsing, argument forwarding, exit code propagation, recursion guard, serial execution |
 | [`byte_span_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/byte_span_tests.rs) | 4 | Exact UTF-8 buffer slicing, emoji/multibyte offsets, multiline formatting, comment preservation |
 | [`transform_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/transform_tests.rs) | 35 | Surgical byte splicing, comments/formatting preservation, unicode offsets, exclusions, idempotence, overlap rejection, permutation invariance, rustc & Cargo compilation proofs, CLI transform, C1 cross-file basename collisions, H1 live wrapper pipeline and absolute source path handling, H2 fail-open skips, H3 emitter substitution, M1 CRLF preservation, M3 string literal idempotence, diverging `!`, unsafe fn, empty bodies |
-| [`cargo_integration_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-integration/tests/cargo_integration_tests.rs) | 5 | Real wrapped Cargo subprocesses, multi-file discovery on disk, SHA-256 byte-for-byte source preservation, isolated target dir wiring, CLI analyze subcommand |
-| [`native_otel_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/native_otel_tests.rs) | 17 | Synchronous OpenTelemetry generation: ordinary functions, inherent/trait methods, generics, unsafe fn, Result return with `clone().attach()`, `?` operator propagation, explicit early return, diverging bodies (`always_panics`), diverging `!`, `&mut` return prefix-only fallback (C1), type-aliased `&mut` fallback, CRLF preservation (L1), tracer acquisition scope, idempotence (splicer & AST), marker false-positive protection, async deferral (`AsyncDeferred`), dependency gate fail-open, comments preservation, `InMemorySpanExporter` direct SDK proof (H1), and live compilation under `rustc -D warnings` and `cargo clippy -- -D warnings` + live runtime test execution with `InMemorySpanExporter` verifying span counts (8 spans for 8 calls), kinds, and status against real `opentelemetry 0.32.0` |
+| [`cargo_integration_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/cargo_integration_tests.rs) | 5 | Real wrapped Cargo subprocesses, multi-file discovery on disk, SHA-256 byte-for-byte source preservation, isolated target dir wiring, CLI analyze subcommand |
+| [`native_otel_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/native_otel_tests.rs) | 24 | Native synchronous and asynchronous OpenTelemetry 0.32.0 generation: ordinary sync functions, inherent/trait methods, generics, unsafe fn, Result return with `clone().attach()`, `?` operator propagation, explicit early return, diverging bodies, `&mut` return prefix-only fallback (C1), type-aliased `&mut` fallback, CRLF preservation (L1), tracer acquisition scope, idempotence (splicer & AST), marker false-positive protection, async capability gating (`handles_async`), dependency gate fail-open, comments preservation, `InMemorySpanExporter` direct SDK proof (H1), live sync compilation under `rustc -D warnings` and `clippy -- -D warnings` with runtime span assertions, async non-Result shape, async Result shape, async `&mut` reference error status retention (F3), async inherent/trait/generic methods, async idempotence, async CRLF/Unicode preservation, and live multi-threaded Tokio runtime proof with `InMemorySpanExporter` verifying the complete 16-point async test matrix under `cargo clippy -- -D warnings` and `cargo test`. |
 
 ---
 
-## 8. Status & Handoff to Milestone P1.6
+## 9. Status & Handoff to Milestone P1.7
 
-### Milestone P1.5 Status: COMPLETE
-Milestone P1.5 is implemented, verified, and passing all automated test suites with 0 compiler warnings, 0 clippy warnings, and 99/99 tests passing across the workspace.
+### Milestone P1.6 Status: COMPLETE
+Milestone P1.6 is implemented, verified, and passing all automated test suites with 0 compiler warnings, 0 clippy warnings, and 106/106 tests passing across the workspace.
 
-### What Is Next: P1.6 - Async Function Instrumentation
-Milestone P1.5 successfully instrumented synchronous Rust functions and cleanly deferred async functions via `handles_async(&self) -> bool { false }` and `SkipReason::AsyncDeferred`.
+### What Is Next: P1.7 - Dependency Instrumentation & `extern "C"` Trampolines
+Milestones P1.1–P1.6 successfully instrumented synchronous and asynchronous functions within application crates.
 
-Milestone P1.6 will implement native OpenTelemetry span generation for asynchronous functions:
-1. **Async Span Instrumentation (§16.5):** Wrap future bodies using `opentelemetry::trace::FutureExt::with_context` or equivalent native context propagation across `.await` points.
-2. **Emitter Integration:** Implement async handling in `NativeOtelEmitter` by returning `handles_async() -> true` and generating async context-attachment wrappers.
-3. **No `tracing` or Macro Dependencies:** Preserve the direct OpenTelemetry API approach without intermediate tracing layers or runtime macro bloat.
+Milestone P1.7 will extend instrumentation across third-party Cargo crate boundaries using `extern "C"` ABI trampolines ([ADR-002](../research/17-decision-records.md)):
+1. **Trampoline Insertion**: Inject `__otel_span_enter` and `__otel_span_exit` trampolines into unmodified third-party dependency crates.
+2. **Zero Injected Dependencies**: Dependency crates require no `opentelemetry` Cargo dependency; trampolines resolve as untyped C symbols linked at the application crate level.
+3. **Link-Time Resolution**: Application runtime crate provides symbol definitions resolved at final application link time.

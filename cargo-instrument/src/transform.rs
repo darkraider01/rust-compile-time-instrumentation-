@@ -79,7 +79,7 @@ pub trait Emitter: Send + Sync {
 
     /// Whether this emitter supports instrumenting asynchronous functions.
     /// Defaults to `true` so general emitters (e.g. `SentinelEmitter`) are unaffected.
-    /// `NativeOtelEmitter` returns `false` to explicitly defer async functions to P1.6.
+    /// `NativeOtelEmitter` returns `true` as implemented in Milestone P1.6.
     fn handles_async(&self) -> bool {
         true
     }
@@ -603,38 +603,79 @@ impl Emitter for NativeOtelEmitter {
         let crate_name = &self.crate_name;
         let nl = line_ending;
 
-        // C1 & Aliased &mut: Functions returning references or carrying lifetimes
-        // (&mut T, Result<&mut T, E>, Result<MutName<'_>, E>) cannot be wrapped in
-        // closures (captured variable cannot escape FnMut closure body).
-        // They fall back to prefix-only instrumentation per §16.10.
-        if candidate.returns_result && !candidate.returns_reference_or_lifetime {
-            format!(
-                "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
-                 {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
-                 {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
-                 {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
-                 {nl}        .start(&__otel_tracer);\
-                 {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
-                 {nl}    let __otel_guard = __otel_cx.clone().attach();\
-                 {nl}    #[allow(clippy::redundant_closure_call)]\
-                 {nl}    let __otel_res: Result<_, _> = (|| {{"
-            )
+        if candidate.is_async {
+            // P1.6: Async functions wrap the body in `FutureExt::with_context(async move { ... })`.
+            // Async generators share lifetime bounds with the outer future, so `Result<&mut T, E>`
+            // compiles cleanly without closure-escape issues. Thus, `returns_reference_or_lifetime`
+            // is strictly exclusive to the sync path; async branches test `returns_result` only.
+            if candidate.returns_result {
+                format!(
+                    "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                     {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
+                     {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
+                     {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
+                     {nl}        .start(&__otel_tracer);\
+                     {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
+                     {nl}    let __otel_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {{"
+                )
+            } else {
+                format!(
+                    "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                     {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
+                     {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
+                     {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
+                     {nl}        .start(&__otel_tracer);\
+                     {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
+                     {nl}    opentelemetry::trace::FutureExt::with_context(async move {{"
+                )
+            }
         } else {
-            format!(
-                "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
-                 {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
-                 {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
-                 {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
-                 {nl}        .start(&__otel_tracer);\
-                 {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
-                 {nl}    let __otel_guard = __otel_cx.attach();"
-            )
+            // C1 & Aliased &mut: Synchronous functions returning references or carrying lifetimes
+            // (&mut T, Result<&mut T, E>, Result<MutName<'_>, E>) cannot be wrapped in
+            // closures (captured variable cannot escape FnMut closure body).
+            // They fall back to prefix-only instrumentation per §16.10.
+            if candidate.returns_result && !candidate.returns_reference_or_lifetime {
+                format!(
+                    "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                     {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
+                     {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
+                     {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
+                     {nl}        .start(&__otel_tracer);\
+                     {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
+                     {nl}    let __otel_guard = __otel_cx.clone().attach();\
+                     {nl}    #[allow(clippy::redundant_closure_call)]\
+                     {nl}    let __otel_res: Result<_, _> = (|| {{"
+                )
+            } else {
+                format!(
+                    "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
+                     {nl}    let __otel_tracer = opentelemetry::global::tracer(\"{crate_name}\");\
+                     {nl}    let __otel_span = opentelemetry::trace::Tracer::span_builder(&__otel_tracer, \"{name}\")\
+                     {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
+                     {nl}        .start(&__otel_tracer);\
+                     {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
+                     {nl}    let __otel_guard = __otel_cx.attach();"
+                )
+            }
         }
     }
 
     fn emit_body_suffix(&self, candidate: &Candidate, line_ending: &str) -> String {
-        if candidate.returns_result && !candidate.returns_reference_or_lifetime {
-            let nl = line_ending;
+        let nl = line_ending;
+        if candidate.is_async {
+            if candidate.returns_result {
+                format!(
+                    "{nl}    }}, __otel_cx.clone()).await;\
+                     {nl}    if __otel_res.is_err() {{\
+                     {nl}        opentelemetry::trace::TraceContextExt::span(&__otel_cx)\
+                     {nl}            .set_status(opentelemetry::trace::Status::error(\"\"));\
+                     {nl}    }}\
+                     {nl}    __otel_res{nl}"
+                )
+            } else {
+                format!("{nl}    }}, __otel_cx).await{nl}")
+            }
+        } else if candidate.returns_result && !candidate.returns_reference_or_lifetime {
             format!(
                 "{nl}    }})();\
                  {nl}    if __otel_res.is_err() {{\
@@ -649,6 +690,6 @@ impl Emitter for NativeOtelEmitter {
     }
 
     fn handles_async(&self) -> bool {
-        false
+        true
     }
 }

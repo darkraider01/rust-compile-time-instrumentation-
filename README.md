@@ -20,7 +20,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | Phase | Status | Focus |
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
-| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.5 complete (native synchronous OpenTelemetry code generation verified); P1.6 is next |
+| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.6 complete (native async OpenTelemetry code generation verified); P1.7 is next |
 | **Phase 2 - Production Hardening** | **Planned** | Workspace coverage, MSRV/toolchain compatibility, incremental compilation, large dependency graphs, cross-platform validation |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
@@ -63,9 +63,9 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
   Transforms original UTF-8 source buffers via deterministic single-pass byte splicing without modifying input files in-place (ADR-002, S1/S2). Features exact normalized path filtering (C1), S11 candidate-level fail-open skips (H2), a pluggable emitter seam (ADR-006 / H3), source line-ending preservation (M1), structurally constrained idempotence (M3), and full live integration into the compiler wrapper pipeline.
 - [x] **P1.5 - Native OpenTelemetry code generation** - COMPLETE
   Generates native OpenTelemetry 0.32.0 API calls for synchronous functions with zero dependencies on tracing abstractions, handling tracer acquisition per-crate (`opentelemetry::global::tracer("{crate_name}")`), RAII context attachment, Result error recording with pinned `Result<_, _>`, clippy-clean closure wrapping, `--extern` dependency gating with S11 fail-open, and normalized span naming.
-- [ ] **P1.6 - Async instrumentation** - NEXT
-  Instrument async functions using `opentelemetry::trace::FutureExt::with_context`, preserving correct trace context across future suspension points and executor thread migration.
-- [ ] **P1.7 - Dependency instrumentation / `extern "C"` trampolines**
+- [x] **P1.6 - Async instrumentation** - COMPLETE
+  Instruments async functions using `opentelemetry::trace::FutureExt::with_context`, preserving trace context across future suspension points and multi-threaded executor task migration without holding `!Send` guards. Features Send-bound preservation, `#[async_trait]` compatibility, cancellation-on-drop span export, post-await Result error status recording, wall-clock duration measurement (§16.7), and zero clippy warnings.
+- [ ] **P1.7 - Dependency instrumentation / `extern "C"` trampolines** - NEXT
   Extend instrumentation to upstream Cargo dependencies using `extern "C"` ABI trampolines (`__otel_span_enter` / `__otel_span_exit`), resolved at final application link time.
 - [ ] **P1.8 - End-to-end validation**
   Validate emitted spans against an OpenTelemetry collector, measure compile-time overhead, verify build-cache isolation, and test across sample multi-crate applications.
