@@ -294,7 +294,7 @@ fn mirror_and_transform_crate_sources(
                         .count();
                     if deferred > 0 {
                         eprintln!(
-                            "[cargo-instrument PID={} crate={}] deferred {} async candidates to P1.6",
+                            "[cargo-instrument PID={} crate={}] deferred {} async candidates (emitter does not handle async)",
                             std::process::id(),
                             crate_name,
                             deferred,
@@ -418,7 +418,7 @@ fn mirror_dir_recursive(
                         .count();
                     if deferred > 0 {
                         eprintln!(
-                            "[cargo-instrument PID={} crate={}] deferred {} async candidates to P1.6",
+                            "[cargo-instrument PID={} crate={}] deferred {} async candidates (emitter does not handle async)",
                             std::process::id(),
                             crate_name,
                             deferred,
