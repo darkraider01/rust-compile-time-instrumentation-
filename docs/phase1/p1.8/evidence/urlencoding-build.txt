@@ -1,0 +1,18 @@
+===============================================================================
+P1.8 INSTRUMENTED BUILD EVIDENCE
+Target: urlencoding v2.1.3
+Environment: Windows 11 x64 (10.0.26200.0), rustc 1.97.1, cargo 1.97.1
+===============================================================================
+
+[Command]
+Set-Item -Path env:CARGO_INSTRUMENT_REGISTRY -Value '1'
+Set-Item -Path env:RUST_LOG -Value 'info'
+cargo run --bin cargo-instrument -- build --manifest-path C:\Users\branybuck\AppData\Local\Temp\p1_8_urlencoding_val\Cargo.toml --target-dir C:\Users\branybuck\AppData\Local\Temp\p1_8_urlencoding_val\target\instrumented
+
+[Build Summary]
+- Profile: dev [unoptimized + debuginfo]
+- Cold Build Time: 16.30s
+- Incremental Build Time: 0.31s
+- Warnings / Diagnostic Errors: 0 compile errors
+- Instrumentation Status: Successfully instrumented urlencoding crate functions with otel-shim linkage.
+- Target Output: C:\Users\branybuck\AppData\Local\Temp\p1_8_urlencoding_val\target\instrumented\debug\urlencoding_validation_app.exe

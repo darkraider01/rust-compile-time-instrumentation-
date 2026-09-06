@@ -1,0 +1,30 @@
+===============================================================================
+P1.8 REGISTRY SOURCE FIDELITY & IMMUTABILITY EVIDENCE
+Target: urlencoding v2.1.3
+Path: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3
+Environment: Windows 11 x64 (10.0.26200.0), rustc 1.97.1
+===============================================================================
+
+[Pre-Execution & Post-Execution Verification Command]
+Get-FileHash -Algorithm SHA256 (Get-ChildItem -Path "$((Resolve-Path $env:USERPROFILE\.cargo\registry\src\index.crates.io-*\urlencoding-2.1.3).Path)" -Recurse -File).FullName | Select-Object Hash, @{Name="RelativePath"; Expression={$_.Path.Substring($_.Path.IndexOf("urlencoding-2.1.3"))}} | Format-Table -AutoSize
+
+[SHA-256 Checksums (Before and After Compilation)]
+Hash                                                             RelativePath                          
+----                                                             ------------                          
+AFBF9D0F3560B0FD7795E81C42A0A79EE6B6FC67E064F77826AEE642CAD28D91 urlencoding-2.1.3\.cargo-ok           
+2FB54F51B14E04876516CEF3FD7645179A7656A0E84B4EA99C2C3C8D45D6FA05 urlencoding-2.1.3\.cargo_vcs_info.json
+F9B1CA6AE27D1C18215265024629A8960C31379F206D9ED20F64E0B2DCF79805 urlencoding-2.1.3\.gitignore          
+7336FE00C121D144202B7E1787FBED8FED38898B160B94BBA3E82AB90D31E2A9 urlencoding-2.1.3\Cargo.toml          
+35FD3F4670269E0711B8B175B5C896EEED347606536A587ED405A028465EA59D urlencoding-2.1.3\Cargo.toml.orig     
+5A952E4A62A3022A7F39E9F0EB8D0638ADDD3EFFFB3F4092890923668152296E urlencoding-2.1.3\LICENSE             
+AEF1306CB06344947DFB4E5E0D980303F31500FE95C7526C8BD3247F9CFCC78F urlencoding-2.1.3\README.md           
+20A525B93DBE07CEC14C29DED08AF5DF5B73655D5A244D42271A4547A59F90AB urlencoding-2.1.3\benches\bench.rs    
+27F7A50D426FD295E88E440358E084BB1B2D54283C6CBBBC99DDCE7383BB37A5 urlencoding-2.1.3\src\dec.rs          
+50242A4F6B63DEB98E016B6A6EBC122F519C4BEAD7C2C36CCCE24D2268541EC8 urlencoding-2.1.3\src\enc.rs          
+8BE9BAF406EDE16922DEB1947601A6E5405579521FA74FEA41D1D3095DFE13DE urlencoding-2.1.3\src\lib.rs          
+
+[Integrity Evaluation]
+- Number of tracked files: 11
+- Number of modified files: 0
+- Byte delta across all 11 files: 0 bytes
+- Conclusion: The cargo registry directory remained completely untouched and immutable. All instrumentation occurred within the isolated out-of-tree mirror staging directory.

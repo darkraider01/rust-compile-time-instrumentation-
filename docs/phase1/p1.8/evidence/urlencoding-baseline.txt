@@ -1,0 +1,40 @@
+===============================================================================
+P1.8 UNSEEN CRATE BASELINE EVIDENCE (WITHOUT CARGO-INSTRUMENT)
+Target: urlencoding v2.1.3
+Environment: Windows 11 x64 (10.0.26200.0), rustc 1.97.1, cargo 1.97.1
+===============================================================================
+
+[Command]
+cargo run --manifest-path "C:\Users\branybuck\AppData\Local\Temp\p1_8_urlencoding_val\Cargo.toml"
+
+[Cargo.toml]
+[package]
+name = "urlencoding_validation_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+urlencoding = "=2.1.3"
+opentelemetry = "0.32.0"
+opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
+otel-shim = { path = "C:/Users/branybuck/code/rust compile time instrumentation/otel-shim" }
+
+[Output]
+   Compiling urlencoding v2.1.3
+   Compiling urlencoding_validation_app v0.1.0 (C:\Users\branybuck\AppData\Local\Temp\p1_8_urlencoding_val)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.64s
+     Running `C:\Users\branybuck\AppData\Local\Temp\p1_8_urlencoding_val\target\debug\urlencoding_validation_app.exe`
+URLENCODING_VALIDATION_START
+encoded: Hello%20World%21%20%F0%9F%9A%80%20%26%20Test%20%231
+decode success: Hello World! 🚀 & Test #1
+decode expected error: invalid utf-8 sequence of 1 bytes from index 0
+decode_binary len: 3
+ACTIVE_SPAN_COUNT_AFTER_RUN=0
+FINISHED_SPANS_COUNT=1
+SPAN[0]: name='app_workflow' kind=Internal trace_id=faab1134be23dfb489660538f50968a2 span_id=416c168380a8f181 parent_span_id=0000000000000000 status=Unset
+URLENCODING_VALIDATION_SUCCESS
+
+[Observation]
+- Normal uninstrumented execution succeeded without runtime error.
+- Only 1 span was recorded in InMemorySpanExporter (the application's own root span 'app_workflow').
+- Zero dependency spans were emitted because urlencoding contains no handwritten OpenTelemetry code.
