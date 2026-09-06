@@ -507,11 +507,30 @@ pub fn transform_source_file_scoped_with_emitter<E: Emitter + ?Sized>(
         }
     }
 
-    // 5. Write transformed output to destination
+    // 5. Write transformed output to destination (preserve mtime if content is identical)
+    if output_path.exists() {
+        if let Ok(existing_bytes) = fs::read(output_path) {
+            if existing_bytes == transformed.as_bytes() {
+                return Ok(plan);
+            }
+        }
+    }
+
     fs::write(output_path, transformed.as_bytes()).map_err(|e| TransformError::Io {
         path: output_path.to_path_buf(),
         message: e.to_string(),
     })?;
+
+    // Synchronize output modification time with original source file so Cargo's
+    // build fingerprint does not consider the file modified during/after the build.
+    if let Ok(metadata) = fs::metadata(input_path) {
+        if let Ok(mtime) = metadata.modified() {
+            if let Ok(file) = fs::OpenOptions::new().write(true).open(output_path) {
+                let times = fs::FileTimes::new().set_modified(mtime);
+                let _ = file.set_times(times);
+            }
+        }
+    }
 
     Ok(plan)
 }

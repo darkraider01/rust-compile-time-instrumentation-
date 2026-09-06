@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use sha2::{Digest, Sha256};
+
 /// Compute SHA-256 hash or byte contents of all source files in a directory.
 fn snapshot_files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut files = Vec::new();
@@ -295,4 +297,234 @@ fn test_cli_analyze_subcommand() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("candidates:"));
     assert!(stdout.contains("add: bytes"));
+}
+
+fn compute_file_sha256(path: &Path) -> String {
+    let bytes = fs::read(path).expect("read file for sha256");
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    format!("{:x}", hasher.finalize())
+}
+
+#[test]
+fn test_cargo_correctness_clean_repeat_incremental_and_lock_immutability() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ws_root = temp_dir.path();
+
+    // 1. Workspace with app and local dependency
+    let cargo_toml_content = r#"[workspace]
+members = ["app", "dep_local"]
+resolver = "2"
+"#;
+    fs::write(ws_root.join("Cargo.toml"), cargo_toml_content).expect("write root Cargo.toml");
+
+    let dep_dir = ws_root.join("dep_local");
+    let dep_src = dep_dir.join("src");
+    fs::create_dir_all(&dep_src).expect("create dep_src");
+    fs::write(
+        dep_dir.join("Cargo.toml"),
+        r#"[package]
+name = "dep_local"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .expect("write dep Cargo.toml");
+    let dep_lib = dep_src.join("lib.rs");
+    fs::write(&dep_lib, "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").expect("write dep lib.rs");
+
+    let current_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = current_manifest
+        .parent()
+        .expect("cargo-instrument parent is repo root");
+    let otel_shim_path = repo_root.join("otel-shim");
+    let otel_shim_path_escaped = otel_shim_path.to_string_lossy().replace('\\', "/");
+
+    let app_dir = ws_root.join("app");
+    let app_src = app_dir.join("src");
+    fs::create_dir_all(&app_src).expect("create app_src");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_local = {{ path = "../dep_local" }}
+otel-shim = {{ path = "{otel_shim_path_escaped}" }}
+"#
+        ),
+    )
+    .expect("write app Cargo.toml");
+    let app_main = app_src.join("main.rs");
+    fs::write(
+        &app_main,
+        "fn main() { otel_shim::init(); println!(\"{}\", dep_local::add(1, 2)); }\n",
+    )
+    .expect("write app main.rs");
+
+    // Generate initial Cargo.lock
+    Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(ws_root)
+        .status()
+        .expect("generate lockfile");
+
+    let initial_cargo_toml_hash = compute_file_sha256(&ws_root.join("Cargo.toml"));
+    let initial_lock_hash = compute_file_sha256(&ws_root.join("Cargo.lock"));
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    // Pass 1: Clean build
+    let output1 = Command::new(cargo_instrument_bin)
+        .args(["--", "build"])
+        .current_dir(ws_root)
+        .output()
+        .expect("clean build");
+    let stdout1 = String::from_utf8_lossy(&output1.stdout);
+    let stderr1 = String::from_utf8_lossy(&output1.stderr);
+    println!("CLEAN_BUILD_STDERR:\n{stderr1}");
+    assert!(
+        output1.status.success(),
+        "Clean build must succeed!\nSTDOUT:\n{stdout1}\nSTDERR:\n{stderr1}"
+    );
+
+    // Target isolation check (A13): default target/debug must not exist, target/instrumented must exist
+    assert!(
+        ws_root.join("target").join("instrumented").exists(),
+        "target/instrumented must exist"
+    );
+    assert!(
+        !ws_root.join("target").join("debug").exists(),
+        "default target/debug must not exist"
+    );
+
+    // Pass 2: Repeated build with no changes (A13: no rebuild)
+    let output2 = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .current_dir(ws_root)
+        .output()
+        .expect("repeat build");
+    assert!(output2.status.success(), "Repeat build must succeed");
+    let stderr2 = String::from_utf8_lossy(&output2.stderr);
+    println!("REPEAT_BUILD_STDERR:\n{stderr2}");
+    assert!(
+        !stderr2.contains("Compiling dep_local"),
+        "Repeat build must not recompile dep_local. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling app"),
+        "Repeat build must not recompile app. Stderr:\n{stderr2}"
+    );
+
+    // Pass 3: Incremental app touch (A13)
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    fs::write(
+        &app_main,
+        "fn main() { otel_shim::init(); println!(\"result: {}\", dep_local::add(2, 3)); }\n",
+    )
+    .unwrap();
+    let output3 = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .current_dir(ws_root)
+        .output()
+        .expect("incremental app build");
+    let stderr3 = String::from_utf8_lossy(&output3.stderr);
+    assert!(
+        output3.status.success(),
+        "Incremental app build must succeed! Stderr:\n{stderr3}"
+    );
+    assert!(
+        stderr3.contains("Compiling app"),
+        "Incremental build must recompile modified app. Stderr:\n{stderr3}"
+    );
+    assert!(
+        !stderr3.contains("Compiling dep_local"),
+        "Incremental app build must NOT recompile unmodified dep_local"
+    );
+
+    // Pass 4: Incremental dep touch (A13)
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    fs::write(
+        &dep_lib,
+        "pub fn add(a: i32, b: i32) -> i32 { (a + b) * 1 }\n",
+    )
+    .unwrap();
+    let output4 = Command::new(cargo_instrument_bin)
+        .args(["--", "build"])
+        .current_dir(ws_root)
+        .output()
+        .expect("incremental dep build");
+    assert!(
+        output4.status.success(),
+        "Incremental dep build must succeed"
+    );
+    let stderr4 = String::from_utf8_lossy(&output4.stderr);
+    assert!(
+        stderr4.contains("Compiling dep_local"),
+        "Incremental build must recompile modified dep_local"
+    );
+    assert!(
+        stderr4.contains("Compiling app"),
+        "Modifying dependency must cause app to be recompiled/relinked"
+    );
+
+    // Pass 5: Cargo graph immutability check (A14)
+    let post_cargo_toml_hash = compute_file_sha256(&ws_root.join("Cargo.toml"));
+    let post_lock_hash = compute_file_sha256(&ws_root.join("Cargo.lock"));
+    assert_eq!(
+        initial_cargo_toml_hash, post_cargo_toml_hash,
+        "Cargo.toml hash must remain unchanged (A14)"
+    );
+    assert_eq!(
+        initial_lock_hash, post_lock_hash,
+        "Cargo.lock hash must remain unchanged (A14)"
+    );
+}
+
+#[test]
+fn test_cargo_error_propagation_and_coordinate_fidelity() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fixture_root = temp_dir.path();
+
+    let cargo_toml = r#"[package]
+name = "error_fixture"
+version = "0.1.0"
+edition = "2021"
+"#;
+    fs::write(fixture_root.join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+
+    let src_dir = fixture_root.join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+    // Deliberate type error on line 2
+    let bad_main =
+        "fn main() {\n    let x: u32 = \"type mismatch error\";\n    println!(\"{x}\");\n}\n";
+    fs::write(src_dir.join("main.rs"), bad_main).expect("write bad main.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let output = Command::new(cargo_instrument_bin)
+        .args(["--", "check"])
+        .current_dir(fixture_root)
+        .output()
+        .expect("run cargo check on erroneous source");
+
+    // 1. Must exit non-zero
+    assert!(
+        !output.status.success(),
+        "compilation with type error must exit non-zero"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // 2. Error message must report type error
+    assert!(
+        stderr.contains("mismatched types") || stderr.contains("expected"),
+        "stderr must contain rustc error description. Stderr:\n{stderr}"
+    );
+    // 3. Error coordinates must point to source file and snippet
+    assert!(
+        stderr.contains("main.rs") && stderr.contains("let x: u32 = \"type mismatch error\";"),
+        "coordinates must point to the erroneous code snippet. Stderr:\n{stderr}"
+    );
 }

@@ -122,11 +122,27 @@ impl CompilationUnit {
         }
     }
 
+    /// Returns true if this unit is an OpenTelemetry crate, the otel-shim runtime, or the cargo-instrument tool.
+    /// Such crates must never be instrumented to prevent recursion and self-instrumentation.
+    pub fn is_telemetry_or_tool_crate(&self) -> bool {
+        match self {
+            CompilationUnit::RustCrate { crate_name, .. } => {
+                crate_name == "opentelemetry"
+                    || crate_name.starts_with("opentelemetry_")
+                    || crate_name == "otel_shim"
+                    || crate_name == "otel-shim"
+                    || crate_name == "cargo_instrument"
+                    || crate_name == "cargo-instrument"
+            }
+            _ => false,
+        }
+    }
+
     /// Classify the crate's role in the compilation graph.
     pub fn role(&self, current_dir: &Path) -> CrateRole {
         match self {
             CompilationUnit::RustCrate {
-                crate_name,
+                crate_name: _,
                 crate_types,
                 has_opentelemetry,
                 has_otel_shim,
@@ -138,12 +154,7 @@ impl CompilationUnit {
                     || path_str.contains(".cargo\\registry")
                     || path_str.contains(".cargo/git")
                     || path_str.contains(".cargo\\git")
-                    || crate_name == "opentelemetry"
-                    || crate_name.starts_with("opentelemetry_")
-                    || crate_name == "otel_shim" // ← the telemetry runtime must never instrument itself
-                    || crate_name == "otel-shim"
-                    || crate_name == "cargo_instrument"
-                    || crate_name == "cargo-instrument"
+                    || self.is_telemetry_or_tool_crate()
                 {
                     CrateRole::RegistryDependency
                 } else if *has_opentelemetry

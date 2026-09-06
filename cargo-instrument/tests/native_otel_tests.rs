@@ -403,7 +403,7 @@ fn test_native_otel_comments_and_formatting_preservation() {
 /* Multi-line
    block comment */
 
-#[inline]
+#[inline(never)]
 #[allow(dead_code)]
 fn formatted_fn(x: i32) -> i32 {
     // Indented comment inside body
@@ -422,7 +422,7 @@ fn formatted_fn(x: i32) -> i32 {
 
     assert!(transformed.starts_with("// 🦀 Leading header comment with UTF-8"));
     assert!(transformed.contains("/* Multi-line\n   block comment */"));
-    assert!(transformed.contains("#[inline]\n#[allow(dead_code)]"));
+    assert!(transformed.contains("#[inline(never)]\n#[allow(dead_code)]"));
     assert!(transformed.contains("// Indented comment inside body"));
     assert!(transformed.ends_with("// Trailing comment\n"));
 }

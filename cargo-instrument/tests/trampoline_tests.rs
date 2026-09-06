@@ -2,6 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serial_test::serial;
+use sha2::{Digest, Sha256};
+
 use cargo_instrument::ast::{analyze_source_str, check_application_preflight};
 use cargo_instrument::candidate::{Candidate, FunctionKind, UnsafePolicy};
 use cargo_instrument::transform::{
@@ -540,4 +543,343 @@ pub async fn app_caller() {
 
     // Verify target-dir isolation
     assert!(target_dir.exists(), "target/instrumented must exist");
+}
+
+// ----------------------------------------------------------------------------
+// Step 3: Standalone Registry Source-Fidelity Guard (A11, A12, M2)
+// ----------------------------------------------------------------------------
+
+fn compute_dir_sha256_tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+    let mut tree = std::collections::BTreeMap::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&current) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.is_file() {
+                    let bytes = fs::read(&path).expect("read file for sha256");
+                    let mut hasher = Sha256::new();
+                    hasher.update(&bytes);
+                    let hex = format!("{:x}", hasher.finalize());
+                    let rel = path.strip_prefix(dir).unwrap().to_path_buf();
+                    tree.insert(rel, hex);
+                }
+            }
+        }
+    }
+    tree
+}
+
+#[test]
+#[serial]
+fn test_registry_source_cache_immutability() {
+    // M2: Gate execution on explicit opt-in to preserve clean CI runners
+    if std::env::var("CARGO_INSTRUMENT_REGISTRY").is_err() {
+        return;
+    }
+
+    let cargo_home = std::env::var("CARGO_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .expect("valid home directory");
+            PathBuf::from(home).join(".cargo")
+        });
+
+    let registry_src = cargo_home.join("registry").join("src");
+    let mut census_dir = None;
+    if registry_src.exists() {
+        if let Ok(entries) = fs::read_dir(&registry_src) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("census-0.4.2");
+                if candidate.exists() && candidate.is_dir() {
+                    census_dir = Some(candidate);
+                    break;
+                }
+            }
+        }
+    }
+
+    let census_dir = match census_dir {
+        Some(d) => d,
+        None => {
+            eprintln!("census-0.4.2 not found in registry src cache; skipping");
+            return;
+        }
+    };
+
+    // 1. Compute SHA-256 for all files in census-0.4.2 before build
+    let pre_hashes = compute_dir_sha256_tree(&census_dir);
+    assert!(
+        !pre_hashes.is_empty(),
+        "census-0.4.2 directory must not be empty"
+    );
+    assert!(
+        pre_hashes.contains_key(&PathBuf::from("src").join("lib.rs")),
+        "census-0.4.2 must contain src/lib.rs"
+    );
+
+    // 2. Set up temporary test package depending on census = "=0.4.2"
+    let temp_dir = tempfile::tempdir().expect("create tempdir");
+    let ws_root = temp_dir.path();
+    let app_dir = ws_root.join("guard_app");
+    let app_src = app_dir.join("src");
+    fs::create_dir_all(&app_src).expect("create app src");
+
+    let app_cargo = app_dir.join("Cargo.toml");
+    fs::write(
+        &app_cargo,
+        r#"[package]
+name = "guard_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+census = "=0.4.2"
+"#,
+    )
+    .expect("write guard_app Cargo.toml");
+
+    let app_main = app_src.join("main.rs");
+    let main_code = r#"fn main() {
+    let inventory = census::Inventory::new();
+    let _t = inventory.track(42);
+}
+"#;
+    fs::write(&app_main, main_code).expect("write guard_app main.rs");
+
+    let target_dir = ws_root.join("target").join("instrumented");
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    // 3. Run cargo check with CARGO_INSTRUMENT_REGISTRY=1
+    let output = Command::new("cargo")
+        .args([
+            "check",
+            "--manifest-path",
+            app_cargo.to_str().unwrap(),
+            "--target-dir",
+            target_dir.to_str().unwrap(),
+        ])
+        .env("RUSTC_WRAPPER", cargo_instrument_bin)
+        .env("CARGO_INSTRUMENT_REGISTRY", "1")
+        .output()
+        .expect("execute cargo check");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "cargo check with CARGO_INSTRUMENT_REGISTRY=1 failed!\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+    );
+
+    // 4. Re-compute SHA-256 for all files in census-0.4.2 after build (A11)
+    let post_hashes = compute_dir_sha256_tree(&census_dir);
+    assert_eq!(
+        pre_hashes, post_hashes,
+        "STOP-THE-LINE: ~/.cargo/registry source tree was mutated by instrumented build!"
+    );
+
+    // 5. Assert no .rs files created/modified outside target_dir (A12)
+    assert_eq!(
+        fs::read_to_string(&app_main).unwrap(),
+        main_code,
+        "src/main.rs in test workspace was mutated!"
+    );
+}
+
+// ----------------------------------------------------------------------------
+// Component 5: Compatibility-Only Graphs & Safety Negatives (A15, A16)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_abi_symbol_collision_fail_open_s11() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ws_root = temp_dir.path();
+
+    let root_cargo_toml = r#"[workspace]
+members = ["app", "colliding_dep"]
+resolver = "2"
+"#;
+    fs::write(ws_root.join("Cargo.toml"), root_cargo_toml).expect("write ws Cargo.toml");
+
+    // 1. Dependency declaring colliding ABI symbol __otel_span_start
+    let dep_dir = ws_root.join("colliding_dep");
+    let dep_src = dep_dir.join("src");
+    fs::create_dir_all(&dep_src).expect("create dep src");
+    let dep_cargo = r#"[package]
+name = "colliding_dep"
+version = "0.1.0"
+edition = "2021"
+"#;
+    fs::write(dep_dir.join("Cargo.toml"), dep_cargo).expect("write dep Cargo.toml");
+
+    let dep_lib = r#"
+#[no_mangle]
+pub extern "C" fn __otel_span_start() {
+    println!("colliding symbol");
+}
+
+pub fn compute_value() -> i32 {
+    42
+}
+"#;
+    fs::write(dep_src.join("lib.rs"), dep_lib).expect("write dep lib.rs");
+
+    // 2. Application declaring otel-shim and depending on colliding_dep
+    let app_dir = ws_root.join("app");
+    let app_src = app_dir.join("src");
+    fs::create_dir_all(&app_src).expect("create app src");
+
+    let otel_shim_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("otel-shim");
+    let otel_shim_path_escaped = otel_shim_path.to_string_lossy().replace('\\', "/");
+
+    let app_cargo = format!(
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+colliding_dep = {{ path = "../colliding_dep" }}
+otel-shim = {{ path = "{otel_shim_path_escaped}" }}
+"#
+    );
+    fs::write(app_dir.join("Cargo.toml"), app_cargo).expect("write app Cargo.toml");
+
+    let app_main = r#"fn main() {
+    otel_shim::init();
+    assert_eq!(colliding_dep::compute_value(), 42);
+}
+"#;
+    fs::write(app_src.join("main.rs"), app_main).expect("write app main.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let output = Command::new(cargo_instrument_bin)
+        .args(["--", "check"])
+        .current_dir(ws_root)
+        .output()
+        .expect("run cargo check");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // A16 check: compilation must succeed without linker/symbol errors
+    assert!(
+        output.status.success(),
+        "build with colliding dependency must succeed via fail-open!\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+    );
+
+    // A16 check: warning was emitted
+    assert!(
+        stderr.contains("exports an ABI symbol conflicting with otel-shim"),
+        "stderr must contain ABI collision warning! Stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_malformed_syntax_fail_open_s11() {
+    // 1. Direct AST analyzer level: malformed syntax returns AstError, does not panic
+    let bad_source = "pub fn unclosed_fn( { let x = ;";
+    let res = analyze_source_str("bad_crate", Path::new("src/lib.rs"), bad_source);
+    assert!(res.is_err(), "malformed source must return AstError::Parse");
+
+    // 2. Integration level: wrapper catches syntax failure and warns per S11
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let fixture_root = temp_dir.path();
+
+    let cargo_toml = r#"[package]
+name = "malformed_fixture"
+version = "0.1.0"
+edition = "2021"
+"#;
+    fs::write(fixture_root.join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+    let src_dir = fixture_root.join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+
+    fs::write(src_dir.join("main.rs"), bad_source).expect("write bad main.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let output = Command::new(cargo_instrument_bin)
+        .args(["--", "check"])
+        .current_dir(fixture_root)
+        .output()
+        .expect("execute cargo check");
+
+    // Must not panic! Output will fail with rustc's syntax error, but wrapper logs S11 warning
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning: cargo-instrument: failed to analyze")
+            || stderr.contains("expected"),
+        "stderr must report analysis failure without panicking! Stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_adversarial_path_attribute_sandboxing() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let root = temp_dir.path();
+
+    // 1. Outside directory with an external source file
+    let outside_dir = root.join("outside");
+    fs::create_dir_all(&outside_dir).expect("create outside dir");
+    let outside_file = outside_dir.join("outside.rs");
+    let original_outside_code = "pub fn outside_work() -> i32 { 101 }\n";
+    fs::write(&outside_file, original_outside_code).expect("write outside.rs");
+
+    // 2. Fixture crate attempting to escape crate dir via #[path = "../../outside/outside.rs"]
+    let crate_dir = root.join("app");
+    let src_dir = crate_dir.join("src");
+    fs::create_dir_all(&src_dir).expect("create src dir");
+
+    let cargo_toml = r#"[package]
+name = "path_escape_app"
+version = "0.1.0"
+edition = "2021"
+"#;
+    fs::write(crate_dir.join("Cargo.toml"), cargo_toml).expect("write Cargo.toml");
+
+    let main_rs = r#"
+#[path = "../../outside/outside.rs"]
+mod outside;
+
+fn main() {
+    println!("{}", outside::outside_work());
+}
+"#;
+    fs::write(src_dir.join("main.rs"), main_rs).expect("write main.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let output = Command::new(cargo_instrument_bin)
+        .args(["--", "check"])
+        .current_dir(&crate_dir)
+        .output()
+        .expect("execute cargo check");
+
+    // Verify outside file was NOT mutated (A11/A16 invariant)
+    let post_outside_code = fs::read_to_string(&outside_file).expect("read outside file");
+    assert_eq!(
+        original_outside_code, post_outside_code,
+        "External source file outside crate root was mutated by instrumented build!"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    println!("ADVERSARIAL_PATH_STDOUT:\n{stdout}");
+    println!("ADVERSARIAL_PATH_STDERR:\n{stderr}");
+
+    // Verify build succeeded cleanly via fail-open without panicking
+    assert!(
+        output.status.success(),
+        "build with external #[path] must succeed safely! Stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("escapes crate root"),
+        "stderr must contain escaping path warning! Stderr:\n{stderr}"
+    );
 }

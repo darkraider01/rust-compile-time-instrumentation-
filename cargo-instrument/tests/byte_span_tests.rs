@@ -96,7 +96,7 @@ fn test_comments_and_unusual_formatting_preservation() {
 fn test_multiline_functions_with_attributes() {
     let source = r#"
 /// Documentation comment for calculate
-#[inline]
+#[must_use]
 pub fn calculate(
     a: i32,
     b: i32,

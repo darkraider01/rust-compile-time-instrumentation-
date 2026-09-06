@@ -5,7 +5,18 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use thiserror::Error;
 
-use crate::candidate::{Candidate, DiscoveryReport, FunctionKind, UnsafePolicy};
+use crate::candidate::{Candidate, DiscoveryReport, FunctionKind, SkippedStats, UnsafePolicy};
+
+/// The seven runtime C-ABI symbols exported by `otel-shim`.
+pub const OTEL_ABI_SYMBOLS: &[&str] = &[
+    "__otel_span_enter",
+    "__otel_span_exit",
+    "__otel_span_set_error",
+    "__otel_span_start",
+    "__otel_span_end",
+    "__otel_ctx_attach",
+    "__otel_ctx_detach",
+];
 
 #[derive(Debug, Error)]
 pub enum AstError {
@@ -42,12 +53,15 @@ pub fn analyze_source_file(
         source: e,
     })?;
 
-    // 1. Inspect root file-level inner attributes for unsafe policies (R26)
+    // 1. Inspect root file-level inner attributes for unsafe policies (R26) and no_std (§12.3)
     let unsafe_policy = detect_unsafe_policy(&root_syn.attrs);
+    let is_no_std = detect_no_std(&root_syn.attrs);
 
     // 2. Discover candidates across the root file and recursively in submodules
     let mut visited = HashSet::new();
     let mut candidates = Vec::new();
+    let mut skipped_stats = SkippedStats::default();
+    let mut has_colliding_symbols = false;
 
     analyze_file_and_submodules(
         root_path,
@@ -55,12 +69,17 @@ pub fn analyze_source_file(
         /* is_root: */ true,
         &mut visited,
         &mut candidates,
+        &mut skipped_stats,
+        &mut has_colliding_symbols,
     );
 
     Ok(DiscoveryReport {
         crate_name: crate_name.to_string(),
         source_file: root_path.to_path_buf(),
         unsafe_policy,
+        is_no_std,
+        has_colliding_symbols,
+        skipped_stats,
         candidates,
     })
 }
@@ -78,9 +97,12 @@ pub fn analyze_source_str(
     })?;
 
     let unsafe_policy = detect_unsafe_policy(&syn_file.attrs);
+    let is_no_std = detect_no_std(&syn_file.attrs);
 
     let mut visited = HashSet::new();
     let mut candidates = Vec::new();
+    let mut skipped_stats = SkippedStats::default();
+    let mut has_colliding_symbols = false;
 
     analyze_file_and_submodules(
         source_path,
@@ -88,12 +110,17 @@ pub fn analyze_source_str(
         /* is_root: */ true,
         &mut visited,
         &mut candidates,
+        &mut skipped_stats,
+        &mut has_colliding_symbols,
     );
 
     Ok(DiscoveryReport {
         crate_name: crate_name.to_string(),
         source_file: source_path.to_path_buf(),
         unsafe_policy,
+        is_no_std,
+        has_colliding_symbols,
+        skipped_stats,
         candidates,
     })
 }
@@ -110,6 +137,8 @@ fn analyze_file_and_submodules(
     is_root: bool,
     visited: &mut HashSet<PathBuf>,
     candidates: &mut Vec<Candidate>,
+    skipped_stats: &mut SkippedStats,
+    has_colliding_symbols: &mut bool,
 ) {
     let canonical = file_path
         .canonicalize()
@@ -118,19 +147,7 @@ fn analyze_file_and_submodules(
         return;
     }
 
-    // 1. Visit syntax tree of this file
-    let file_has_otel = file_has_otel_import(syn_file);
-    let mut visitor = CandidateFinder {
-        source_path: file_path.to_path_buf(),
-        candidates: Vec::new(),
-        current_impl: None,
-        inside_fn_body: false,
-        file_has_otel,
-    };
-    visitor.visit_file(syn_file);
-    candidates.extend(visitor.candidates);
-
-    // 2. Determine base directory for resolving submodules declared directly in this file
+    // 1. Determine base directory for resolving submodules declared directly in this file
     let base_dir = if is_root || file_path.file_name().and_then(|s| s.to_str()) == Some("mod.rs") {
         file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
     } else {
@@ -138,8 +155,44 @@ fn analyze_file_and_submodules(
         file_path.parent().unwrap_or(Path::new(".")).join(stem)
     };
 
+    // 2. Visit syntax tree of this file
+    let file_has_otel = file_has_otel_import(syn_file);
+    let mut visitor = CandidateFinder {
+        source_path: file_path.to_path_buf(),
+        current_dir: base_dir.clone(),
+        candidates: Vec::new(),
+        current_impl: None,
+        inside_fn_body: false,
+        file_has_otel,
+        skipped_stats: SkippedStats::default(),
+        has_colliding_symbols: false,
+    };
+    visitor.visit_file(syn_file);
+    candidates.extend(visitor.candidates);
+
+    skipped_stats.inline_attribute += visitor.skipped_stats.inline_attribute;
+    skipped_stats.adapter_trait += visitor.skipped_stats.adapter_trait;
+    skipped_stats.drop_implementation += visitor.skipped_stats.drop_implementation;
+    skipped_stats.cfg_test += visitor.skipped_stats.cfg_test;
+    skipped_stats.const_fn += visitor.skipped_stats.const_fn;
+    skipped_stats.extern_abi += visitor.skipped_stats.extern_abi;
+    skipped_stats.self_recursive += visitor.skipped_stats.self_recursive;
+    skipped_stats.handwritten_otel += visitor.skipped_stats.handwritten_otel;
+    skipped_stats.nested_function += visitor.skipped_stats.nested_function;
+    if visitor.has_colliding_symbols {
+        *has_colliding_symbols = true;
+    }
+
     // 3. Recursively discover and analyze submodules
-    discover_submodules(file_path, &syn_file.items, &base_dir, visited, candidates);
+    discover_submodules(
+        file_path,
+        &syn_file.items,
+        &base_dir,
+        visited,
+        candidates,
+        skipped_stats,
+        has_colliding_symbols,
+    );
 }
 
 /// Discover submodules declared in an item list (either in a file or inside an inline module).
@@ -149,18 +202,18 @@ fn discover_submodules(
     current_dir: &Path,
     visited: &mut HashSet<PathBuf>,
     candidates: &mut Vec<Candidate>,
+    skipped_stats: &mut SkippedStats,
+    has_colliding_symbols: &mut bool,
 ) {
     for item in items {
         if let syn::Item::Mod(item_mod) = item {
-            // NOTE on #[cfg(...)] modules:
-            // In this analysis-only milestone, we follow every module unconditionally (ignoring cfg attributes).
-            // While the wrapper does have access to the compiler's --cfg flags from rustc argv, evaluating cfg
-            // expressions at this stage is intentionally deferred. Following all modules ensures comprehensive
-            // candidate discovery regardless of active target_os or feature flags.
+            // Skip submodules marked #[cfg(test)] (their functions were already tallied by CandidateFinder)
+            if is_cfg_test(&item_mod.attrs) {
+                continue;
+            }
 
             if let Some((_, inner_items)) = &item_mod.content {
                 // Inline module: mod foo { ... }
-                // Base directory for any out-of-line submodules declared inside this inline module
                 let sub_dir = if let Some(custom_path) = extract_path_attribute(&item_mod.attrs) {
                     current_file
                         .parent()
@@ -169,7 +222,15 @@ fn discover_submodules(
                 } else {
                     current_dir.join(item_mod.ident.to_string())
                 };
-                discover_submodules(current_file, inner_items, &sub_dir, visited, candidates);
+                discover_submodules(
+                    current_file,
+                    inner_items,
+                    &sub_dir,
+                    visited,
+                    candidates,
+                    skipped_stats,
+                    has_colliding_symbols,
+                );
             } else {
                 // Out-of-line module: mod foo;
                 let submod_path = resolve_submodule_path(current_file, current_dir, item_mod);
@@ -185,10 +246,11 @@ fn discover_submodules(
                                         /* is_root: */ false,
                                         visited,
                                         candidates,
+                                        skipped_stats,
+                                        has_colliding_symbols,
                                     );
                                 }
                                 Err(e) => {
-                                    // S11 fail-open: unparseable submodules warn and skip without failing crate
                                     eprintln!(
                                         "warning: cargo-instrument: failed to parse submodule '{}': {e}",
                                         target_file.display()
@@ -484,6 +546,199 @@ fn detect_unsafe_policy(attrs: &[syn::Attribute]) -> UnsafePolicy {
     }
 }
 
+/// Detect whether the file specifies `#![no_std]` or `#![cfg_attr(..., no_std)]`.
+pub fn detect_no_std(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if !matches!(attr.style, syn::AttrStyle::Inner(_)) {
+            continue;
+        }
+        match &attr.meta {
+            syn::Meta::Path(p) => {
+                if p.is_ident("no_std") {
+                    return true;
+                }
+            }
+            syn::Meta::List(list) if list.path.is_ident("cfg_attr") => {
+                let tokens_str = list.tokens.to_string();
+                if tokens_str.split(',').any(|part| part.trim() == "no_std") {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Check if the function has `#[inline]` or `#[inline(always)]`.
+///
+/// NOTE (M2): `#[inline(never)]` is explicitly kept eligible because it designates
+/// an out-of-line call boundary that is an ideal candidate for instrumentation.
+fn has_inline_attribute(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("inline") {
+            match &attr.meta {
+                syn::Meta::Path(_) => return true,
+                syn::Meta::List(list) => {
+                    let tokens_str = list.tokens.to_string();
+                    if tokens_str.contains("never") {
+                        continue;
+                    }
+                    return true;
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Check if an item is gated behind `#[cfg(test)]` or marked `#[test]`.
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("test") {
+            return true;
+        }
+        if attr.path().is_ident("cfg") {
+            if let syn::Meta::List(list) = &attr.meta {
+                let tokens_str = list.tokens.to_string();
+                if tokens_str.contains("test") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Check if a function is annotated with `#[no_mangle]` or `#[export_name]`
+/// matching any of the 7 runtime C-ABI symbols in `OTEL_ABI_SYMBOLS`.
+fn is_colliding_symbol(ident: &syn::Ident, attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("no_mangle") {
+            let ident_str = ident.to_string();
+            if OTEL_ABI_SYMBOLS.contains(&ident_str.as_str()) {
+                return true;
+            }
+        }
+        if attr.path().is_ident("export_name") {
+            if let syn::Meta::NameValue(nv) = &attr.meta {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
+                    if OTEL_ABI_SYMBOLS.contains(&s.value().as_str()) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// AST visitor to count total function definitions across a syntax tree.
+struct FnCounter {
+    count: usize,
+}
+
+impl<'ast> Visit<'ast> for FnCounter {
+    fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
+        self.count += 1;
+        syn::visit::visit_item_fn(self, i);
+    }
+
+    fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
+        self.count += 1;
+        syn::visit::visit_impl_item_fn(self, i);
+    }
+}
+
+/// Count total function definitions (free functions, inherent/trait methods,
+/// and nested functions) in a syn File.
+pub fn count_total_functions(file: &syn::File) -> usize {
+    let mut counter = FnCounter { count: 0 };
+    counter.visit_file(file);
+    counter.count
+}
+
+/// Count all function definitions across a crate root and its out-of-line submodules.
+pub fn count_crate_functions(root_path: &Path, root_syn: &syn::File) -> usize {
+    let mut visited = HashSet::new();
+    let mut total = 0;
+    count_file_and_submodules_helper(root_path, root_syn, true, &mut visited, &mut total);
+    total
+}
+
+fn count_file_and_submodules_helper(
+    file_path: &Path,
+    syn_file: &syn::File,
+    is_root: bool,
+    visited: &mut HashSet<PathBuf>,
+    total: &mut usize,
+) {
+    let canonical = file_path
+        .canonicalize()
+        .unwrap_or_else(|_| file_path.to_path_buf());
+    if !visited.insert(canonical) {
+        return;
+    }
+
+    *total += count_total_functions(syn_file);
+
+    let base_dir = if is_root || file_path.file_name().and_then(|s| s.to_str()) == Some("mod.rs") {
+        file_path.parent().unwrap_or(Path::new(".")).to_path_buf()
+    } else {
+        let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        file_path.parent().unwrap_or(Path::new(".")).join(stem)
+    };
+
+    for item in &syn_file.items {
+        if let syn::Item::Mod(item_mod) = item {
+            if item_mod.content.is_none() {
+                if let Some(target_file) = resolve_submodule_path(file_path, &base_dir, item_mod) {
+                    if let Ok(bytes) = fs::read(&target_file) {
+                        if let Ok(text) = String::from_utf8(bytes) {
+                            if let Ok(child_syn) = syn::parse_file(&text) {
+                                count_file_and_submodules_helper(
+                                    &target_file,
+                                    &child_syn,
+                                    false,
+                                    visited,
+                                    total,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Count all functions declared inside a module (inline items or out-of-line submodule).
+fn count_all_functions_in_mod(m: &syn::ItemMod, current_file: &Path, current_dir: &Path) -> usize {
+    if let Some((_, items)) = &m.content {
+        let mut counter = FnCounter { count: 0 };
+        for it in items {
+            counter.visit_item(it);
+        }
+        counter.count
+    } else if let Some(target_file) = resolve_submodule_path(current_file, current_dir, m) {
+        if let Ok(bytes) = fs::read(&target_file) {
+            if let Ok(text) = String::from_utf8(bytes) {
+                if let Ok(file) = syn::parse_file(&text) {
+                    return count_total_functions(&file);
+                }
+            }
+        }
+        0
+    } else {
+        0
+    }
+}
+
 /// Normalize token-stream-to-string representation of types and paths.
 ///
 /// `quote!(#node).to_string()` inserts spaces between punctuation tokens (e.g.
@@ -514,18 +769,31 @@ pub(crate) fn normalize_type_str(s: &str) -> String {
 struct EnclosingImpl {
     type_name: String,
     trait_name: Option<String>,
+    trait_ident: Option<String>,
     is_generic: bool,
 }
 
 /// AST visitor that collects eligible function candidates.
 struct CandidateFinder {
     source_path: PathBuf,
+    current_dir: PathBuf,
     candidates: Vec<Candidate>,
     current_impl: Option<EnclosingImpl>,
     /// Tracks if traversal is currently inside a function body.
     /// Per §12.2 / §16.14, nested functions inside blocks are excluded.
     inside_fn_body: bool,
     file_has_otel: bool,
+    skipped_stats: SkippedStats,
+    has_colliding_symbols: bool,
+}
+
+impl<'ast> CandidateFinder {
+    fn visit_skipped_fn_body(&mut self, block: &'ast syn::Block) {
+        let prev = self.inside_fn_body;
+        self.inside_fn_body = true;
+        syn::visit::visit_block(self, block);
+        self.inside_fn_body = prev;
+    }
 }
 
 impl<'ast> Visit<'ast> for CandidateFinder {
@@ -536,11 +804,16 @@ impl<'ast> Visit<'ast> for CandidateFinder {
             .trait_
             .as_ref()
             .map(|(_, path, _)| normalize_type_str(&quote::quote!(#path).to_string()));
+        let trait_ident = i
+            .trait_
+            .as_ref()
+            .and_then(|(_, path, _)| path.segments.last().map(|s| s.ident.to_string()));
         let is_generic = !i.generics.params.is_empty();
 
         let prev = self.current_impl.replace(EnclosingImpl {
             type_name,
             trait_name,
+            trait_ident,
             is_generic,
         });
 
@@ -549,26 +822,72 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         self.current_impl = prev;
     }
 
+    fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+        if is_cfg_test(&m.attrs) {
+            self.skipped_stats.cfg_test +=
+                count_all_functions_in_mod(m, &self.source_path, &self.current_dir);
+            return;
+        }
+        syn::visit::visit_item_mod(self, m);
+    }
+
+    fn visit_foreign_item_fn(&mut self, i: &'ast syn::ForeignItemFn) {
+        if is_colliding_symbol(&i.sig.ident, &i.attrs) {
+            self.has_colliding_symbols = true;
+        }
+        syn::visit::visit_foreign_item_fn(self, i);
+    }
+
     fn visit_item_fn(&mut self, i: &'ast syn::ItemFn) {
-        // If we are already inside a function body, nested functions are excluded per §12.2
+        if is_colliding_symbol(&i.sig.ident, &i.attrs) {
+            self.has_colliding_symbols = true;
+        }
+
+        // If we are already inside a function body, nested functions are excluded per §12.2 / §16.14
         if self.inside_fn_body {
+            self.skipped_stats.nested_function += 1;
             return;
         }
 
-        // Apply eligibility and exclusion rules
-        if !is_eligible_signature(&i.sig) {
+        if is_cfg_test(&i.attrs) {
+            self.skipped_stats.cfg_test += 1;
+            self.visit_skipped_fn_body(&i.block);
+            return;
+        }
+
+        if i.sig.constness.is_some() {
+            self.skipped_stats.const_fn += 1;
+            self.visit_skipped_fn_body(&i.block);
+            return;
+        }
+
+        if i.sig.abi.is_some() {
+            self.skipped_stats.extern_abi += 1;
+            self.visit_skipped_fn_body(&i.block);
+            return;
+        }
+
+        if has_inline_attribute(&i.attrs) {
+            self.skipped_stats.inline_attribute += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
         if has_instrument_attribute(&i.attrs) {
+            self.skipped_stats.handwritten_otel += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
         if is_directly_self_recursive(&i.sig.ident, &i.block) {
+            self.skipped_stats.self_recursive += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
         if body_has_handwritten_otel(&i.block, self.file_has_otel) {
+            self.skipped_stats.handwritten_otel += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
@@ -603,24 +922,73 @@ impl<'ast> Visit<'ast> for CandidateFinder {
     }
 
     fn visit_impl_item_fn(&mut self, i: &'ast syn::ImplItemFn) {
+        if is_colliding_symbol(&i.sig.ident, &i.attrs) {
+            self.has_colliding_symbols = true;
+        }
+
         if self.inside_fn_body {
+            self.skipped_stats.nested_function += 1;
             return;
         }
 
-        if !is_eligible_signature(&i.sig) {
+        if is_cfg_test(&i.attrs) {
+            self.skipped_stats.cfg_test += 1;
+            self.visit_skipped_fn_body(&i.block);
+            return;
+        }
+
+        if i.sig.constness.is_some() {
+            self.skipped_stats.const_fn += 1;
+            self.visit_skipped_fn_body(&i.block);
+            return;
+        }
+
+        if i.sig.abi.is_some() {
+            self.skipped_stats.extern_abi += 1;
+            self.visit_skipped_fn_body(&i.block);
+            return;
+        }
+
+        if has_inline_attribute(&i.attrs) {
+            self.skipped_stats.inline_attribute += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
         if has_instrument_attribute(&i.attrs) {
+            self.skipped_stats.handwritten_otel += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
         if is_directly_self_recursive(&i.sig.ident, &i.block) {
+            self.skipped_stats.self_recursive += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
         if body_has_handwritten_otel(&i.block, self.file_has_otel) {
+            self.skipped_stats.handwritten_otel += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
+        }
+
+        if let Some(imp) = &self.current_impl {
+            if let Some(trait_ident) = &imp.trait_ident {
+                if trait_ident == "Drop" && i.sig.ident == "drop" {
+                    self.skipped_stats.drop_implementation += 1;
+                    self.visit_skipped_fn_body(&i.block);
+                    return;
+                }
+                if matches!(
+                    trait_ident.as_str(),
+                    "Deref" | "DerefMut" | "AsRef" | "AsMut" | "Borrow" | "BorrowMut"
+                ) {
+                    self.skipped_stats.adapter_trait += 1;
+                    self.visit_skipped_fn_body(&i.block);
+                    return;
+                }
+            }
         }
 
         let byte_range = i.span().byte_range();
@@ -772,19 +1140,6 @@ pub(crate) fn returns_reference_or_lifetime(output: &syn::ReturnType) -> bool {
         }
     }
     false
-}
-
-/// Check signature exclusions:
-/// - Skip `const fn` (would be a compile error to instrument)
-/// - Skip `extern "C"` / `unsafe extern`
-fn is_eligible_signature(sig: &syn::Signature) -> bool {
-    if sig.constness.is_some() {
-        return false;
-    }
-    if sig.abi.is_some() {
-        return false;
-    }
-    true
 }
 
 /// Check for existing instrumentation attributes (`#[instrument]`, `#[tracing::instrument]`).
