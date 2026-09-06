@@ -74,19 +74,48 @@ All raw execution outputs, cryptographic hashes, and telemetry logs are preserve
 
 For the dedicated 12-section validation report on unseen crate `cesu8`, see [**validation-report.md**](validation-report.md).
 
+## Automated Test Suite Verification (143 Tests across 10 Suites)
+
+The test suite enforces explicit opt-in gating for tests requiring network or local cargo registry caches. In the default offline run (`cargo test --workspace`), the 4 registry integration tests are **visibly ignored** (not silently skipped or masked) per M2 safety guarantees.
+
+| Test Suite Target | Default Run (`cargo test --workspace`) | Gated Run (`CARGO_INSTRUMENT_REGISTRY=1 ... --include-ignored`) | Scope / Category |
+| :--- | :---: | :---: | :--- |
+| `tests/ast_tests.rs` | 34 passed | 34 passed | AST discovery, normalization, trait methods, exclusions, syntax parsing |
+| `tests/byte_span_tests.rs` | 4 passed | 4 passed | Exact UTF-8 byte span offsets, unicode, multibyte, formatting |
+| `tests/cargo_integration_tests.rs` | 7 passed | 7 passed | Real Cargo subprocesses, 5-pass correctness, isolation, CLI analyze |
+| `tests/discovery_tests.rs` | 11 passed | 11 passed | Compiler invocation classification, argument parsing, crate roles |
+| `tests/e2e_registry_tests.rs` | **3 ignored** | **3 passed** | Gated real-registry E2E tests (`census-0.4.2` telemetry, candidate table, mirror reproducibility) |
+| `tests/native_otel_tests.rs` | 24 passed | 24 passed | Native OTel sync & async codegen, 16-point async matrix, in-memory exporter proofs |
+| `tests/trampoline_tests.rs` | 13 passed, **1 ignored** | **14 passed** | Tier 2 C-ABI trampolines (includes 1 gated test: `test_registry_source_cache_immutability`) |
+| `tests/transform_tests.rs` | 35 passed | 35 passed | Surgical byte splicing, comments/formatting preservation, CLI transform |
+| `tests/wrapper_tests.rs` | 5 passed | 5 passed | `RUSTC_WRAPPER` argument forwarding, exit code propagation, recursion guards |
+| `otel-shim/src/lib.rs` | 6 passed | 6 passed | Standalone runtime shim C-ABI invariants: LIFO context stack, handle safety |
+| **Total** | **139 passed, 4 ignored** | **143 passed, 0 ignored** | **143 total tests across workspace (100% pass rate)** |
+
+### Visibly Ignored Verification (Default Run)
+When running `cargo test --workspace`, the 4 registry tests output explicit ignore messages:
+- `test test_dependency_coverage_and_reconciliation_table ... ignored, requires CARGO_INSTRUMENT_REGISTRY=1 and cached registry crates`
+- `test test_e2e_census_runtime_telemetry ... ignored, requires CARGO_INSTRUMENT_REGISTRY=1 and cached census-0.4.2`
+- `test test_mirror_byte_reproducibility ... ignored, requires CARGO_INSTRUMENT_REGISTRY=1 and cached registry crates`
+- `test test_registry_source_cache_immutability ... ignored, requires CARGO_INSTRUMENT_REGISTRY=1 and cached census-0.4.2`
+
 ## Reproduction Instructions
 
 ```powershell
-# 1. Run 139 default offline unit & integration tests
+# 1. Run 139 default offline unit & integration tests (4 registry tests visibly ignored)
 cargo test --workspace
 
-# 2. Run 4 gated real-registry E2E integration tests (honest opt-in via --ignored)
+# 2. Run the 4 gated real-registry E2E integration tests only
 $env:CARGO_INSTRUMENT_REGISTRY="1"
 cargo test --workspace -- --ignored --nocapture
 
-# 3. Run overhead benchmark suite (A17)
+# 3. Run all 143 tests in a single command (including gated registry tests)
+$env:CARGO_INSTRUMENT_REGISTRY="1"
+cargo test --workspace -- --include-ignored
+
+# 4. Run overhead benchmark suite (A17)
 cargo bench --bench bench_overhead
 
-# 4. Demonstrate live dependency telemetry via demo_app (census-0.4.2)
+# 5. Demonstrate live dependency telemetry via demo_app (census-0.4.2)
 cargo run --bin cargo-instrument -- -- run --manifest-path examples/demo_app/Cargo.toml
 ```
