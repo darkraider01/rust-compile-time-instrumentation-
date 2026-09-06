@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use thiserror::Error;
 
-use crate::ast::analyze_source_file;
-use crate::candidate::{Candidate, DiscoveryReport};
-use crate::discovery::{CrateInvocation, DiscoveryError};
+use crate::ast::{analyze_source_file, check_application_preflight};
+use crate::candidate::{Candidate, DiscoveryReport, UnsafePolicy};
+use crate::discovery::{CrateInvocation, CrateRole, DiscoveryError};
 use crate::transform::{
     paths_are_identical, transform_source_file_scoped_with_emitter, Emitter, NativeOtelEmitter,
-    SentinelEmitter, SkipReason,
+    SentinelEmitter, SkipReason, TrampolineEmitter,
 };
 
 pub const RECURSION_GUARD_ENV: &str = "CARGO_INSTRUMENT_ACTIVE";
@@ -111,73 +111,110 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                 {
                     // Resolve relative source paths against current working directory
                     let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                    let resolved_path = if source_file.is_absolute() {
-                        source_file.to_path_buf()
-                    } else {
-                        current_dir.join(source_file)
-                    };
+                    let role = invocation.unit.role(&current_dir);
 
-                    if resolved_path.exists() {
-                        if let Ok(report) = analyze_source_file(crate_name, &resolved_path) {
-                            if config.debug_output {
-                                eprintln!(
-                                    "[cargo-instrument PID={} crate={}]\n{}",
-                                    std::process::id(),
-                                    crate_name,
-                                    report.format_debug()
-                                );
-                            }
+                    // Staging decision (§12.1, §12.3): In Phase 1, the C-ABI trampoline mechanism is proven on
+                    // out-of-workspace dependencies (e.g. LocalPathDependency), while arbitrary third-party registry
+                    // crates (.cargo/registry) are deferred to Phase 2 to avoid unlinked host build-script tools and
+                    // macro-heavy graphs. Note: §12.1a and ADR-002/003 define the mechanism; this skip is purely a
+                    // Phase 1 staging boundary per §12.3.
+                    if role != CrateRole::RegistryDependency {
+                        let resolved_path = if source_file.is_absolute() {
+                            source_file.to_path_buf()
+                        } else {
+                            current_dir.join(source_file)
+                        };
 
-                            // S11 / C3: Dependency check before transformation
-                            let has_otel = invocation.unit.has_opentelemetry();
-                            let use_sentinel = env::var("CARGO_INSTRUMENT_SENTINEL_MODE").is_ok();
-                            let native_otel_enforced =
-                                env::var("CARGO_INSTRUMENT_NATIVE_OTEL").is_ok();
-
-                            // H1: Splicing pipeline integration
-                            if !report.candidates.is_empty() {
-                                if !use_sentinel && native_otel_enforced && !has_otel {
+                        if resolved_path.exists() {
+                            if let Ok(report) = analyze_source_file(crate_name, &resolved_path) {
+                                if config.debug_output {
                                     eprintln!(
-                                        "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry'. \
+                                        "[cargo-instrument PID={} crate={}]\n{}",
+                                        std::process::id(),
+                                        crate_name,
+                                        report.format_debug()
+                                    );
+                                }
+
+                                // S11 / C3: Dependency check before transformation
+                                let has_otel = invocation.unit.has_opentelemetry();
+                                let has_otel_shim = invocation.unit.has_otel_shim();
+                                let use_sentinel =
+                                    env::var("CARGO_INSTRUMENT_SENTINEL_MODE").is_ok();
+                                let native_otel_enforced =
+                                    env::var("CARGO_INSTRUMENT_NATIVE_OTEL").is_ok();
+
+                                // Preflight check for application crates declaring otel-shim (G2 / C2)
+                                if has_otel_shim {
+                                    if let Err(msg) =
+                                        check_application_preflight(crate_name, &resolved_path)
+                                    {
+                                        eprintln!("error: {msg}");
+                                        return Ok(1);
+                                    }
+                                }
+
+                                // H1: Splicing pipeline integration
+                                if !report.candidates.is_empty() {
+                                    let emitter: Option<Box<dyn Emitter>> = if use_sentinel {
+                                        Some(Box::new(SentinelEmitter))
+                                    } else if role == CrateRole::Application {
+                                        if has_otel {
+                                            Some(Box::new(NativeOtelEmitter::new(crate_name)))
+                                        } else if native_otel_enforced {
+                                            eprintln!(
+                                            "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry'. \
+                                            Skipping instrumentation per S11 fail-open."
+                                        );
+                                            None
+                                        } else {
+                                            Some(Box::new(SentinelEmitter))
+                                        }
+                                    } else if report.unsafe_policy == UnsafePolicy::Forbidden {
+                                        eprintln!(
+                                        "warning: cargo-instrument: crate '{crate_name}' specifies `#![forbid(unsafe_code)]`. \
                                         Skipping instrumentation per S11 fail-open."
                                     );
-                                } else {
-                                    let emitter: Box<dyn Emitter> = if use_sentinel {
-                                        Box::new(SentinelEmitter)
-                                    } else if has_otel {
-                                        Box::new(NativeOtelEmitter::new(crate_name))
+                                        None
                                     } else {
-                                        Box::new(SentinelEmitter)
+                                        Some(Box::new(TrampolineEmitter::new(
+                                            crate_name,
+                                            invocation.unit.edition().map(String::from),
+                                            report.unsafe_policy,
+                                        )))
                                     };
 
-                                    match mirror_and_transform_crate_sources(
-                                        &current_dir,
-                                        source_file,
-                                        crate_name,
-                                        invocation.unit.out_dir(),
-                                        &report,
-                                        emitter.as_ref(),
-                                        config.debug_output,
-                                    ) {
-                                        Ok(new_root) => {
-                                            // Replace root source file argument with mirrored instrumented root
-                                            for arg in &mut args_to_run {
-                                                let p = Path::new(arg);
-                                                if p == source_file
-                                                    || p == resolved_path
-                                                    || paths_are_identical(p, &resolved_path)
-                                                {
-                                                    *arg = new_root.to_string_lossy().to_string();
-                                                    break;
+                                    if let Some(emitter) = emitter {
+                                        match mirror_and_transform_crate_sources(
+                                            &current_dir,
+                                            source_file,
+                                            crate_name,
+                                            invocation.unit.out_dir(),
+                                            &report,
+                                            emitter.as_ref(),
+                                            config.debug_output,
+                                        ) {
+                                            Ok(new_root) => {
+                                                // Replace root source file argument with mirrored instrumented root
+                                                for arg in &mut args_to_run {
+                                                    let p = Path::new(arg);
+                                                    if p == source_file
+                                                        || p == resolved_path
+                                                        || paths_are_identical(p, &resolved_path)
+                                                    {
+                                                        *arg =
+                                                            new_root.to_string_lossy().to_string();
+                                                        break;
+                                                    }
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            // S11 fail-open per crate: log warning and compile unmodified
-                                            eprintln!(
+                                            Err(e) => {
+                                                // S11 fail-open per crate: log warning and compile unmodified
+                                                eprintln!(
                                                 "warning: cargo-instrument: failed to instrument '{crate_name}': {e}. \
                                                 Compiling original source unmodified per S11."
                                             );
+                                            }
                                         }
                                     }
                                 }
@@ -250,10 +287,22 @@ fn mirror_and_transform_crate_sources(
         current_dir.to_path_buf()
     };
 
+    // Distinguish in-tree vs out-of-tree sources (M2):
+    // For in-tree files, relativize against current_dir preserving H1 guarantees.
+    // For out-of-tree dependencies (e.g. external path deps), relativize against scan_dir.
+    let is_in_tree = resolved_source.starts_with(current_dir)
+        || (resolved_source.is_relative() && !resolved_source.starts_with(".."))
+        || matches!(
+            (resolved_source.canonicalize(), current_dir.canonicalize()),
+            (Ok(s), Ok(c)) if s.starts_with(&c)
+        );
+
+    let base_rel_dir = if is_in_tree { current_dir } else { &scan_dir };
+
     if scan_dir.exists() && scan_dir.is_dir() {
         mirror_dir_recursive(
             &scan_dir,
-            current_dir,
+            base_rel_dir,
             &mirror_base,
             &candidates_by_file,
             emitter,
@@ -264,11 +313,11 @@ fn mirror_and_transform_crate_sources(
 
     // 4. Also mirror any candidate files that were out-of-line / outside scan_dir (e.g. #[path = "..."])
     for (canon_path, file_candidates) in &candidates_by_file {
-        let rel = if let Ok(rel) = canon_path.strip_prefix(current_dir) {
+        let rel = if let Ok(rel) = canon_path.strip_prefix(base_rel_dir) {
             Some(rel.to_path_buf())
-        } else if let Ok(canon_curr) = current_dir.canonicalize() {
+        } else if let Ok(canon_base) = base_rel_dir.canonicalize() {
             canon_path
-                .strip_prefix(&canon_curr)
+                .strip_prefix(&canon_base)
                 .ok()
                 .map(|r| r.to_path_buf())
         } else {
@@ -306,26 +355,49 @@ fn mirror_and_transform_crate_sources(
     }
 
     // 5. Compute new_root inside mirror_base (guarding against absolute source_file path collapse)
-    let rel_source = if let Ok(rel) = resolved_source.strip_prefix(current_dir) {
-        rel.to_path_buf()
-    } else if let (Ok(canon_source), Ok(canon_curr)) =
-        (resolved_source.canonicalize(), current_dir.canonicalize())
-    {
-        if let Ok(rel) = canon_source.strip_prefix(&canon_curr) {
+    let rel_source = if is_in_tree {
+        if let Ok(rel) = resolved_source.strip_prefix(current_dir) {
             rel.to_path_buf()
+        } else if let (Ok(canon_source), Ok(canon_curr)) =
+            (resolved_source.canonicalize(), current_dir.canonicalize())
+        {
+            if let Ok(rel) = canon_source.strip_prefix(&canon_curr) {
+                rel.to_path_buf()
+            } else {
+                source_file
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("main.rs"))
+            }
+        } else if source_file.is_relative() {
+            source_file.to_path_buf()
         } else {
             source_file
                 .file_name()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("main.rs"))
         }
-    } else if source_file.is_relative() {
-        source_file.to_path_buf()
     } else {
-        source_file
-            .file_name()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("main.rs"))
+        // Out-of-tree dependency: relativize against scan_dir (crate source root)
+        if let Ok(rel) = resolved_source.strip_prefix(&scan_dir) {
+            rel.to_path_buf()
+        } else if let (Ok(canon_source), Ok(canon_scan)) =
+            (resolved_source.canonicalize(), scan_dir.canonicalize())
+        {
+            if let Ok(rel) = canon_source.strip_prefix(&canon_scan) {
+                rel.to_path_buf()
+            } else {
+                source_file
+                    .file_name()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("lib.rs"))
+            }
+        } else {
+            source_file
+                .file_name()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("lib.rs"))
+        }
     };
 
     let new_root = mirror_base.join(&rel_source);
@@ -364,7 +436,7 @@ fn mirror_and_transform_crate_sources(
 /// Recursively mirror and transform Rust source files.
 fn mirror_dir_recursive(
     dir: &Path,
-    current_dir: &Path,
+    base_rel_dir: &Path,
     mirror_base: &Path,
     candidates_by_file: &HashMap<PathBuf, Vec<Candidate>>,
     emitter: &dyn Emitter,
@@ -377,7 +449,7 @@ fn mirror_dir_recursive(
         if path.is_dir() {
             mirror_dir_recursive(
                 &path,
-                current_dir,
+                base_rel_dir,
                 mirror_base,
                 candidates_by_file,
                 emitter,
@@ -385,12 +457,12 @@ fn mirror_dir_recursive(
                 debug_output,
             )?;
         } else if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
-            let rel = if let Ok(r) = path.strip_prefix(current_dir) {
+            let rel = if let Ok(r) = path.strip_prefix(base_rel_dir) {
                 r.to_path_buf()
-            } else if let (Ok(canon_path), Ok(canon_curr)) =
-                (path.canonicalize(), current_dir.canonicalize())
+            } else if let (Ok(canon_path), Ok(canon_base)) =
+                (path.canonicalize(), base_rel_dir.canonicalize())
             {
-                if let Ok(r) = canon_path.strip_prefix(&canon_curr) {
+                if let Ok(r) = canon_path.strip_prefix(&canon_base) {
                     r.to_path_buf()
                 } else {
                     continue;

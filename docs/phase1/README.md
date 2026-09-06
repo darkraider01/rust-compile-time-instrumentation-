@@ -4,11 +4,11 @@
 
 # Phase 1 - Compile-Time Instrumentation Tool (`cargo-instrument`)
 
-**Milestones covered:** P1.1, P1.2, P1.3, P1.4, P1.5, P1.6  
-**Status:** P1.1–P1.6 Complete; P1.7 Next  
+**Milestones covered:** P1.1, P1.2, P1.3, P1.4, P1.5, P1.6, P1.7  
+**Status:** P1.1–P1.7 Complete; P1.8 Next  
 **Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
 **Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
-**Test suite status:** 106 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
+**Test suite status:** 122 automated tests passing across Linux, Windows, and macOS (0 failures, 0 clippy warnings)  
 
 ---
 
@@ -26,8 +26,8 @@ Phase 1 - Compile-Time Instrumentation (In Progress - current focus)
           ├── P1.4 Surgical Source Transformation   ✅ Complete
           ├── P1.5 Native OTel Code Generation      ✅ Complete
           ├── P1.6 Async Instrumentation            ✅ Complete
-          ├── P1.7 Dependency Trampolines           → NEXT
-          └── P1.8 End-to-End Validation            ○ Planned
+          ├── P1.7 Dependency Trampolines           ✅ Complete
+          └── P1.8 End-to-End Validation            → NEXT
           │
           ▼
 Phase 2 - Production Hardening (Planned)
@@ -424,38 +424,106 @@ Milestone P1.6 delivers native OpenTelemetry asynchronous code generation for `a
    - **`#[async_trait]` compatibility (R1)**: Verified that source spliced with `with_context(async move { ... })` compiles cleanly under `#[async_trait]` macro expansion and emits normalized `<Type as Trait>::method` spans.
 
 10. **Deferred Scope**:
-    - **Tier-2 async dependency instrumentation**: Crossing `extern "C"` ABI boundaries inside dependencies without transitively adding OTel dependencies is deferred to P1.7.
+    - **Tier-2 async dependency instrumentation**: Scoped to Phase 2 (§12.3 / §16.3 / FE-13).
     - **Stream / Sink item instrumentation**: Deferred to Phase 2.
     - **Cross-task `tokio::spawn` propagation (§16.8)**: Deferred to Phase 2.
     - **Cancelled-vs-completed span status distinction (§16.12)**: Deferred to Phase 2.
 
 ---
 
+### P1.7 - Dependency Instrumentation & `extern "C"` Trampolines
+
+Milestone P1.7 extends instrumentation across third-party Cargo crate boundaries without manifest mutation or Cargo dependency injection using `extern "C"` ABI trampolines ([ADR-002](../research/17-decision-records.md), [ADR-003](../research/17-decision-records.md), [§12.1a](../research/12-mvp-definition.md), [§16.3](../research/16-instrumentation-semantics.md)).
+
+#### Key Architectural Components:
+
+1. **Standalone Runtime Shim Crate (`otel-shim`)**:
+   - Resides as an independent workspace crate exporting a standardized C ABI on top of the native OpenTelemetry SDK (`opentelemetry` 0.32).
+   - Exported symbols:
+     - `__otel_span_enter`: Starts an internal span and attaches its context, returning an opaque `u64` handle.
+     - `__otel_span_exit`: Pops context guard matching handle from thread-local stack and ends the span.
+     - `__otel_span_set_error`: Handle-accurate error status recording (`Status::error("")`) per §16.10.
+     - Async stubs (`__otel_span_start`, `__otel_span_end`, `__otel_ctx_attach`, `__otel_ctx_detach`): Accept handle 0 and return 0 per S9.
+   - **Thread-Local LIFO Context Stack (C1 / F2)**:
+     - Uses `RefCell<Vec<(u64, Context, ContextGuard)>>` in thread-local storage, enforcing S5 LIFO discipline and matching exact handles for error attribution without global lock contention or `!Send` context guard issues.
+   - **Clippy & Safety Doc Hygiene (F1)**:
+     - Every exported `unsafe extern "C"` function carries an explicit `/// # Safety` section documenting caller obligations (valid handle from prior enter or 0, valid UTF-8 pointer/len), compiling cleanly under `cargo clippy --workspace --all-targets -- -D warnings`.
+   - **Extern Crate Pruning Prevention (ADR-003 / E-10)**:
+     - Exports safe `otel_shim::init()`. Calling this in application code establishes a genuine Rust item-path reference, preventing `rustc` from dead-stripping `libotel_shim.rlib` at link time.
+
+2. **Splicing Trampoline Emitter (`TrampolineEmitter`)**:
+   - Implements `Emitter` with `handles_async() -> false`, gracefully deferring async candidates in dependencies per §12.3 / §16.3 / FE-13.
+   - **Minimal Block-Scoped Declarations (M1)**:
+     - Emits only the exact symbols needed per site (2 symbols for non-Result: enter + exit; 3 symbols for Result: enter + exit + set_error).
+   - **Edition-Aware Syntax**:
+     - Emits `extern "C"` for Edition 2015–2021 and `unsafe extern "C"` for Edition 2024.
+   - **Unsafe Policy Handling (G3 / S11)**:
+     - For `UnsafePolicy::Denied`, injects scoped `#[allow(unsafe_code)]` at declarations, drop guard, and set_error sites to recover coverage.
+     - For `UnsafePolicy::Forbidden`, skips instrumentation per S11 fail-open ([§16.3](../research/16-instrumentation-semantics.md)).
+   - **Type Collision Immunity**:
+     - Uses fully-qualified `core::result::Result<_, _>` to avoid collisions with crate-local Result type aliases.
+
+3. **Compilation-Unit Role Classification & Application Preflight**:
+   - Strongly classifies units into `Application`, `WorkspaceMemberDependency`, `LocalPathDependency`, and `RegistryDependency`.
+   - Evaluates `.cargo/registry`, `.cargo/git`, `opentelemetry*`, `cargo_instrument`, and `otel_shim` names prior to dependency flag inspection, ensuring telemetry runtime and registry dependencies are never classified as applications (`role()` explicitly excludes `otel_shim` so the runtime never instruments itself).
+   - **Staging Decision on Registry Dependencies (§12.1, §12.3)**:
+     - In Phase 1, the C-ABI trampoline mechanism is proven on out-of-workspace dependencies (`LocalPathDependency` and `WorkspaceMemberDependency`). Arbitrary third-party registry crates (`.cargo/registry`) are skipped as an explicit Phase 1 staging boundary to avoid unlinked host build-script tools and macro-heavy graphs, which are scheduled for Phase 2. Note: §12.1a and ADR-002/003 define the C-ABI mechanism and wrapper architecture; skipping registry crates is purely a Phase 1 staging boundary per §12.1 and §12.3.
+   - Application crates declaring `otel-shim` undergo recursive module preflight (`check_application_preflight`) verifying an item path to `otel_shim::init()` before compiling dependencies.
+
+4. **Source Byte Immutability (S1 / S2)**:
+   - Dependency sources in out-of-tree and in-tree paths remain 100% bit-for-bit identical before and after instrumentation. Out-of-tree sources are mirrored relative to `scan_dir` while in-tree sources preserve H1 relativization guarantees.
+
+---
+
 ## 8. Verification Matrix
 
-The Phase 1 implementation is verified by **106 automated tests** across 7 test suites:
+The Phase 1 implementation is verified by **124 automated tests** across 9 test suites:
 
 | Test Suite | Tests | Scope |
 |---|---|---|
 | [`ast_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/ast_tests.rs) | 24 | Free/inherent/trait functions, async, generics, exclusions, idempotence, unsafe policies, module resolution (root, non-main, nested, path attr), Result return detection, `&mut` detection (C1), type-aliased lifetime detection, span name normalization, error handling |
-| [`discovery_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/discovery_tests.rs) | 9 | Classification (ordinary crate, proc macro, build script, queries), real captured cargo argv, paths with spaces, `--extern opentelemetry` detection (separated, equals, noprelude), error handling |
+| [`discovery_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/discovery_tests.rs) | 11 | Classification (ordinary crate, proc macro, build script, queries), real captured cargo argv, paths with spaces, `--extern opentelemetry` detection (separated, equals, noprelude), `--extern otel_shim` detection, compilation unit crate role classification (`Application`, `WorkspaceMemberDependency`, `LocalPathDependency`, `RegistryDependency`), error handling |
 | [`wrapper_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/wrapper_tests.rs) | 5 | Config parsing, argument forwarding, exit code propagation, recursion guard, serial execution |
 | [`byte_span_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/byte_span_tests.rs) | 4 | Exact UTF-8 buffer slicing, emoji/multibyte offsets, multiline formatting, comment preservation |
 | [`transform_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/transform_tests.rs) | 35 | Surgical byte splicing, comments/formatting preservation, unicode offsets, exclusions, idempotence, overlap rejection, permutation invariance, rustc & Cargo compilation proofs, CLI transform, C1 cross-file basename collisions, H1 live wrapper pipeline and absolute source path handling, H2 fail-open skips, H3 emitter substitution, M1 CRLF preservation, M3 string literal idempotence, diverging `!`, unsafe fn, empty bodies |
 | [`cargo_integration_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/cargo_integration_tests.rs) | 5 | Real wrapped Cargo subprocesses, multi-file discovery on disk, SHA-256 byte-for-byte source preservation, isolated target dir wiring, CLI analyze subcommand |
 | [`native_otel_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/native_otel_tests.rs) | 24 | Native synchronous and asynchronous OpenTelemetry 0.32.0 generation: ordinary sync functions, inherent/trait methods, generics, unsafe fn, Result return with `clone().attach()`, `?` operator propagation, explicit early return, diverging bodies, `&mut` return prefix-only fallback (C1), type-aliased `&mut` fallback, CRLF preservation (L1), tracer acquisition scope, idempotence (splicer & AST), marker false-positive protection, async capability gating (`handles_async`), dependency gate fail-open, comments preservation, `InMemorySpanExporter` direct SDK proof (H1), live sync compilation under `rustc -D warnings` and `clippy -- -D warnings` with runtime span assertions, async non-Result shape, async Result shape, async `&mut` reference error status retention (F3), async inherent/trait/generic methods, async idempotence, async CRLF/Unicode preservation, and live multi-threaded Tokio runtime proof with `InMemorySpanExporter` verifying the complete 16-point async test matrix under `cargo clippy -- -D warnings` and `cargo test`. |
+| [`trampoline_tests.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/cargo-instrument/tests/trampoline_tests.rs) | 10 | Tier 2 `extern "C"` trampoline emission and runtime execution: synchronous ordinary function trampoline shape, Result-returning function trampoline shape with status Error and empty description per §16.10, edition 2021 `extern "C"` vs edition 2024 `unsafe extern "C"`, `UnsafePolicy::Denied` scoped `#[allow(unsafe_code)]` injection (G3), `UnsafePolicy::Forbidden` skip per S11, async deferral per §12.3 / §16.3, reference return prefix fallback, application preflight check in root and recursive submodules, preflight failure diagnostic on missing `otel_shim::init()`, live end-to-end multi-threaded Tokio runtime proof with `InMemorySpanExporter` verifying dependency spans, parent hierarchy, active-after-completion cleanup S5, and 100% bit-for-bit source byte immutability. |
+| [`otel-shim/src/lib.rs`](file:///c:/Users/branybuck/code/rust%20compile%20time%20instrumentation/otel-shim/src/lib.rs) | 6 | Standalone runtime shim C-ABI invariants: S9 null handle 0 no-op / no state change, S5 out-of-order LIFO popping protection (pop-only-if-top), 3-level deep nesting cleanly emptied, unknown handle 9999 reverse lookup leaving top span status Unset in InMemorySpanExporter, pointer edge cases (null, zero-length, invalid UTF-8) returning 0 without UB or stack poisoning, and cross-thread handle isolation (thread A handle passed to thread B does not mutate thread B's stack). |
 
 ---
 
-## 9. Status & Handoff to Milestone P1.7
+## 9. Status & Handoff to Milestone P1.8
 
-### Milestone P1.6 Status: COMPLETE
-Milestone P1.6 is implemented, verified, and passing all automated test suites with 0 compiler warnings, 0 clippy warnings, and 106/106 tests passing across the workspace.
+### Milestone P1.7 Status: COMPLETE
+Milestone P1.7 is implemented, verified, and passing all automated test suites with 0 compiler warnings, 0 clippy warnings, and 124/124 tests passing across the workspace (118 in `cargo-instrument`, 6 in `otel-shim`).
 
-### What Is Next: P1.7 - Dependency Instrumentation & `extern "C"` Trampolines
-Milestones P1.1–P1.6 successfully instrumented synchronous and asynchronous functions within application crates.
+### Key Deliverables of P1.7:
+1. **Standalone `otel-shim` Runtime Crate**:
+   - Implements standardized C ABI (`__otel_span_enter`, `__otel_span_exit`, `__otel_span_set_error`, and async stubs) on OpenTelemetry SDK 0.32.
+   - S9 null handle 0 checks on all exported entrypoints.
+   - Thread-local 3-tuple `RefCell<Vec<(u64, Context, ContextGuard)>>` stack with LIFO matching for handle-accurate error attribution (C1 / F2).
+   - Global `AtomicU64` handle counter ensuring cross-thread handle uniqueness and isolation.
+   - Explicit `/// # Safety` doc comments on all exported symbols satisfying `clippy::missing_safety_doc` under `-D warnings` (F1).
+   - Calling `otel_shim::init()` satisfies ADR-003 / E-10 to retain the runtime crate during `rustc` link-time pruning.
+   - Excluded from instrumentation in `discovery.rs::role()` so the telemetry runtime never instruments itself.
+2. **`TrampolineEmitter`**:
+   - Minimal block-scoped `extern "C"` declarations per site (2 symbols for non-Result, 3 for Result) (M1).
+   - Edition 2021 (`extern "C"`) vs edition 2024 (`unsafe extern "C"`).
+   - `UnsafePolicy::Denied` scoped `#[allow(unsafe_code)]` injection (G3).
+   - Fully qualified `core::result::Result<_, _>` to avoid collisions with crate-local Result type aliases.
+   - `handles_async() -> false` deferral of async candidates to Phase 2 (§12.3 / §16.3 / FE-13).
+3. **Application Preflight Verification**:
+   - `check_application_preflight(crate_name, root_path)` traverses recursive module graph (`#[path]` aware) to verify an item path reference into `otel_shim` before compiling instrumented dependencies (ADR-003 / E-10 / G2 / C2).
+4. **Source Byte Immutability**:
+   - Dependency sources in out-of-tree and in-tree packages remain bit-for-bit unchanged before and after instrumentation.
 
-Milestone P1.7 will extend instrumentation across third-party Cargo crate boundaries using `extern "C"` ABI trampolines ([ADR-002](../research/17-decision-records.md)):
-1. **Trampoline Insertion**: Inject `__otel_span_enter` and `__otel_span_exit` trampolines into unmodified third-party dependency crates.
-2. **Zero Injected Dependencies**: Dependency crates require no `opentelemetry` Cargo dependency; trampolines resolve as untyped C symbols linked at the application crate level.
-3. **Link-Time Resolution**: Application runtime crate provides symbol definitions resolved at final application link time.
+### What Is Next: P1.8 - End-to-End Validation
+Milestones P1.1–P1.7 have implemented the complete compile-time instrumentation pipeline for both application crates (Tier 1 native OTel) and out-of-workspace dependencies (Tier 2 C ABI trampolines).
+
+Milestone P1.8 will perform end-to-end operational validation:
+1. **Collector Export Validation**: Verify OTLP export from an instrumented application against a live OpenTelemetry Collector instance.
+2. **Overhead & Performance Benchmarks**: Measure compile-time overhead and runtime span generation latency.
+3. **Multi-Crate Application Validation**: Validate end-to-end builds across realistic multi-tier workspaces.
+4. **Registry Crate Widening Decision & Validation**:
+   > **Standing Note**: P1.7 proved the C-ABI trampoline mechanism, zero-code source mirroring, and link resolution on external dependencies (`LocalPathDependency` and `WorkspaceMemberDependency`). However, the headline differentiator (§9.6: instrumenting real crates.io dependencies like `hyper`/`sqlx`/`tonic` untouched) is not yet exercised on arbitrary `.cargo/registry` graphs due to the Phase 1 staging boundary (deferring unlinked host build-script tools and macro-heavy graphs per §12.1 and §12.3). In P1.8, we will decide whether targeted/selective widening past `.cargo/registry` belongs in P1.8's end-to-end validation suite or is scheduled for Phase 2's production dependency scheduler, ensuring clear ownership of proving the headline differentiator on real registry graphs.
