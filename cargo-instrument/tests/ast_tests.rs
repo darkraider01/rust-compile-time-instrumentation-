@@ -807,9 +807,7 @@ mod tests {
 
 #[test]
 fn test_census_exact_reconciliation() {
-    let census_code = include_str!(
-        r"C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\census-0.4.2\src\lib.rs"
-    );
+    let census_code = include_str!("fixtures/census_lib.rs");
     let report = analyze_source_str("census", Path::new("src/lib.rs"), census_code).unwrap();
     let syn_file = syn::parse_file(census_code).unwrap();
     let total_fns = cargo_instrument::ast::count_total_functions(&syn_file);
