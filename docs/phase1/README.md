@@ -578,6 +578,11 @@ Milestone P1.8 validates the complete compile-time instrumentation pipeline on r
 8. **Byte Reproducibility of Mirrors (A18)**:
    - Two consecutive transformation passes produce 100% byte-identical files with identical SHA-256 hashes.
 
+9. **Unseen Crates.io Dependency Validation (Empirical Proof)**:
+   - Evaluated against a genuinely unseen crates.io dependency ([`cesu8 = "=1.1.0"`](https://crates.io/crates/cesu8/1.1.0)) with 0 prior occurrences in codebase or tests.
+   - **Result:** **PASS** (15 eligible + 3 skipped = 18 functions, exact 100% reconciliation identity match; 16 dynamic spans captured under root `app_workflow` trace; `Err` correctly tagged with `status=Error`; 100% bit-for-bit Cargo registry cache immutability; 0 leaked handles).
+   - **Full Report & Evidence:** Detailed in [**docs/phase1/p1.8/validation-report.md**](p1.8/validation-report.md) and [**docs/phase1/p1.8/README.md**](p1.8/README.md).
+
 ---
 
 ## 8. Verification Matrix

@@ -1,0 +1,69 @@
+===============================================================================
+P1.8 SOURCE FIDELITY & REGISTRY INTEGRITY EVIDENCE
+Target: cesu8 v1.1.0
+Registry Cache Directory: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0
+===============================================================================
+
+[Pre-Run Hashes vs Post-Run Hashes]
+Algorithm: SHA-256
+
+File: .cargo-ok
+  Length: 7 bytes
+  Pre-Run:  AFBF9D0F3560B0FD7795E81C42A0A79EE6B6FC67E064F77826AEE642CAD28D91
+  Post-Run: AFBF9D0F3560B0FD7795E81C42A0A79EE6B6FC67E064F77826AEE642CAD28D91
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+File: .gitignore
+  Length: 20 bytes
+  Pre-Run:  C1E953EE360E77DE57F7B02F1B7880BD6A3DC22D1A69E953C2AC2C52CC52D247
+  Post-Run: C1E953EE360E77DE57F7B02F1B7880BD6A3DC22D1A69E953C2AC2C52CC52D247
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+File: .travis.yml
+  Length: 528 bytes
+  Pre-Run:  54B629F18A31FC4DFA0BAEC0177ACC8627E5420A5E0C223AF39D2A57DDAFD7FB
+  Post-Run: 54B629F18A31FC4DFA0BAEC0177ACC8627E5420A5E0C223AF39D2A57DDAFD7FB
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+File: Cargo.toml
+  Length: 505 bytes
+  Pre-Run:  78E66DD24C12E0AC858E7524CDD7D51D1EEE753C1E9C32E5B915DC9F1D767870
+  Post-Run: 78E66DD24C12E0AC858E7524CDD7D51D1EEE753C1E9C32E5B915DC9F1D767870
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+File: COPYRIGHT-RUST.txt
+  Length: 17426 bytes
+  Pre-Run:  5CA77347E58205D3B543C04A9C5BDD11D20A9F3108A7B246640EDFFA999B5F35
+  Post-Run: 5CA77347E58205D3B543C04A9C5BDD11D20A9F3108A7B246640EDFFA999B5F35
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+File: README.md
+  Length: 1475 bytes
+  Pre-Run:  4FCC5D9B5DB444AD3C33C79AEBE18DE4FA6351982646DA0B78830FBAD67F9E8F
+  Post-Run: 4FCC5D9B5DB444AD3C33C79AEBE18DE4FA6351982646DA0B78830FBAD67F9E8F
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+File: src\lib.rs
+  Length: 16846 bytes
+  Pre-Run:  402F647C80CCAA86F43A5571CC081AA66777D2A538CE9D9DC52A7E588EF137C9
+  Post-Run: 402F647C80CCAA86F43A5571CC081AA66777D2A538CE9D9DC52A7E588EF137C9
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+File: src\unicode.rs
+  Length: 1381 bytes
+  Pre-Run:  66CC902B4DD323CEF600890B6CD99186592919B03E55E3535ADF0C5B95A8CE45
+  Post-Run: 66CC902B4DD323CEF600890B6CD99186592919B03E55E3535ADF0C5B95A8CE45
+  Status: MATCH (BIT-FOR-BIT IDENTICAL)
+
+[Staging Mirror Location]
+Isolated Staging Path:
+C:\Users\branybuck\code\rust compile time instrumentation\target\instrumented\debug\deps\instrumented_sources\cesu8
+
+Mirrored Files:
+- src\lib.rs: 31,641 bytes (Transformed with 15 candidate C-ABI trampolines)
+- src\unicode.rs: 1,381 bytes (Original content mirrored intact)
+
+[Integrity Verdict]
+PASS: 8 of 8 files in Cargo registry source cache remain completely untouched.
+Zero files in ~/.cargo/registry/src were modified, created, or deleted.
+All transformations were staged strictly inside target/instrumented/.

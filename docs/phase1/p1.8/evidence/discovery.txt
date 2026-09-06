@@ -1,0 +1,49 @@
+===============================================================================
+P1.8 UNSEEN CRATE CANDIDATE DISCOVERY EVIDENCE
+Target: cesu8 v1.1.0
+File: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs
+===============================================================================
+
+[Command]
+cargo-instrument analyze C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs
+
+[Raw Output]
+crate: lib
+source: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 1, adapter_trait: 0, drop_implementation: 0, cfg_test: 2, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - <Cesu8DecodingError as Error>::description: bytes 4160..4210 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - <Cesu8DecodingError as Error>::cause: bytes 4215..4257 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - <Cesu8DecodingError as fmt::Display>::fmt: bytes 4308..4428 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - from_cesu8: bytes 4807..5635 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - from_java_cesu8: bytes 5637..6719 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - from_cesu8_internal: bytes 6721..7517 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - decode_from_iter: bytes 8605..11381 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - dec_surrogate: bytes 11383..11606 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - dec_surrogates: bytes 11608..12576 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - to_cesu8: bytes 12578..13291 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - to_java_cesu8: bytes 13293..14229 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - to_cesu8_internal: bytes 14231..15649 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - is_valid_cesu8: bytes 15651..15994 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - is_valid_java_cesu8: bytes 15996..16170 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+  - enc_surrogate: bytes 16462..16845 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0\src\lib.rs)
+
+[Reconciliation Identity]
+Total Functions in Source: 18
+Eligible Candidates:       15
+Skipped Stats:
+  - inline_attribute:       1  (enc_surrogates)
+  - adapter_trait:          0
+  - drop_implementation:    0
+  - cfg_test:               2  (test_from_cesu8, test_to_cesu8)
+  - const_fn:               0
+  - extern_abi:             0
+  - self_recursive:         0
+  - handwritten_otel:       0
+  - nested_function:        0
+Total Skipped:              3
+Sum (Eligible + Skipped):  18 (Exact 100% Reconciliation Identity Match)
