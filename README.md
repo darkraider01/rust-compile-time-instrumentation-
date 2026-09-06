@@ -115,20 +115,82 @@ Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. The full compile-time instrume
 - **[docs/research/](docs/research/)** - the full Phase 0 investigation: landscape survey, architecture candidates, the [instrumentation semantics specification](docs/research/16-instrumentation-semantics.md) (the correctness oracle Phase 1's tests are written against), the [architecture decision records](docs/research/17-decision-records.md), and four rounds of verification (hands-on experiments, an adversarial review, a maintainer Q&A round, and a validated experiment matrix). Start at [docs/research/README.md](docs/research/README.md).
 - Later phases receive their own sibling documentation folders under `docs/` as milestones land. `docs/research/` remains specifically the archived Phase 0 record and stays frozen.
 
-## The tool
+## CLI Usage & Prototype Demonstration
 
-`cargo-instrument/` - the Cargo subcommand and `RUSTC_WRAPPER` implementation.
+`cargo-instrument` operates in two primary modes:
+1. **Interactive CLI**: Standalone AST inspection (`analyze`) and surgical transformation preview (`transform`).
+2. **Transparent Compiler Driver**: Invoking Cargo with `cargo run --bin cargo-instrument -- -- <cargo args...>` wraps `rustc` via `RUSTC_WRAPPER` and automatically routes build artifacts to an isolated directory (`target/instrumented`, per [ADR-004](docs/research/17-decision-records.md)).
 
-```bash
-cargo build --workspace
-cargo test --workspace                                            # 140 tests pass offline, 3 registry tests ignored
-CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace -- --ignored   # runs live registry e2e validation suite
-cargo bench --bench bench_overhead                                # compile-time and runtime overhead benchmarks
-cargo run --bin cargo-instrument -- analyze path/to/file.rs       # standalone AST/byte-span analysis
-cargo run --bin cargo-instrument -- -- build                      # wrapped build, isolated target/instrumented (ADR-004)
+### 1. Live End-to-End Application Telemetry (The Hero Flow)
+
+Compiles and executes a sample application ([`examples/demo_app`](examples/demo_app/src/main.rs)) that calls into third-party dependency `census = "=0.4.2"`, automatically exporting 26 OpenTelemetry spans with cross-crate trace parenting and zero handle leaks:
+
+**PowerShell (Windows):**
+```powershell
+$env:CARGO_INSTRUMENT_REGISTRY="1"; cargo run --bin cargo-instrument -- -- run --manifest-path examples/demo_app/Cargo.toml
 ```
 
-CI runs `fmt`/`clippy`/`test`/`build` across Linux, Windows, and macOS ([`ci.yml`](.github/workflows/ci.yml)), plus a dedicated real-subprocess integration workflow ([`integration.yml`](.github/workflows/integration.yml)) and end-to-end registry workflow ([`e2e.yml`](.github/workflows/e2e.yml)) that documents exactly which claims about the wrapper/Cargo integration are proven by the current test suite.
+**Bash (Linux / macOS):**
+```bash
+CARGO_INSTRUMENT_REGISTRY=1 cargo run --bin cargo-instrument -- -- run --manifest-path examples/demo_app/Cargo.toml
+```
+
+### 2. AST Candidate Analysis (`analyze`)
+
+Parses Rust source code, identifies eligible function items, categorizes exclusions (adapter traits, Drop impls, tests, recursion), and reports universal reconciliation statistics:
+
+```bash
+# Analyze the checked-in census crate fixture (portable, offline)
+cargo run --bin cargo-instrument -- analyze cargo-instrument/tests/fixtures/census_lib.rs
+```
+
+To analyze a cached crates.io dependency directly:
+- **PowerShell (Windows):**
+  ```powershell
+  cargo run --bin cargo-instrument -- analyze (Resolve-Path "$env:USERPROFILE\.cargo\registry\src\index.crates.io-*\census-0.4.2\src\lib.rs").Path
+  ```
+- **Bash (Linux / macOS):**
+  ```bash
+  cargo run --bin cargo-instrument -- analyze ~/.cargo/registry/src/index.crates.io-*/census-0.4.2/src/lib.rs
+  ```
+
+### 3. Surgical Source Splicer Preview (`transform`)
+
+Displays the transformed source code with non-destructive, byte-level insertions of RAII OpenTelemetry trampoline guards (`__OtelGuard`):
+
+```bash
+cargo run --bin cargo-instrument -- transform cargo-instrument/tests/fixtures/census_lib.rs
+```
+
+### 4. Wrapped Cargo Builds (`-- <cargo args>`)
+
+Invokes Cargo while automatically configuring `RUSTC_WRAPPER` and ensuring `target/instrumented` isolation:
+
+```bash
+cargo run --bin cargo-instrument -- -- build
+cargo run --bin cargo-instrument -- -- check
+```
+
+### 5. Automated Test Suites & Overhead Benchmarks
+
+Validate the complete 143-test suite across unit, integration, and registry fixtures, or run empirical benchmarks:
+
+```bash
+# Run offline test suite (140 tests pass; 3 registry tests safely gated)
+cargo test --workspace
+
+# Run live crates.io registry E2E validation suite
+# PowerShell:
+$env:CARGO_INSTRUMENT_REGISTRY="1"; cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
+# Bash:
+CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
+
+# Run compile-time, runtime nanosecond latency, and binary size benchmarks (A17)
+cargo bench --bench bench_overhead
+```
+
+CI runs `fmt`/`clippy`/`test`/`build` across Linux, Windows, and macOS ([`ci.yml`](.github/workflows/ci.yml)), plus a dedicated real-subprocess integration workflow ([`integration.yml`](.github/workflows/integration.yml)) and end-to-end registry workflow ([`e2e.yml`](.github/workflows/e2e.yml)).
+
 
 ## License
 
