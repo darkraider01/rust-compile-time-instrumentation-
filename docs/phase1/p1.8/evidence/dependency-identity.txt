@@ -39,3 +39,20 @@ Crates.io URL: https://crates.io/crates/async-trait
 Registry Cache Path: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-trait-0.1.89
 Total Discovered Functions in lib.rs: 55
 Role in Experiment: Macro helper crate used in A9 universal reconciliation table.
+
+[4. Second Unseen Target Dependency: urlencoding]
+Crate Name: urlencoding
+Exact Version: 2.1.3
+Crates.io URL: https://crates.io/crates/urlencoding/2.1.3
+Registry Cache Path: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3
+Package Manifest (Cargo.toml):
+  [package]
+  name = "urlencoding"
+  version = "2.1.3"
+  authors = ["Kornel Lesi\u0144ski <kornel@geekhood.net>"]
+  description = "A library for doing URL percentage encoding and decoding."
+  license = "MIT"
+Files in Distribution: 11 files (.cargo-ok, Cargo.toml, src/lib.rs, src/enc.rs, src/dec.rs, etc.)
+Total Discovered Functions across AST: 26
+Role in Experiment: Second independent unseen real-world target validating multi-file crates, fallible Result error handling, and intra-crate multi-level span parenting.
+

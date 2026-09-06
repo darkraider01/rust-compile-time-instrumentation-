@@ -700,7 +700,7 @@ Phase 1 has fulfilled all specifications and milestones established in Phase 0:
 - **P1.5 Native OpenTelemetry Code Generation:** Native Tier 1 synchronous spans with full context propagation.
 - **P1.6 Asynchronous Instrumentation:** Native Tier 1 async spans with Tokio runtime context pinning and 16-point matrix validation.
 - **P1.7 Dependency Trampolines & `otel-shim`:** Standalone Tier 2 C-ABI runtime shim with LIFO thread-local context management and zero-dependency trampoline emission.
-- **P1.8 End-to-End Validation:** Real crates.io dependency (`census = "=0.4.2"`) instrumented live with cross-crate telemetry, bit-for-bit registry immutability, exact universal AST reconciliation ($16+16=32$ on `census`, $34+21=55$ on `async-trait`), Cargo correctness across 5 passes, and measured overhead benchmarks.
+- **P1.8 End-to-End Validation:** Real crates.io dependencies (`census = "=0.4.2"`, unseen `cesu8 = "=1.1.0"`, and second unseen `urlencoding = "=2.1.3"`) instrumented live with cross-crate telemetry, nested caller parenting, fallible Result error detection, bit-for-bit registry immutability, exact universal AST reconciliation ($16+16=32$ on `census`, $15+3=18$ on `cesu8`, $5+21=26$ on `urlencoding`, $34+21=55$ on `async-trait`), Cargo correctness across 5 passes, and measured overhead benchmarks.
 
 ### Verified Empirical Findings:
 1. **Source Immutability (S1/S2/A11):** Bit-for-bit SHA-256 tree equivalence on `~/.cargo/registry/src/index.crates.io-*/census-0.4.2`.

@@ -1,0 +1,44 @@
+===============================================================================
+P1.8 CANDIDATE DISCOVERY & RECONCILIATION EVIDENCE
+Target: urlencoding v2.1.3
+File: src/lib.rs (modules: src/enc.rs, src/dec.rs)
+Environment: Windows 11 x64 (10.0.26200.0), rustc 1.97.1
+===============================================================================
+
+[Command]
+target\debug\cargo-instrument.exe analyze "$((Resolve-Path $env:USERPROFILE\.cargo\registry\src\index.crates.io-*\urlencoding-2.1.3\src\lib.rs).Path)"
+
+[Raw Output]
+crate: lib
+source: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3\src\lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 12, adapter_trait: 0, drop_implementation: 0, cfg_test: 9, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - <Encoded<String> as fmt::Display>::fmt: bytes 1765..1906 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3\src\enc.rs)
+  - append_string: bytes 2691..2899 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3\src\enc.rs)
+  - encode_into: bytes 2901..4116 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3\src\enc.rs)
+  - decode: bytes 306..745 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3\src\dec.rs)
+  - decode_binary: bytes 747..2712 (C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\urlencoding-2.1.3\src\dec.rs)
+
+[Reconciliation Analysis]
+- Eligible Candidates: 5
+  * enc.rs: <Encoded<String> as fmt::Display>::fmt (bytes 1765..1906)
+  * enc.rs: append_string (bytes 2691..2899)
+  * enc.rs: encode_into (bytes 2901..4116)
+  * dec.rs: decode (bytes 306..745)
+  * dec.rs: decode_binary (bytes 747..2712)
+- Skipped Functions: 21
+  * inline_attribute: 12 (functions with #[inline] attribute excluded per spec §12.3)
+  * cfg_test: 9 (unit test functions inside #[cfg(test)] modules excluded)
+  * adapter_trait: 0
+  * drop_implementation: 0
+  * const_fn: 0
+  * extern_abi: 0
+  * self_recursive: 0
+  * handwritten_otel: 0
+  * nested_function: 0
+- Total Functions in AST: 5 + 21 = 26
+- Universal Reconciliation Identity: 5 eligible + 21 skipped = 26 total (100% exact match).

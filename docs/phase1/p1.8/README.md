@@ -17,25 +17,31 @@ Validate whether the `cargo-instrument` compile-time OpenTelemetry instrumentati
    - Status as Unseen: 0 prior occurrences in repository codebase, fixtures, or tests.
    - Validated: Fallible `Result<Cow<str>, Cesu8DecodingError>` error status detection (`Err` -> `Status::Error{""}`, completing A7), 16 spans across 5 call depths, multi-module staging mirror preservation, and zero production code modifications.
 
-3. **`async-trait = "0.1.89"`** (Macro Helper):
+3. **`urlencoding = "=2.1.3"`** (Second Unseen Real-World Target):
+   - Domain: RFC 3986 URL percent-encoding and decoding with fallible UTF-8 validation.
+   - Structure: Multi-file library (`src/lib.rs`, `src/enc.rs`, `src/dec.rs`, 11 distribution files).
+   - Status as Unseen: 0 prior occurrences in repository codebase, fixtures, or tests.
+   - Validated: Fallible `Result<Cow<str>, FromUtf8Error>` error status detection (`%FF%FF%FF` -> `Status::Error{""}`, reinforcing A7), 8 finished spans, 2-level intra-crate call parenting (`app` -> `append_string` -> `encode_into`), universal candidate reconciliation identity $5 + 21 = 26$ (A9), 100% bit-for-bit registry immutability (A11), and active span count 0 (A8).
+
+4. **`async-trait = "0.1.89"`** (Macro Helper):
    - Validated: AST analysis and universal candidate reconciliation identity $34 + 21 = 55$ (A9).
 
 ## Acceptance Criteria Summary (A1–A18)
 
 | Gate | Category | Description | Status | Evidence File |
 | :--- | :--- | :--- | :---: | :--- |
-| **A1** | Discovery | Registry crates classified correctly (`RegistryDependency`) | **PASS** | `discovery.txt`, `census-reconciliation.txt` |
-| **A2** | Discovery | `#![no_std]`, `forbid(unsafe_code)` skipped with logged reason | **PASS** | `discovery.txt`, `census-runtime-spans.txt` |
-| **A3** | Transformation | Registry crate mirrors preserved with module tree intact | **PASS** | `instrumentation.txt`, `source-fidelity.txt` |
-| **A4** | Linking | App + instrumented registry dep links and runs without linker error | **PASS** | `census-runtime-spans.txt`, `build.txt` |
-| **A5** | Telemetry | Spans from crates.io dependencies emitted with `SpanKind::Internal` | **PASS** | `census-runtime-spans.txt`, `runtime-spans.txt` |
-| **A6** | Telemetry | Cross-crate parenting: dep span `parent_span_id` == app caller `span_id` | **PASS** | `census-runtime-spans.txt`, `runtime-spans.txt` |
-| **A7** | Telemetry | Status handling: `Ok` -> `Status::Unset`, `Err` -> `Status::Error{""}` | **PASS** | `census-runtime-spans.txt` (`Ok`), `runtime-spans.txt` (`Err`) |
-| **A8** | Lifecycle | `otel_shim::active_span_count() == 0` after scenario completion | **PASS** | `census-runtime-spans.txt`, `runtime-spans.txt` |
-| **A9** | Coverage | Universal reconciliation: $\text{candidates} + \sum \text{skipped} = \text{total\_fns}$ | **PASS** | `census-reconciliation.txt`, `discovery.txt` |
+| **A1** | Discovery | Registry crates classified correctly (`RegistryDependency`) | **PASS** | `discovery.txt`, `census-reconciliation.txt`, `urlencoding-discovery.txt` |
+| **A2** | Discovery | `#![no_std]`, `forbid(unsafe_code)` skipped with logged reason | **PASS** | `discovery.txt`, `census-runtime-spans.txt`, `urlencoding-discovery.txt` |
+| **A3** | Transformation | Registry crate mirrors preserved with module tree intact | **PASS** | `instrumentation.txt`, `source-fidelity.txt`, `urlencoding-instrumentation.txt` |
+| **A4** | Linking | App + instrumented registry dep links and runs without linker error | **PASS** | `census-runtime-spans.txt`, `build.txt`, `urlencoding-build.txt` |
+| **A5** | Telemetry | Spans from crates.io dependencies emitted with `SpanKind::Internal` | **PASS** | `census-runtime-spans.txt`, `runtime-spans.txt`, `urlencoding-runtime-spans.txt` |
+| **A6** | Telemetry | Cross-crate parenting: dep span `parent_span_id` == app caller `span_id` | **PASS** | `census-runtime-spans.txt`, `runtime-spans.txt`, `urlencoding-runtime-spans.txt` |
+| **A7** | Telemetry | Status handling: `Ok` -> `Status::Unset`, `Err` -> `Status::Error{""}` | **PASS** | `census-runtime-spans.txt` (`Ok`), `runtime-spans.txt` (`Err`), `urlencoding-runtime-spans.txt` (`Err`) |
+| **A8** | Lifecycle | `otel_shim::active_span_count() == 0` after scenario completion | **PASS** | `census-runtime-spans.txt`, `runtime-spans.txt`, `urlencoding-runtime-spans.txt` |
+| **A9** | Coverage | Universal reconciliation: $\text{candidates} + \sum \text{skipped} = \text{total\_fns}$ | **PASS** | `census-reconciliation.txt`, `discovery.txt`, `urlencoding-discovery.txt` |
 | **A10** | Compatibility | Heavy crates (`tokio`, etc.) build uninstrumented via fail-open | **PASS** | `discovery.txt`, `trampoline_tests.rs` |
-| **A11** | Source Fidelity | Original registry sources 100% bit-for-bit unchanged (SHA-256 tree match) | **PASS** | `census-source-fidelity.txt`, `source-fidelity.txt` |
-| **A12** | Isolation | Zero `.rs` files modified or created outside `target/instrumented/**` | **PASS** | `census-source-fidelity.txt`, `source-fidelity.txt` |
+| **A11** | Source Fidelity | Original registry sources 100% bit-for-bit unchanged (SHA-256 tree match) | **PASS** | `census-source-fidelity.txt`, `source-fidelity.txt`, `urlencoding-source-fidelity.txt` |
+| **A12** | Isolation | Zero `.rs` files modified or created outside `target/instrumented/**` | **PASS** | `census-source-fidelity.txt`, `source-fidelity.txt`, `urlencoding-source-fidelity.txt` |
 | **A13** | Correctness | Cargo 5-pass correctness: clean, repeat, incremental app, incremental dep | **PASS** | `benchmark.txt`, `cargo_integration_tests.rs` |
 | **A14** | Correctness | `Cargo.toml` and `Cargo.lock` unchanged | **PASS** | `source-fidelity.txt`, `cargo_integration_tests.rs` |
 | **A15** | Safety | Malformed/truncated source fails open cleanly without panic | **PASS** | `trampoline_tests.rs` (`test_malformed_syntax_fail_open_s11`) |
@@ -48,7 +54,7 @@ Validate whether the `cargo-instrument` compile-time OpenTelemetry instrumentati
 All raw execution outputs, cryptographic hashes, and telemetry logs are preserved in [`evidence/`](evidence/):
 
 - [`environment.txt`](evidence/environment.txt): Exact compiler (`rustc 1.97.1`), Cargo (`cargo 1.97.1`), OS, and CPU architecture.
-- [`dependency-identity.txt`](evidence/dependency-identity.txt): Pinned crate versions, registry paths, and metadata for `census-0.4.2`, `cesu8-1.1.0`, and `async-trait-0.1.89`.
+- [`dependency-identity.txt`](evidence/dependency-identity.txt): Pinned crate versions, registry paths, and metadata for `census-0.4.2`, `cesu8-1.1.0`, `urlencoding-2.1.3`, and `async-trait-0.1.89`.
 - [`census-runtime-spans.txt`](evidence/census-runtime-spans.txt): 26 runtime spans captured across crate boundary from `census = "=0.4.2"`.
 - [`census-reconciliation.txt`](evidence/census-reconciliation.txt): Exact AST reconciliation output ($16+16=32$ on `census`, $34+21=55$ on `async-trait`).
 - [`census-source-fidelity.txt`](evidence/census-source-fidelity.txt): Cryptographic SHA-256 tree of all 14 files in `census-0.4.2` before and after build.
@@ -58,6 +64,12 @@ All raw execution outputs, cryptographic hashes, and telemetry logs are preserve
 - [`build.txt`](evidence/build.txt): Cargo build and Clippy validation (`-D warnings` with 0 warnings) for `cesu8`.
 - [`runtime-spans.txt`](evidence/runtime-spans.txt): 17 spans, trace propagation, 5-level call tree, and `Status::Error{""}` detection for `cesu8`.
 - [`source-fidelity.txt`](evidence/source-fidelity.txt): Cryptographic SHA-256 tree of all 8 files in `cesu8-1.1.0` before and after build.
+- [`urlencoding-baseline.txt`](evidence/urlencoding-baseline.txt): Uninstrumented execution output for `urlencoding-2.1.3` proving 0 dependency spans by default.
+- [`urlencoding-discovery.txt`](evidence/urlencoding-discovery.txt): Raw AST candidate discovery and reconciliation ($5+21=26$) on `urlencoding-2.1.3`.
+- [`urlencoding-instrumentation.txt`](evidence/urlencoding-instrumentation.txt): Interception logs and mirror staging for multi-module `urlencoding-2.1.3`.
+- [`urlencoding-build.txt`](evidence/urlencoding-build.txt): Cargo build output for instrumented `urlencoding-2.1.3` app.
+- [`urlencoding-runtime-spans.txt`](evidence/urlencoding-runtime-spans.txt): 8 spans, context propagation, intra-crate parenting, and `Status::Error{""}` for `urlencoding-2.1.3`.
+- [`urlencoding-source-fidelity.txt`](evidence/urlencoding-source-fidelity.txt): Cryptographic SHA-256 tree of all 11 files in `urlencoding-2.1.3` proving 0 bytes modified.
 - [`benchmark.txt`](evidence/benchmark.txt): Empirical compile-time ($N=5$), runtime ($M=100,000$), and binary size overhead measurements.
 
 For the dedicated 12-section validation report on unseen crate `cesu8`, see [**validation-report.md**](validation-report.md).
