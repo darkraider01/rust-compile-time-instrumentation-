@@ -1,0 +1,41 @@
+===============================================================================
+P1.8 DEPENDENCY IDENTITY & REGISTRY RESOLUTION EVIDENCE
+===============================================================================
+
+[1. Primary Baseline Dependency: census]
+Crate Name: census
+Exact Version: 0.4.2
+Crates.io URL: https://crates.io/crates/census/0.4.2
+Registry Cache Path: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\census-0.4.2
+Package Manifest (Cargo.toml):
+  [package]
+  name = "census"
+  version = "0.4.2"
+  authors = ["Paul Masurel <paul.masurel@gmail.com>"]
+  description = "A library to track living instances of a type."
+  license = "MIT/Apache-2.0"
+Files in Distribution: 14 files (.cargo-ok, Cargo.toml, src/lib.rs, etc.)
+Total Discovered Functions in lib.rs: 32
+
+[2. Unseen Target Dependency: cesu8]
+Crate Name: cesu8
+Exact Version: 1.1.0
+Crates.io URL: https://crates.io/crates/cesu8/1.1.0
+Registry Cache Path: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cesu8-1.1.0
+Package Manifest (Cargo.toml):
+  [package]
+  name = "cesu8"
+  version = "1.1.0"
+  authors = ["Enno Boland <mail@eboland.de>"]
+  description = "A library for converting CESU-8 data to and from valid UTF-8."
+  license = "Apache-2.0/MIT"
+Files in Distribution: 8 files (.cargo-ok, Cargo.toml, src/lib.rs, src/unicode.rs, etc.)
+Total Discovered Functions in lib.rs: 18
+
+[3. Comparison Target Dependency: async-trait]
+Crate Name: async-trait
+Exact Version: 0.1.89
+Crates.io URL: https://crates.io/crates/async-trait
+Registry Cache Path: C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\async-trait-0.1.89
+Total Discovered Functions in lib.rs: 55
+Role in Experiment: Macro helper crate used in A9 universal reconciliation table.

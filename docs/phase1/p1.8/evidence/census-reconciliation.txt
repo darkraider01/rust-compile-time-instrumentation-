@@ -1,0 +1,50 @@
+===============================================================================
+P1.8 CENSUS & ASYNC-TRAIT RECONCILIATION EVIDENCE (A9)
+Environment: CARGO_INSTRUMENT_REGISTRY=1
+===============================================================================
+
+[Command]
+$env:CARGO_INSTRUMENT_REGISTRY="1"; cargo test --workspace --test e2e_registry_tests test_dependency_coverage_and_reconciliation_table -- --ignored --nocapture
+
+[Execution Output]
+running 1 test
+
+=== A9 DEPENDENCY ELIGIBILITY & RECONCILIATION TABLE ===
+Crate                | Total    | Eligible | Inline   | Adapter  | Drop     | CfgTest  | Const    | Extern   | SelfRec  | Otel     | Nested  
+------------------------------------------------------------------------------------------------------------------------------------------------------
+census-0.4.2         | 32       | 16       | 0        | 3        | 1        | 9        | 0        | 0        | 3        | 0        | 0       
+async-trait          | 55       | 34       | 0        | 0        | 0        | 0        | 0        | 0        | 18       | 0        | 3       
+test test_dependency_coverage_and_reconciliation_table ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.08s
+
+===============================================================================
+MATHEMATICAL VERIFICATION OF UNIVERSAL IDENTITY
+===============================================================================
+Formula: Candidates + Sum(Skipped Counters) == Total Functions
+
+1. census-0.4.2:
+   Candidates (Eligible):   16
+   Skipped Counters:
+     - inline_attribute:    0
+     - adapter_trait:       3
+     - drop_implementation: 1
+     - cfg_test:            9
+     - const_fn:            0
+     - extern_abi:          0
+     - self_recursive:      3
+     - handwritten_otel:    0
+     - nested_function:     0
+   Sum(Skipped):            16 (3 + 1 + 9 + 3)
+   Total:                   16 + 16 = 32
+   Total Functions in file: 32 (100% exact match)
+
+2. async-trait-0.1:
+   Candidates (Eligible):   34
+   Skipped Counters:
+     - self_recursive:     18
+     - nested_function:     3
+     - others:              0
+   Sum(Skipped):            21 (18 + 3)
+   Total:                   34 + 21 = 55
+   Total Functions in file: 55 (100% exact match)

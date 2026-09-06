@@ -1,0 +1,80 @@
+===============================================================================
+P1.8 CENSUS RUNTIME SPANS EVIDENCE (A4, A5, A6, A8)
+Target: census v0.4.2 (crates.io dependency)
+Application: examples/demo_app
+Environment: CARGO_INSTRUMENT_REGISTRY=1
+===============================================================================
+
+[Command]
+$env:CARGO_INSTRUMENT_REGISTRY="1"; cargo run --bin cargo-instrument -- -- run --manifest-path examples/demo_app/Cargo.toml
+
+[Interception & Build Output]
+[cargo-instrument PID=7240 crate=demo_app]
+crate: demo_app
+source: C:\Users\branybuck\code\rust compile time instrumentation\examples\demo_app\src\main.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 1, nested_function: 0 }
+
+candidates:
+  - process_inventory_batch: bytes 3530..3844 (C:\Users\branybuck\code\rust compile time instrumentation\examples\demo_app\src\main.rs)
+
+[cargo-instrument PID=7240 crate=demo_app] transformed 1 candidates into mirror C:\Users\branybuck\code\rust compile time instrumentation\target/instrumented\debug\deps\instrumented_sources\demo_app
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running `target/instrumented\debug\demo_app.exe`
+
+[Raw Application Output]
+============================================================
+  Compile-Time Instrumentation Demo (cargo-instrument)     
+============================================================
+
+[1/4] Initializing otel-shim and OpenTelemetry TracerProvider...
+[2/4] Executing workload calling dependency crate 'census'...
+   -> Census inventory tracked items: 2
+[3/4] Checking active span handles in otel-shim TLS stack: 0
+
+[4/4] Captured 26 OpenTelemetry Spans across crate boundary:
+
+├── [census]   <Items<T> as Default>::default | ID: a37b8ed4669ed119 | Parent: 07ed5654805843bc | Kind: Internal | Status: Unset
+    └── [census]   Inventory<T>::new         | ID: 07ed5654805843bc | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::should_gc       | ID: 4affc34338ffc904 | Parent: 9a51bd7c85bbcdc8 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::gc_if_needed    | ID: 9a51bd7c85bbcdc8 | Parent: a8ab3b01a5053017 | Kind: Internal | Status: Unset
+├── [census]   Inventory<T>::lock_items  | ID: a8ab3b01a5053017 | Parent: 0841ae7e99172180 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::record_birth    | ID: 92e3670c7af93ae5 | Parent: 0841ae7e99172180 | Kind: Internal | Status: Unset
+    └── [census]   Inventory<T>::track       | ID: 0841ae7e99172180 | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::should_gc       | ID: d16fb083f2c7eeaf | Parent: 0932193f2b00b10b | Kind: Internal | Status: Unset
+├── [census]   Items<T>::gc_if_needed    | ID: 0932193f2b00b10b | Parent: 47558dec63707838 | Kind: Internal | Status: Unset
+├── [census]   Inventory<T>::lock_items  | ID: 47558dec63707838 | Parent: 36315c7155e9b16d | Kind: Internal | Status: Unset
+├── [census]   Items<T>::record_birth    | ID: a5b1145a8d42cdec | Parent: 36315c7155e9b16d | Kind: Internal | Status: Unset
+    └── [census]   Inventory<T>::track       | ID: 36315c7155e9b16d | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::should_gc       | ID: 9e3c7ebc58ce20fd | Parent: 096c9328f6e3c444 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::gc_if_needed    | ID: 096c9328f6e3c444 | Parent: 22a2d87e2a69146d | Kind: Internal | Status: Unset
+├── [census]   Inventory<T>::lock_items  | ID: 22a2d87e2a69146d | Parent: daebf99cc6327b92 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::list_arc        | ID: fd0ad4dbe9191135 | Parent: daebf99cc6327b92 | Kind: Internal | Status: Unset
+    └── [census]   Inventory<T>::list        | ID: daebf99cc6327b92 | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::should_gc       | ID: 2e3b2ac6cf41485f | Parent: ec1ebfab0f39d326 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::gc_if_needed    | ID: ec1ebfab0f39d326 | Parent: f9b87c3c606e5709 | Kind: Internal | Status: Unset
+    └── [census]   Inventory<T>::lock_items  | ID: f9b87c3c606e5709 | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+    └── [census]   Items<T>::record_death    | ID: f59dde5059fe7a87 | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::should_gc       | ID: d046e9a1b4819f4a | Parent: 8b77534c67683787 | Kind: Internal | Status: Unset
+├── [census]   Items<T>::gc_if_needed    | ID: 8b77534c67683787 | Parent: 78eeb3542e4a8675 | Kind: Internal | Status: Unset
+    └── [census]   Inventory<T>::lock_items  | ID: 78eeb3542e4a8675 | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+    └── [census]   Items<T>::record_death    | ID: 5777e0ffb18650bc | Parent: 354e9b88615156f5 | Kind: Internal | Status: Unset
+├── [demo_app] process_inventory_batch   | ID: 354e9b88615156f5 | Parent: 0000000000000000 | Kind: Internal | Status: Unset
+
+------------------------------------------------------------
+  Demo Result: SUCCESS
+  - Automatic compile-time AST instrumentation: Verified
+  - Zero code modifications to 'census' dependency: Verified
+  - C-ABI trampoline runtime bridge (otel-shim): Verified
+  - Distributed Context & Cross-Crate Parenting: Verified
+  - S5 LIFO Stack Cleanup & Zero Leaks: Verified
+------------------------------------------------------------
+
+[Verification Analysis]
+1. Linking (A4): Application binary linked cleanly with otel-shim runtime and instrumented census crate.
+2. Runtime Telemetry (A5): 25 dependency spans emitted with SpanKind::Internal.
+3. Cross-Crate Parenting (A6): Dependency calls (`Inventory<T>::new`, `Inventory<T>::track`, `Inventory<T>::list`) carry app's `process_inventory_batch` span_id as `parent_span_id`.
+4. Status (A7 partial): All successful invocations emitted status=Unset. (Note: census exposes no Result-returning functions; Error status was validated separately via cesu8).
+5. Lifecycle (A8): `otel_shim::active_span_count() == 0` asserted immediately upon completion.
