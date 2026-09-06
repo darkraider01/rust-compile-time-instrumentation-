@@ -1129,12 +1129,15 @@ pub async fn long_running() {
     tokio::time::sleep(Duration::from_secs(30)).await;
 }
 
-// 7. Method on struct returning Result<&mut String, ()> (F3 &mut async accessor)
+// 7. Method on struct returning Result<&mut String, String> (F3 &mut async accessor)
+// NOTE: fixture error types must be real types, never `()`. This fixture is compiled
+// under `#![deny(warnings)]` by an intentionally unpinned stable toolchain, so a
+// `Result<_, ()>` trips clippy::result_unit_err on newer stable releases.
 pub struct Store {
     pub data: String,
 }
 impl Store {
-    pub async fn get_mut_async(&mut self) -> Result<&mut String, ()> {
+    pub async fn get_mut_async(&mut self) -> Result<&mut String, String> {
         tokio::time::sleep(Duration::from_millis(1)).await;
         Ok(&mut self.data)
     }
@@ -1149,14 +1152,14 @@ pub async fn generic_async<T: std::fmt::Display>(val: T) -> String {
 // 9. #[async_trait] implementation (R1 regression verification)
 #[async_trait::async_trait]
 pub trait AsyncProcessor {
-    async fn process_job(&self, id: u32) -> Result<u32, ()>;
+    async fn process_job(&self, id: u32) -> Result<u32, String>;
 }
 
 pub struct ProcessorImpl;
 
 #[async_trait::async_trait]
 impl AsyncProcessor for ProcessorImpl {
-    async fn process_job(&self, id: u32) -> Result<u32, ()> {
+    async fn process_job(&self, id: u32) -> Result<u32, String> {
         tokio::time::sleep(Duration::from_millis(1)).await;
         Ok(id * 3)
     }
