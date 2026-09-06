@@ -29,6 +29,31 @@ fn snapshot_files(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     files
 }
 
+/// Strip ANSI escape sequences from compiler/cargo output to ensure deterministic string matching.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if let Some(&'[') = chars.peek() {
+                chars.next(); // consume '['
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() || next == '@' {
+                        break;
+                    }
+                }
+            } else if let Some(&'(') = chars.peek() {
+                chars.next();
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[test]
 fn test_cargo_wrapped_build_and_byte_preservation_invariant() {
     let temp_dir = tempfile::tempdir().expect("failed to create temp dir");
@@ -380,11 +405,12 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
     // Pass 1: Clean build
     let output1 = Command::new(cargo_instrument_bin)
         .args(["--", "build"])
+        .env("CARGO_TERM_COLOR", "never")
         .current_dir(ws_root)
         .output()
         .expect("clean build");
     let stdout1 = String::from_utf8_lossy(&output1.stdout);
-    let stderr1 = String::from_utf8_lossy(&output1.stderr);
+    let stderr1 = strip_ansi(&String::from_utf8_lossy(&output1.stderr));
     println!("CLEAN_BUILD_STDERR:\n{stderr1}");
     assert!(
         output1.status.success(),
@@ -404,11 +430,12 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
     // Pass 2: Repeated build with no changes (A13: no rebuild)
     let output2 = Command::new(cargo_instrument_bin)
         .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
         .current_dir(ws_root)
         .output()
         .expect("repeat build");
     assert!(output2.status.success(), "Repeat build must succeed");
-    let stderr2 = String::from_utf8_lossy(&output2.stderr);
+    let stderr2 = strip_ansi(&String::from_utf8_lossy(&output2.stderr));
     println!("REPEAT_BUILD_STDERR:\n{stderr2}");
     assert!(
         !stderr2.contains("Compiling dep_local"),
@@ -428,10 +455,11 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
     .unwrap();
     let output3 = Command::new(cargo_instrument_bin)
         .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
         .current_dir(ws_root)
         .output()
         .expect("incremental app build");
-    let stderr3 = String::from_utf8_lossy(&output3.stderr);
+    let stderr3 = strip_ansi(&String::from_utf8_lossy(&output3.stderr));
     assert!(
         output3.status.success(),
         "Incremental app build must succeed! Stderr:\n{stderr3}"
@@ -442,7 +470,7 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
     );
     assert!(
         !stderr3.contains("Compiling dep_local"),
-        "Incremental app build must NOT recompile unmodified dep_local"
+        "Incremental app build must NOT recompile unmodified dep_local. Stderr:\n{stderr3}"
     );
 
     // Pass 4: Incremental dep touch (A13)
@@ -454,6 +482,7 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
     .unwrap();
     let output4 = Command::new(cargo_instrument_bin)
         .args(["--", "build"])
+        .env("CARGO_TERM_COLOR", "never")
         .current_dir(ws_root)
         .output()
         .expect("incremental dep build");
@@ -461,14 +490,14 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
         output4.status.success(),
         "Incremental dep build must succeed"
     );
-    let stderr4 = String::from_utf8_lossy(&output4.stderr);
+    let stderr4 = strip_ansi(&String::from_utf8_lossy(&output4.stderr));
     assert!(
         stderr4.contains("Compiling dep_local"),
-        "Incremental build must recompile modified dep_local"
+        "Incremental build must recompile modified dep_local. Stderr:\n{stderr4}"
     );
     assert!(
         stderr4.contains("Compiling app"),
-        "Modifying dependency must cause app to be recompiled/relinked"
+        "Modifying dependency must cause app to be recompiled/relinked. Stderr:\n{stderr4}"
     );
 
     // Pass 5: Cargo graph immutability check (A14)
