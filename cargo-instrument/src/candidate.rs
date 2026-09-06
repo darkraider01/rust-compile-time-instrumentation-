@@ -85,6 +85,47 @@ pub struct Candidate {
     pub returns_reference_or_lifetime: bool,
 }
 
+/// Detailed counts of functions excluded during AST discovery.
+///
+/// Strictly per-function tally, enabling exact reconciliation:
+/// `candidates.len() + skipped_stats.total() == total_functions_in_file`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SkippedStats {
+    /// Functions annotated with `#[inline]` or `#[inline(always)]`.
+    pub inline_attribute: usize,
+    /// Functions in standard adapter traits (`Deref`, `DerefMut`, `AsRef`, `AsMut`, `Borrow`, `BorrowMut`).
+    pub adapter_trait: usize,
+    /// Destructor implementations (`<T as Drop>::drop`).
+    pub drop_implementation: usize,
+    /// Functions inside `#[cfg(test)]` modules or annotated with `#[cfg(test)]`/`#[test]`.
+    pub cfg_test: usize,
+    /// Compile-time constant functions (`const fn`).
+    pub const_fn: usize,
+    /// Functions with foreign or `extern "C"` ABI.
+    pub extern_abi: usize,
+    /// Directly self-recursive functions (R7).
+    pub self_recursive: usize,
+    /// Functions with handwritten OpenTelemetry calls or `#[instrument]` attributes (R10).
+    pub handwritten_otel: usize,
+    /// Nested functions inside another function's body block (§12.2 / §16.14).
+    pub nested_function: usize,
+}
+
+impl SkippedStats {
+    /// Sum of all skipped function counts across all categories.
+    pub fn total(&self) -> usize {
+        self.inline_attribute
+            + self.adapter_trait
+            + self.drop_implementation
+            + self.cfg_test
+            + self.const_fn
+            + self.extern_abi
+            + self.self_recursive
+            + self.handwritten_otel
+            + self.nested_function
+    }
+}
+
 /// Summary report of AST candidate discovery for a single compilation unit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryReport {
@@ -94,6 +135,12 @@ pub struct DiscoveryReport {
     pub source_file: PathBuf,
     /// File-level unsafe lint policy.
     pub unsafe_policy: UnsafePolicy,
+    /// Whether the file specifies `#![no_std]` or `#![cfg_attr(..., no_std)]` (§12.3).
+    pub is_no_std: bool,
+    /// Whether the crate exports any C-ABI symbols colliding with `otel-shim`.
+    pub has_colliding_symbols: bool,
+    /// Per-function statistics of excluded functions.
+    pub skipped_stats: SkippedStats,
     /// Discovered eligible function candidates.
     pub candidates: Vec<Candidate>,
 }
@@ -102,12 +149,19 @@ impl DiscoveryReport {
     /// Format this report in development/debug mode.
     ///
     /// Produces human-readable output indicating the crate, source file,
-    /// unsafe policy, and candidate byte ranges.
+    /// unsafe policy, no_std status, colliding symbol status, skipped stats,
+    /// and candidate byte ranges.
     pub fn format_debug(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("crate: {}\n", self.crate_name));
         out.push_str(&format!("source: {}\n", self.source_file.display()));
-        out.push_str(&format!("unsafe_policy: {:?}\n\n", self.unsafe_policy));
+        out.push_str(&format!("unsafe_policy: {:?}\n", self.unsafe_policy));
+        out.push_str(&format!("is_no_std: {}\n", self.is_no_std));
+        out.push_str(&format!(
+            "has_colliding_symbols: {}\n",
+            self.has_colliding_symbols
+        ));
+        out.push_str(&format!("skipped_stats: {:?}\n\n", self.skipped_stats));
         out.push_str("candidates:\n");
         if self.candidates.is_empty() {
             out.push_str("  (none)\n");

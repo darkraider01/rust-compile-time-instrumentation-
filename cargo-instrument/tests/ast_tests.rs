@@ -510,6 +510,9 @@ fn test_discovery_report_format_debug() {
         crate_name: "empty_crate".to_string(),
         source_file: PathBuf::from("src/lib.rs"),
         unsafe_policy: UnsafePolicy::Allowed,
+        is_no_std: false,
+        has_colliding_symbols: false,
+        skipped_stats: Default::default(),
         candidates: Vec::new(),
     };
     let formatted_empty = empty_report.format_debug();
@@ -522,6 +525,9 @@ fn test_discovery_report_format_debug() {
         crate_name: "sample_crate".to_string(),
         source_file: PathBuf::from("src/main.rs"),
         unsafe_policy: UnsafePolicy::Forbidden,
+        is_no_std: true,
+        has_colliding_symbols: false,
+        skipped_stats: Default::default(),
         candidates: vec![Candidate {
             function_name: "compute".to_string(),
             source_file: PathBuf::from("src/main.rs"),
@@ -628,4 +634,330 @@ impl Aliased {
     assert_eq!(report.candidates.len(), 1);
     assert!(report.candidates[0].returns_result);
     assert!(report.candidates[0].returns_reference_or_lifetime);
+}
+
+#[test]
+fn test_drop_implementation_excluded_and_counted() {
+    let code = r#"
+pub struct Resource;
+impl Drop for Resource {
+    fn drop(&mut self) {
+        println!("cleanup");
+    }
+}
+pub fn ordinary_fn() {}
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code).unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].function_name, "ordinary_fn");
+    assert_eq!(report.skipped_stats.drop_implementation, 1);
+}
+
+#[test]
+fn test_generic_adapter_traits_excluded_and_counted() {
+    let code = r#"
+pub struct Wrapper<T>(pub T);
+impl<T> std::ops::Deref for Wrapper<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+impl<T> AsRef<T> for Wrapper<T> {
+    fn as_ref(&self) -> &T {
+        &self.0
+    }
+}
+impl Borrow<str> for Wrapper<String> {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+pub fn business_logic() {}
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code).unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].function_name, "business_logic");
+    assert_eq!(report.skipped_stats.adapter_trait, 3);
+}
+
+#[test]
+fn test_inline_attribute_exclusion_and_inline_never_eligibility() {
+    let code = r#"
+#[inline]
+pub fn inlined_fn() -> i32 { 1 }
+
+#[inline(always)]
+pub fn inlined_always_fn() -> i32 { 2 }
+
+#[inline(never)]
+pub fn out_of_line_fn() -> i32 { 3 }
+
+pub fn plain_fn() -> i32 { 4 }
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code).unwrap();
+    let names: Vec<_> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+    assert_eq!(names, vec!["out_of_line_fn", "plain_fn"]);
+    assert_eq!(report.skipped_stats.inline_attribute, 2);
+}
+
+#[test]
+fn test_cfg_test_recursive_function_tally() {
+    let code = r#"
+pub fn prod_a() {}
+pub fn prod_b() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_one() {}
+
+    #[test]
+    fn test_two() {}
+
+    struct TestHelper;
+    impl TestHelper {
+        fn helper_method(&self) {}
+    }
+
+    mod nested_tests {
+        fn deep_test_helper() {}
+    }
+}
+
+#[test]
+fn standalone_test() {}
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code).unwrap();
+    assert_eq!(report.candidates.len(), 2);
+    // 4 inside `mod tests` (test_one, test_two, helper_method, deep_test_helper) + 1 standalone_test = 5
+    assert_eq!(report.skipped_stats.cfg_test, 5);
+}
+
+#[test]
+fn test_nested_function_tally() {
+    let code = r#"
+pub fn outer_function() {
+    fn inner_helper_one() {}
+    fn inner_helper_two() {}
+    inner_helper_one();
+    inner_helper_two();
+}
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code).unwrap();
+    assert_eq!(report.candidates.len(), 1);
+    assert_eq!(report.candidates[0].function_name, "outer_function");
+    assert_eq!(report.skipped_stats.nested_function, 2);
+}
+
+#[test]
+fn test_universal_reconciliation_synthetic_fixture() {
+    let code = r#"
+pub fn ordinary_fn() -> i32 {
+    fn nested_helper() -> i32 { 10 }
+    nested_helper()
+}
+
+pub const fn const_calc() -> i32 { 42 }
+
+pub extern "C" fn extern_abi_fn() {}
+
+#[inline]
+pub fn inlined_fast() {}
+
+pub fn self_rec(n: u32) -> u32 {
+    if n == 0 { 0 } else { self_rec(n - 1) }
+}
+
+pub struct Item;
+impl Drop for Item {
+    fn drop(&mut self) {}
+}
+
+impl std::ops::Deref for Item {
+    type Target = ();
+    fn deref(&self) -> &() { &() }
+}
+
+#[cfg(test)]
+mod tests {
+    fn test_one() {}
+    fn test_two() {}
+}
+"#;
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code).unwrap();
+    let syn_file = syn::parse_file(code).unwrap();
+    let total_fns = cargo_instrument::ast::count_total_functions(&syn_file);
+
+    assert_eq!(
+        report.candidates.len() + report.skipped_stats.total(),
+        total_fns,
+        "Reconciliation invariant failed! candidates={} skipped={:?} total_fns={}",
+        report.candidates.len(),
+        report.skipped_stats,
+        total_fns
+    );
+}
+
+#[test]
+fn test_census_exact_reconciliation() {
+    let census_code = include_str!(
+        r"C:\Users\branybuck\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\census-0.4.2\src\lib.rs"
+    );
+    let report = analyze_source_str("census", Path::new("src/lib.rs"), census_code).unwrap();
+    let syn_file = syn::parse_file(census_code).unwrap();
+    let total_fns = cargo_instrument::ast::count_total_functions(&syn_file);
+
+    // Exact reconciliation identity
+    assert_eq!(
+        report.candidates.len() + report.skipped_stats.total(),
+        total_fns,
+        "Census reconciliation failed! candidates={} skipped={:?} total_fns={}",
+        report.candidates.len(),
+        report.skipped_stats,
+        total_fns
+    );
+
+    // Verify concrete construct class counts on real crate
+    assert_eq!(
+        report.skipped_stats.drop_implementation, 1,
+        "Drop for InnerTrackedObject"
+    );
+    assert_eq!(
+        report.skipped_stats.adapter_trait, 3,
+        "Deref, AsRef<T>, Borrow<T>"
+    );
+    assert_eq!(
+        report.skipped_stats.cfg_test, 9,
+        "9 functions (8 #[test] + 1 helper) in #[cfg(test)] mod tests"
+    );
+    assert!(!report.is_no_std, "census is a pure std crate");
+    assert!(!report.has_colliding_symbols, "census has no ABI collision");
+    assert_eq!(
+        report.candidates.len(),
+        16,
+        "Census has 16 eligible production functions"
+    );
+}
+
+#[test]
+fn test_abi_symbol_collision_detection() {
+    let colliding_code = r#"
+mod inner {
+    #[no_mangle]
+    pub extern "C" fn __otel_span_start() -> u64 { 0 }
+}
+pub fn normal() {}
+"#;
+    let report1 = analyze_source_str("colliding", Path::new("src/lib.rs"), colliding_code).unwrap();
+    assert!(
+        report1.has_colliding_symbols,
+        "must detect #[no_mangle] __otel_span_start in inner module"
+    );
+
+    let mangled_code = r#"
+fn __otel_span_enter() {}
+pub fn normal() {}
+"#;
+    let report2 = analyze_source_str("mangled", Path::new("src/lib.rs"), mangled_code).unwrap();
+    assert!(
+        !report2.has_colliding_symbols,
+        "mangled private helper must not be treated as ABI collision"
+    );
+
+    let export_name_code = r#"
+#[export_name = "__otel_span_exit"]
+pub extern "C" fn custom_exit(handle: u64) {}
+"#;
+    let report3 =
+        analyze_source_str("export_name", Path::new("src/lib.rs"), export_name_code).unwrap();
+    assert!(
+        report3.has_colliding_symbols,
+        "must detect #[export_name = ...] matching ABI symbols"
+    );
+}
+
+#[test]
+fn test_trampoline_emitter_symbols_subset_of_abi_symbols() {
+    use cargo_instrument::ast::OTEL_ABI_SYMBOLS;
+    use cargo_instrument::candidate::{Candidate, FunctionKind, UnsafePolicy};
+    use cargo_instrument::transform::{Emitter, TrampolineEmitter};
+    use std::path::PathBuf;
+
+    let emitter = TrampolineEmitter::new("my_dep", Some("2021".to_string()), UnsafePolicy::Allowed);
+    let candidate = Candidate {
+        function_name: "test_fn".to_string(),
+        source_file: PathBuf::from("src/lib.rs"),
+        byte_range: 0..10,
+        body_byte_range: 5..10,
+        kind: FunctionKind::Free,
+        is_async: false,
+        is_generic: false,
+        has_enclosing_generics: false,
+        returns_result: true,
+        returns_mut_reference: false,
+        returns_reference_or_lifetime: false,
+    };
+
+    let prefix = emitter.emit_body_prefix(&candidate, "\n");
+    // Extract every declared fn __otel_* in prefix
+    for line in prefix.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("fn __otel_") {
+            let fn_name = trimmed
+                .strip_prefix("fn ")
+                .unwrap()
+                .split('(')
+                .next()
+                .unwrap()
+                .trim();
+            assert!(
+                OTEL_ABI_SYMBOLS.contains(&fn_name),
+                "TrampolineEmitter emitted symbol '{}' not in OTEL_ABI_SYMBOLS: {:?}",
+                fn_name,
+                OTEL_ABI_SYMBOLS
+            );
+        }
+    }
+}
+
+#[test]
+fn test_no_std_attribute_detection() {
+    let unconditional = "#![no_std]\npub fn foo() {}\n";
+    let report_uncond =
+        analyze_source_str("uncond", Path::new("src/lib.rs"), unconditional).unwrap();
+    assert!(
+        report_uncond.is_no_std,
+        "must detect unconditional #![no_std]"
+    );
+
+    let conditional_feature = "#![cfg_attr(not(feature = \"std\"), no_std)]\npub fn foo() {}\n";
+    let report_feature =
+        analyze_source_str("feat", Path::new("src/lib.rs"), conditional_feature).unwrap();
+    assert!(
+        report_feature.is_no_std,
+        "must detect conditional #![cfg_attr(not(feature = \"std\"), no_std)]"
+    );
+
+    let conditional_std = "#![cfg_attr(not(std), no_std)]\npub fn foo() {}\n";
+    let report_std =
+        analyze_source_str("atoi_style", Path::new("src/lib.rs"), conditional_std).unwrap();
+    assert!(
+        report_std.is_no_std,
+        "must detect #![cfg_attr(not(std), no_std)]"
+    );
+
+    let normal_crate = "pub fn foo() {}\n";
+    let report_normal =
+        analyze_source_str("std_crate", Path::new("src/lib.rs"), normal_crate).unwrap();
+    assert!(
+        !report_normal.is_no_std,
+        "normal crate must not be flagged as no_std"
+    );
 }

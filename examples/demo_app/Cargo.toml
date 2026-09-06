@@ -1,0 +1,12 @@
+[package]
+name = "demo_app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+census = "=0.4.2"
+opentelemetry = "0.32.0"
+opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
+otel-shim = { path = "../../otel-shim" }

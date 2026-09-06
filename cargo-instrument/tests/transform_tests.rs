@@ -185,7 +185,7 @@ fn test_comments_preservation() {
    over multiple lines */
 
 /// Doc comment on function
-#[inline]
+#[inline(never)]
 pub fn commented_fn() {
     // Inner body comment
     /* Inner block */
@@ -212,7 +212,7 @@ pub fn commented_fn() {
 #[test]
 fn test_attributes_preservation() {
     let source = r#"
-#[inline(always)]
+#[inline(never)]
 #[allow(unused_variables)]
 #[doc = "Custom doc attribute"]
 pub fn attributed(x: i32) -> i32 {
@@ -226,7 +226,7 @@ pub fn attributed(x: i32) -> i32 {
     let transformed =
         transform_source_str(source, &report.candidates).expect("transformation should succeed");
 
-    assert!(transformed.contains("#[inline(always)]\n#[allow(unused_variables)]\n#[doc = \"Custom doc attribute\"]\npub fn attributed(x: i32) -> i32 {"));
+    assert!(transformed.contains("#[inline(never)]\n#[allow(unused_variables)]\n#[doc = \"Custom doc attribute\"]\npub fn attributed(x: i32) -> i32 {"));
 }
 
 #[test]

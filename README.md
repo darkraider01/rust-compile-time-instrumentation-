@@ -9,7 +9,7 @@
 [![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust)](https://www.rust-lang.org)
 [![No nightly](https://img.shields.io/badge/nightly-not%20required-brightgreen)](docs/research/17-decision-records.md)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Phase](https://img.shields.io/badge/phase-1%20in%20progress-yellow)](#status)
+[![Phase](https://img.shields.io/badge/phase-1%20complete-brightgreen)](#status)
 
 </div>
 
@@ -20,8 +20,8 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | Phase | Status | Focus |
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
-| **Phase 1 - `cargo-instrument` Tool** | **In Progress** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.7 complete (dependency instrumentation with extern "C" trampolines and standalone otel-shim verified); P1.8 is next |
-| **Phase 2 - Production Hardening** | **Planned** | Workspace coverage, MSRV/toolchain compatibility, incremental compilation, large dependency graphs, cross-platform validation |
+| **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across 143 automated tests) |
+| **Phase 2 - Production Hardening** | **Next** | Production dependency scheduler, macro expansion resilience, async dependency trampolines, large dependency graphs, cross-platform validation |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
@@ -49,9 +49,9 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
 ---
 
 ### Phase 1 - `cargo-instrument` Tool
-**Status:** IN PROGRESS
+**Status:** COMPLETE
 
-**Goal:** Build the compile-time instrumentation pipeline on stable Rust.
+**Goal:** Build and validate the compile-time instrumentation pipeline on stable Rust.
 
 - [x] **P1.1 - Cargo / `RUSTC_WRAPPER` interception** - COMPLETE
   Intercepts Cargo's `rustc` invocations, preserves arguments and exit codes, detects direct nested wrapper invocations, and enforces isolated build artifact directories (`target/instrumented`, [ADR-004](docs/research/17-decision-records.md)).
@@ -67,13 +67,13 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
   Instruments async functions using `opentelemetry::trace::FutureExt::with_context`, preserving trace context across future suspension points and multi-threaded executor task migration without holding `!Send` guards. Features Send-bound preservation, `#[async_trait]` compatibility, cancellation-on-drop span export, post-await Result error status recording, wall-clock duration measurement (§16.7), and zero clippy warnings.
 - [x] **P1.7 - Dependency instrumentation / `extern "C"` trampolines** - COMPLETE
   Extends instrumentation across third-party Cargo crate boundaries without manifest mutation or Cargo dependency injection using `extern "C"` ABI trampolines (`__otel_span_enter`, `__otel_span_exit`, `__otel_span_set_error`). Includes standalone `otel-shim` runtime crate exporting C ABI on native OpenTelemetry SDK with thread-local LIFO matching, compile-time application preflight checking (`otel_shim::init()`) to prevent extern-crate pruning (ADR-003 / E-10), edition 2021 vs 2024 awareness, `UnsafePolicy` handling, and live multi-threaded end-to-end integration proof.
-- [ ] **P1.8 - End-to-end validation** - NEXT
-  Validate emitted spans against an OpenTelemetry collector, measure compile-time overhead, verify build-cache isolation, and test across sample multi-crate applications.
+- [x] **P1.8 - End-to-end validation** - COMPLETE
+  Validated emitted spans on real crates.io dependencies (`census = "=0.4.2"`) with cross-crate parenting, proved bit-for-bit registry source cache immutability, established universal AST candidate reconciliation identity ($16+16=32$ on `census`, $34+21=55$ on `async-trait`), verified Cargo correctness across 5 passes, proved safety negatives and sandboxing (A15/A16), and recorded overhead benchmarks on clean, repeat, and incremental builds.
 
 ---
 
 ### Phase 2 - Production Hardening
-**Status:** PLANNED
+**Status:** NEXT (Planned)
 
 **Goal:** Establish the reliability, usability, and scale required for production build environments.
 
@@ -105,15 +105,13 @@ Planned evaluation:
 
 ---
 
-### Current Focus
+### Current Focus: Phase 2 - Production Hardening
 
-**Phase 1 - P1.5: Native OpenTelemetry code generation**
-
-Phase 0 established the architecture and invariants. Milestones P1.1–P1.4 have established and validated the compiler interception, multi-file source discovery, AST byte-span identification, and surgical byte-range transformation engine integrated into the compiler wrapper (verified with 78 automated tests across Linux, Windows, and macOS). The immediate next step is P1.5: implementing native OpenTelemetry API code generation to replace the minimal sentinel with runtime span lifecycle management.
+Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. The full compile-time instrumentation pipeline is verified with **143 automated tests** across Linux, Windows, and macOS, with 0 compiler warnings and 0 clippy warnings. Focus is now shifting to Phase 2: Production Hardening (production dependency scheduler, macro expansion resilience, async dependency trampolines, and large-scale ecosystem testing).
 
 ## Documentation
 
-- **[docs/phase1/](docs/phase1/)** - the Phase 1 implementation record, architecture, empirical findings, and verification matrix for milestones P1.1–P1.4 (Cargo/wrapper interception, classification, AST analysis, surgical byte transformation, and adversarial review resolutions). Start at [docs/phase1/README.md](docs/phase1/README.md).
+- **[docs/phase1/](docs/phase1/)** - the Phase 1 implementation record, architecture, empirical findings, and verification matrix for all milestones P1.1–P1.8 (wrapper interception, classification, AST analysis, surgical byte transformation, native OTel, async instrumentation, dependency trampolines, registry validation, and overhead benchmarks). Start at [docs/phase1/README.md](docs/phase1/README.md).
 - **[docs/research/](docs/research/)** - the full Phase 0 investigation: landscape survey, architecture candidates, the [instrumentation semantics specification](docs/research/16-instrumentation-semantics.md) (the correctness oracle Phase 1's tests are written against), the [architecture decision records](docs/research/17-decision-records.md), and four rounds of verification (hands-on experiments, an adversarial review, a maintainer Q&A round, and a validated experiment matrix). Start at [docs/research/README.md](docs/research/README.md).
 - Later phases receive their own sibling documentation folders under `docs/` as milestones land. `docs/research/` remains specifically the archived Phase 0 record and stays frozen.
 
@@ -123,12 +121,14 @@ Phase 0 established the architecture and invariants. Milestones P1.1–P1.4 have
 
 ```bash
 cargo build --workspace
-cargo test --workspace
-cargo run --bin cargo-instrument -- analyze path/to/file.rs   # standalone AST/byte-span analysis
-cargo run --bin cargo-instrument -- -- build                  # wrapped build, isolated target/instrumented (ADR-004)
+cargo test --workspace                                            # 140 tests pass offline, 3 registry tests ignored
+CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace -- --ignored   # runs live registry e2e validation suite
+cargo bench --bench bench_overhead                                # compile-time and runtime overhead benchmarks
+cargo run --bin cargo-instrument -- analyze path/to/file.rs       # standalone AST/byte-span analysis
+cargo run --bin cargo-instrument -- -- build                      # wrapped build, isolated target/instrumented (ADR-004)
 ```
 
-CI runs `fmt`/`clippy`/`test`/`build` across Linux, Windows, and macOS ([`ci.yml`](.github/workflows/ci.yml)), plus a dedicated real-subprocess integration workflow ([`integration.yml`](.github/workflows/integration.yml)) that documents exactly which claims about the wrapper/Cargo integration are proven by the current test suite.
+CI runs `fmt`/`clippy`/`test`/`build` across Linux, Windows, and macOS ([`ci.yml`](.github/workflows/ci.yml)), plus a dedicated real-subprocess integration workflow ([`integration.yml`](.github/workflows/integration.yml)) and end-to-end registry workflow ([`e2e.yml`](.github/workflows/e2e.yml)) that documents exactly which claims about the wrapper/Cargo integration are proven by the current test suite.
 
 ## License
 

@@ -53,7 +53,7 @@ jobs:
       # candidate-discovery output (printed via INSTRUMENT_DEBUG=1 inside
       # the tests themselves) in the CI log, not just on failure.
       - name: Run wrapper + Cargo integration tests
-        run: cargo test --workspace --test cargo_integration_tests --test wrapper_tests -- --nocapture
+        run: cargo test --workspace --test cargo_integration_tests --test wrapper_tests --test trampoline_tests -- --nocapture
 
       # Documents precisely what the tests above do and do not prove.
       # Written per-matrix-leg deliberately: process spawning, path
