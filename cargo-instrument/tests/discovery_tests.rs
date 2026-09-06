@@ -302,7 +302,22 @@ fn test_crate_role_classification() {
     use cargo_instrument::discovery::CrateRole;
     use std::path::Path;
 
-    let root = Path::new("C:\\workspace\\my_project");
+    #[cfg(windows)]
+    let (root_path, other_path, reg_path, reg_otel_path) = (
+        r"C:\workspace\my_project",
+        r"C:\other\dep_a\src\lib.rs",
+        r"C:\Users\user\.cargo\registry\src\index.crates.io-6f17d22bba15001f\serde-1.0.219\src\lib.rs",
+        r"C:\Users\user\.cargo\registry\src\index.crates.io-6f17d22bba15001f\opentelemetry_sdk-0.32.0\src\lib.rs",
+    );
+    #[cfg(not(windows))]
+    let (root_path, other_path, reg_path, reg_otel_path) = (
+        "/workspace/my_project",
+        "/other/dep_a/src/lib.rs",
+        "/home/user/.cargo/registry/src/index.crates.io-6f17d22bba15001f/serde-1.0.219/src/lib.rs",
+        "/home/user/.cargo/registry/src/index.crates.io-6f17d22bba15001f/opentelemetry_sdk-0.32.0/src/lib.rs",
+    );
+
+    let root = Path::new(root_path);
 
     // 1. Direct opentelemetry dependency -> Application
     let app_args = vec![
@@ -319,7 +334,7 @@ fn test_crate_role_classification() {
     let path_dep_args = vec![
         "--crate-name".to_string(),
         "dep_a".to_string(),
-        "C:\\other\\dep_a\\src\\lib.rs".to_string(),
+        other_path.to_string(),
     ];
     let path_dep_inv = CrateInvocation::parse(&path_dep_args).unwrap();
     assert_eq!(path_dep_inv.unit.role(root), CrateRole::LocalPathDependency);
@@ -340,7 +355,7 @@ fn test_crate_role_classification() {
     let reg_dep_args = vec![
         "--crate-name".to_string(),
         "serde".to_string(),
-        "C:\\Users\\user\\.cargo\\registry\\src\\index.crates.io-6f17d22bba15001f\\serde-1.0.219\\src\\lib.rs".to_string(),
+        reg_path.to_string(),
     ];
     let reg_dep_inv = CrateInvocation::parse(&reg_dep_args).unwrap();
     assert_eq!(reg_dep_inv.unit.role(root), CrateRole::RegistryDependency);
@@ -349,7 +364,7 @@ fn test_crate_role_classification() {
     let reg_otel_args = vec![
         "--crate-name".to_string(),
         "opentelemetry_sdk".to_string(),
-        "C:\\Users\\user\\.cargo\\registry\\src\\index.crates.io-6f17d22bba15001f\\opentelemetry_sdk-0.32.0\\src\\lib.rs".to_string(),
+        reg_otel_path.to_string(),
         "--extern".to_string(),
         "opentelemetry=target/debug/deps/libopentelemetry.rlib".to_string(),
     ];
