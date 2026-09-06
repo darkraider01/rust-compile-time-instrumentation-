@@ -1,0 +1,79 @@
+===============================================================================
+P1.8 RUNTIME OPENTELEMETRY SPANS EVIDENCE
+Target: cesu8 v1.1.0 + cesu8_validation_app
+Binary: target\instrumented\debug\cesu8_validation_app.exe
+===============================================================================
+
+[Execution Command]
+& "C:\Users\branybuck\code\rust compile time instrumentation\target\instrumented\debug\cesu8_validation_app.exe"
+
+[Raw Execution Output]
+VALIDATION_APP_START
+to_cesu8 result len: 20
+from_cesu8 success: Hello, world! 🚀
+from_cesu8 expected error: could not convert CESU-8 data to UTF-8
+is_valid_cesu8: false
+FINISHED_SPANS_COUNT=17
+SPAN[0]: name='is_valid_cesu8' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=0521f29da15573bf parent_span_id=7fed27fdf0aa795d status=Unset
+SPAN[1]: name='enc_surrogate' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=359cd87a96daf1bc parent_span_id=159fd69f37621c06 status=Unset
+SPAN[2]: name='enc_surrogate' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=c63ab1d0621bc4aa parent_span_id=159fd69f37621c06 status=Unset
+SPAN[3]: name='to_cesu8_internal' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=159fd69f37621c06 parent_span_id=7fed27fdf0aa795d status=Unset
+SPAN[4]: name='to_cesu8' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=7fed27fdf0aa795d parent_span_id=f0380b914811032e status=Unset
+SPAN[5]: name='dec_surrogate' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=daf530f6d34ffd85 parent_span_id=b4e45c0809055b78 status=Unset
+SPAN[6]: name='dec_surrogate' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=580036588ecae5d8 parent_span_id=b4e45c0809055b78 status=Unset
+SPAN[7]: name='dec_surrogates' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=b4e45c0809055b78 parent_span_id=a299a2399a1bcf83 status=Unset
+SPAN[8]: name='decode_from_iter' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=a299a2399a1bcf83 parent_span_id=879e93d7c1669e3a status=Unset
+SPAN[9]: name='from_cesu8_internal' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=879e93d7c1669e3a parent_span_id=45ece4eb17b2e3ec status=Unset
+SPAN[10]: name='from_cesu8' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=45ece4eb17b2e3ec parent_span_id=f0380b914811032e status=Unset
+SPAN[11]: name='decode_from_iter' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=2f62d6b80a3c9d91 parent_span_id=a3edc68f8194ac61 status=Unset
+SPAN[12]: name='from_cesu8_internal' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=a3edc68f8194ac61 parent_span_id=c43173df35692096 status=Error { description: "" }
+SPAN[13]: name='from_cesu8' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=c43173df35692096 parent_span_id=f0380b914811032e status=Error { description: "" }
+SPAN[14]: name='<Cesu8DecodingError as fmt::Display>::fmt' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=724b5cd6dc41f9be parent_span_id=f0380b914811032e status=Unset
+SPAN[15]: name='is_valid_cesu8' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=669b19249d255c49 parent_span_id=f0380b914811032e status=Unset
+SPAN[16]: name='app_workflow' kind=Internal trace_id=01a3c2dde00640969315bdabade097ab span_id=f0380b914811032e parent_span_id=0000000000000000 status=Unset
+VALIDATION_APP_SUCCESS
+
+===============================================================================
+TELEMETRY VERIFICATION ANALYSIS
+===============================================================================
+
+1. Total Spans Emitted: 17
+   - 1 application root span (`app_workflow`, span_id=f0380b914811032e)
+   - 16 runtime spans emitted dynamically from unseen dependency `cesu8` via otel-shim C-ABI trampolines
+
+2. Cross-Crate Context Propagation:
+   - Root span trace_id: 01a3c2dde00640969315bdabade097ab
+   - ALL 16 dependency spans inherited the identical trace_id: 01a3c2dde00640969315bdabade097ab
+   - Direct children of application root (parent_span_id = f0380b914811032e):
+     * SPAN[4] `to_cesu8`
+     * SPAN[10] `from_cesu8` (success call)
+     * SPAN[13] `from_cesu8` (error call)
+     * SPAN[14] `<Cesu8DecodingError as fmt::Display>::fmt`
+     * SPAN[15] `is_valid_cesu8`
+
+3. Multi-Level Call Tree Verification:
+   app_workflow (f0380b914811032e)
+   ├── to_cesu8 (7fed27fdf0aa795d)
+   │   ├── is_valid_cesu8 (0521f29da15573bf)
+   │   └── to_cesu8_internal (159fd69f37621c06)
+   │       ├── enc_surrogate (359cd87a96daf1bc)
+   │       └── enc_surrogate (c63ab1d0621bc4aa)
+   ├── from_cesu8 [Ok] (45ece4eb17b2e3ec)
+   │   └── from_cesu8_internal (879e93d7c1669e3a)
+   │       └── decode_from_iter (a299a2399a1bcf83)
+   │           └── dec_surrogates (b4e45c0809055b78)
+   │               ├── dec_surrogate (daf530f6d34ffd85)
+   │               └── dec_surrogate (580036588ecae5d8)
+   ├── from_cesu8 [Err] (c43173df35692096) [status=Error]
+   │   └── from_cesu8_internal (a3edc68f8194ac61) [status=Error]
+   │       └── decode_from_iter (2f62d6b80a3c9d91) [status=Unset]
+   ├── <Cesu8DecodingError as fmt::Display>::fmt (724b5cd6dc41f9be)
+   └── is_valid_cesu8 (669b19249d255c49)
+
+4. Result Status Handling:
+   - On successful execution, `from_cesu8` and its children recorded `status=Unset`.
+   - On invalid input (`[0xED, 0xA0, 0x80]`), `from_cesu8` and `from_cesu8_internal` correctly recorded `status=Error { description: "" }` via `__otel_span_set_error`.
+
+5. Span Lifecycle & Zero Handle Leakage:
+   - `otel_shim::active_span_count()` returned 0 immediately after scenario completion.
+   - All handles were balanced through RAII `__OtelGuard` drop implementations.

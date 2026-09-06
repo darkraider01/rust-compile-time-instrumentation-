@@ -1,0 +1,38 @@
+===============================================================================
+P1.8 UNSEEN CRATE BASELINE EVIDENCE (WITHOUT CARGO-INSTRUMENT)
+Target: cesu8 v1.1.0
+Environment: Windows 11 x64 (10.0.26200.0), rustc 1.97.1, cargo 1.97.1
+===============================================================================
+
+[Command]
+cargo run --manifest-path "C:\Users\branybuck\AppData\Local\Temp\p1_8_baseline_f27d3ba5-bc64-407b-8e19-ac7c45e509ad\Cargo.toml"
+
+[Cargo.toml]
+[package]
+name = "cesu8_validation_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cesu8 = "=1.1.0"
+opentelemetry = "0.32.0"
+opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
+otel-shim = { path = "C:/Users/branybuck/code/rust compile time instrumentation/otel-shim" }
+
+[Output]
+   Compiling cesu8_validation_app v0.1.0 (C:\Users\branybuck\AppData\Local\Temp\p1_8_baseline_f27d3ba5-bc64-407b-8e19-ac7c45e509ad)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.72s
+     Running `C:\Users\branybuck\AppData\Local\Temp\p1_8_baseline_f27d3ba5-bc64-407b-8e19-ac7c45e509ad\target\debug\cesu8_validation_app.exe`
+BASELINE_START
+to_cesu8 result len: 20
+from_cesu8 success: Hello, world! 🚀
+from_cesu8 expected error: could not convert CESU-8 data to UTF-8
+is_valid_cesu8: false
+FINISHED_SPANS_COUNT=1
+SPAN: name=application_root kind=Internal parent=0000000000000000
+BASELINE_SUCCESS
+
+[Observation]
+- Normal uninstrumented execution succeeded without runtime error.
+- Only 1 span was recorded in InMemorySpanExporter (the application's own root span).
+- Zero dependency spans were emitted because cesu8 contains no OpenTelemetry code.

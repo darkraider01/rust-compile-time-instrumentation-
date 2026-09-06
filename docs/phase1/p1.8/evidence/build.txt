@@ -1,0 +1,29 @@
+===============================================================================
+P1.8 COMPILATION & BUILD EVIDENCE
+Target: cesu8 v1.1.0 + cesu8_validation_app
+Compiler: rustc 1.97.1 (8bab26f4f 2026-07-14), cargo 1.97.1 (c980f4866 2026-06-30)
+===============================================================================
+
+[Command: cargo-instrument build]
+$bin = "C:\Users\branybuck\code\rust compile time instrumentation\target\debug\cargo-instrument.exe"
+$env:CARGO_INSTRUMENT_REGISTRY = "1"
+& $bin build --manifest-path "C:\Users\branybuck\AppData\Local\Temp\p1_8_baseline_f27d3ba5-bc64-407b-8e19-ac7c45e509ad\Cargo.toml"
+
+[Output: cargo-instrument build]
+   Compiling cesu8 v1.1.0
+   [cargo-instrument PID=26148 crate=cesu8] transformed 15 candidates into mirror C:\Users\branybuck\code\rust compile time instrumentation\target/instrumented\debug\deps\instrumented_sources\cesu8
+   Compiling cesu8_validation_app v0.1.0 (C:\Users\branybuck\AppData\Local\Temp\p1_8_baseline_f27d3ba5-bc64-407b-8e19-ac7c45e509ad)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.83s
+
+[Command: cargo clippy]
+cargo clippy --manifest-path "C:\Users\branybuck\AppData\Local\Temp\p1_8_baseline_f27d3ba5-bc64-407b-8e19-ac7c45e509ad\Cargo.toml" -- -D warnings
+
+[Output: cargo clippy]
+    Checking cesu8_validation_app v0.1.0 (C:\Users\branybuck\AppData\Local\Temp\p1_8_baseline_f27d3ba5-bc64-407b-8e19-ac7c45e509ad)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.17s
+
+[Verification Verdict]
+PASS:
+- 0 compiler errors across transformed dependency and application crate.
+- 0 warnings under `-D warnings`.
+- Linking succeeded, generating target/instrumented/debug/cesu8_validation_app.exe.
