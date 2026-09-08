@@ -20,7 +20,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | Phase | Status | Focus |
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
-| **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across 143 automated tests) |
+| **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across 145 automated tests) |
 | **Phase 2 - Production Hardening** | **Next** | Production dependency scheduler, macro expansion resilience, async dependency trampolines, large dependency graphs, cross-platform validation |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
@@ -107,7 +107,7 @@ Planned evaluation:
 
 ### Current Focus: Phase 2 - Production Hardening
 
-Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. The full compile-time instrumentation pipeline is verified with **143 automated tests** across Linux, Windows, and macOS, with 0 compiler warnings and 0 clippy warnings. Focus is now shifting to Phase 2: Production Hardening (production dependency scheduler, macro expansion resilience, async dependency trampolines, and large-scale ecosystem testing).
+Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. The full compile-time instrumentation pipeline is verified with **145 automated tests** across Linux, Windows, and macOS, with 0 compiler warnings and 0 clippy warnings. Focus is now shifting to Phase 2: Production Hardening (production dependency scheduler, macro expansion resilience, async dependency trampolines, and large-scale ecosystem testing).
 
 ## Documentation
 
@@ -173,10 +173,10 @@ cargo run --bin cargo-instrument -- -- check
 
 ### 5. Automated Test Suites & Overhead Benchmarks
 
-Validate the complete 143-test suite across unit, integration, and registry fixtures, or run empirical benchmarks:
+Validate the complete 145-test suite across unit, integration, and registry fixtures, or run empirical benchmarks:
 
 ```bash
-# Run offline test suite (140 tests pass; 3 registry tests safely gated)
+# Run offline test suite (141 tests pass; 4 registry tests safely gated)
 cargo test --workspace
 
 # Run live crates.io registry E2E validation suite
