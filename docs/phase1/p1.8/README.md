@@ -74,7 +74,7 @@ All raw execution outputs, cryptographic hashes, and telemetry logs are preserve
 
 For the dedicated 12-section validation report on unseen crate `cesu8`, see [**validation-report.md**](validation-report.md).
 
-## Automated Test Suite Verification (143 Tests across 10 Suites)
+## Automated Test Suite Verification (145 Tests across 10 Suites)
 
 The test suite enforces explicit opt-in gating for tests requiring network or local cargo registry caches. In the default offline run (`cargo test --workspace`), the 4 registry integration tests are **visibly ignored** (not silently skipped or masked) per M2 safety guarantees.
 
@@ -89,8 +89,8 @@ The test suite enforces explicit opt-in gating for tests requiring network or lo
 | `tests/trampoline_tests.rs` | 13 passed, **1 ignored** | **14 passed** | Tier 2 C-ABI trampolines (includes 1 gated test: `test_registry_source_cache_immutability`) |
 | `tests/transform_tests.rs` | 35 passed | 35 passed | Surgical byte splicing, comments/formatting preservation, CLI transform |
 | `tests/wrapper_tests.rs` | 5 passed | 5 passed | `RUSTC_WRAPPER` argument forwarding, exit code propagation, recursion guards |
-| `otel-shim/src/lib.rs` | 6 passed | 6 passed | Standalone runtime shim C-ABI invariants: LIFO context stack, handle safety |
-| **Total** | **139 passed, 4 ignored** | **143 passed, 0 ignored** | **143 total tests across workspace (100% pass rate)** |
+| `otel-shim/src/lib.rs` | 8 passed | 8 passed | Standalone runtime shim C-ABI invariants: LIFO context stack, handle safety, re-entrancy guard against a shared instrumented dependency calling back in during export |
+| **Total** | **141 passed, 4 ignored** | **145 passed, 0 ignored** | **145 total tests across workspace (100% pass rate)** |
 
 ### Visibly Ignored Verification (Default Run)
 When running `cargo test --workspace`, the 4 registry tests output explicit ignore messages:
@@ -102,14 +102,14 @@ When running `cargo test --workspace`, the 4 registry tests output explicit igno
 ## Reproduction Instructions
 
 ```powershell
-# 1. Run 139 default offline unit & integration tests (4 registry tests visibly ignored)
+# 1. Run 141 default offline unit & integration tests (4 registry tests visibly ignored)
 cargo test --workspace
 
 # 2. Run the 4 gated real-registry E2E integration tests only
 $env:CARGO_INSTRUMENT_REGISTRY="1"
 cargo test --workspace -- --ignored --nocapture
 
-# 3. Run all 143 tests in a single command (including gated registry tests)
+# 3. Run all 145 tests in a single command (including gated registry tests)
 $env:CARGO_INSTRUMENT_REGISTRY="1"
 cargo test --workspace -- --include-ignored
 
