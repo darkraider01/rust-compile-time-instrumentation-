@@ -101,13 +101,16 @@ pub unsafe extern "C" fn __otel_span_exit(handle: u64) {
         return; // S9
     }
 
-    STACK.with(|s| {
+    let popped = STACK.with(|s| {
         let mut st = s.borrow_mut();
         // LIFO enforcement: pop if and only if handle matches the top of the stack
         if st.last().map(|(h, _, _)| *h) == Some(handle) {
-            st.pop();
+            st.pop()
+        } else {
+            None
         }
     });
+    drop(popped);
 }
 
 /// Record an error status on an OpenTelemetry span identified by `handle`.
