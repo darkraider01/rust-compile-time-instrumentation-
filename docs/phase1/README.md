@@ -8,7 +8,7 @@
 **Status:** Phase 1 Complete (P1.1–P1.8 Complete; Phase 2 Next)  
 **Toolchain:** Stable Rust (CI tests against latest `stable`; verified locally on 1.97.1; unpinned MSRV, formal policy deferred to Phase 2)  
 **Core dependencies:** `syn` 2.0, `proc-macro2` 1.0, `quote` 1.0, `thiserror` 1.0  
-**Test suite status:** 143 automated tests passing across Linux, Windows, and macOS (139 passed in default offline run, 4 gated registry tests ignored in default and verified under `-- --ignored`; 0 failures, 0 clippy warnings)  
+**Test suite status:** 145 automated tests passing across Linux, Windows, and macOS (141 passed in default offline run, 4 gated registry tests ignored in default and verified under `-- --ignored`; 0 failures, 0 clippy warnings)  
 
 ---
 
@@ -449,6 +449,10 @@ Milestone P1.7 extends instrumentation across third-party Cargo crate boundaries
      - Async stubs (`__otel_span_start`, `__otel_span_end`, `__otel_ctx_attach`, `__otel_ctx_detach`): Accept handle 0 and return 0 per S9.
    - **Thread-Local LIFO Context Stack (C1 / F2)**:
      - Uses `RefCell<Vec<(u64, Context, ContextGuard)>>` in thread-local storage, enforcing S5 LIFO discipline and matching exact handles for error attribution without global lock contention or `!Send` context guard issues.
+   - **Re-Entrancy Guard & Telemetry Suppression (S9)**:
+     - Hardened against the case where an OTel exporter itself calls back into a shared instrumented dependency (e.g. an OTLP exporter built on instrumented `hyper`/`tonic`) during `SimpleSpanProcessor::on_end`'s inline, synchronous export. Without this, the re-entrant call panicked on the `RefCell` borrow (or, if only the borrow ordering were fixed, deadlocked on the processor's exporter `Mutex`).
+     - `__otel_span_enter` first checks `opentelemetry::Context::is_current_telemetry_suppressed()` (the same signal `BatchSpanProcessor`'s background export thread already sets via `enter_telemetry_suppressed_scope()`), then acquires a thread-local `ReentrancyGuard` held for the OTel-touching region of `enter`, `exit`, and `set_error`. Either check failing degrades to handle `0` per S9 (fail open, no panic, no recorded span for the re-entrant call) instead of recursing.
+     - Verified live: reproduced the original `RefCell already borrowed` panic against the unfixed shim, confirmed a borrow-ordering-only fix trades the panic for a permanent deadlock, and confirmed the full fix degrades cleanly with `BatchSpanProcessor` behavior unchanged. See [`shared_dependency_repro`](../../otel-shim/examples/shared_dependency_repro.rs) for a runnable demonstration and the `test_reentrant_export_*` tests in [`otel-shim/src/lib.rs`](../../otel-shim/src/lib.rs).
    - **Clippy & Safety Doc Hygiene (F1)**:
      - Every exported `unsafe extern "C"` function carries an explicit `/// # Safety` section documenting caller obligations (valid handle from prior enter or 0, valid UTF-8 pointer/len), compiling cleanly under `cargo clippy --workspace --all-targets -- -D warnings`.
    - **Extern Crate Pruning Prevention (ADR-003 / E-10)**:
@@ -612,9 +616,9 @@ Every acceptance criterion defined for Milestone P1.8 has been implemented, vali
 | **A17** | Performance | Compile-time and runtime overhead measured and recorded | **PASSED** | [`benches/bench_overhead.rs`](../../cargo-instrument/benches/bench_overhead.rs) ($N=5$ medians, $M=100,000$ iterations) |
 | **A18** | Reproducibility | Instrumented build byte-reproducible across two runs | **PASSED** | [`test_mirror_byte_reproducibility`](../../cargo-instrument/tests/e2e_registry_tests.rs) |
 
-### Automated Test Suite Summary (143 Tests across 10 Suites)
+### Automated Test Suite Summary (145 Tests across 10 Suites)
 
-The Phase 1 implementation is verified by **143 automated tests** across 10 test suites:
+The Phase 1 implementation is verified by **145 automated tests** across 10 test suites:
 
 | Test Suite | Tests | Scope |
 |---|---|---|
@@ -627,9 +631,9 @@ The Phase 1 implementation is verified by **143 automated tests** across 10 test
 | [`trampoline_tests.rs`](../../cargo-instrument/tests/trampoline_tests.rs) | 14 | Tier 2 `extern "C"` trampoline emission and runtime execution (13 passed offline, 1 gated registry test `test_registry_source_cache_immutability` verified with `-- --ignored`): synchronous ordinary function trampoline shape, Result-returning function trampoline shape with status Error and empty description per §16.10, edition 2021 `extern "C"` vs edition 2024 `unsafe extern "C"`, `UnsafePolicy::Denied` scoped `#[allow(unsafe_code)]` injection (G3), `UnsafePolicy::Forbidden` skip per S11, async deferral per §12.3 / §16.3, reference return prefix fallback, application preflight check in root and recursive submodules, preflight failure diagnostic on missing `otel_shim::init()`, malformed syntax fail-open without panic (A15), 7-symbol C-ABI collision detection fail-open (A16), adversarial `#[path = "../../outside/outside.rs"]` sandboxing (A16), live end-to-end multi-threaded Tokio runtime proof with `InMemorySpanExporter` verifying dependency spans, parent hierarchy, active-after-completion cleanup S5, and 100% bit-for-bit registry source cache immutability (A11) |
 | [`transform_tests.rs`](../../cargo-instrument/tests/transform_tests.rs) | 35 | Surgical byte splicing, comments/formatting preservation, unicode offsets, exclusions, idempotence, overlap rejection, permutation invariance, rustc & Cargo compilation proofs, CLI transform, C1 cross-file basename collisions, H1 live wrapper pipeline and absolute source path handling, H2 fail-open skips, H3 emitter substitution, M1 CRLF preservation, M3 string literal idempotence, diverging `!`, unsafe fn, empty bodies |
 | [`wrapper_tests.rs`](../../cargo-instrument/tests/wrapper_tests.rs) | 5 | Config parsing, argument forwarding, exit code propagation, recursion guard, serial execution |
-| [`otel-shim/src/lib.rs`](../../otel-shim/src/lib.rs) | 6 | Standalone runtime shim C-ABI invariants: S9 null handle 0 no-op / no state change, S5 out-of-order LIFO popping protection (pop-only-if-top), 3-level deep nesting cleanly emptied, unknown handle 9999 reverse lookup leaving top span status Unset in InMemorySpanExporter, pointer edge cases (null, zero-length, invalid UTF-8) returning 0 without UB or stack poisoning, and cross-thread handle isolation (thread A handle passed to thread B does not mutate thread B's stack) |
+| [`otel-shim/src/lib.rs`](../../otel-shim/src/lib.rs) | 8 | Standalone runtime shim C-ABI invariants: S9 null handle 0 no-op / no state change, S5 out-of-order LIFO popping protection (pop-only-if-top), 3-level deep nesting cleanly emptied, unknown handle 9999 reverse lookup leaving top span status Unset in InMemorySpanExporter, pointer edge cases (null, zero-length, invalid UTF-8) returning 0 without UB or stack poisoning, cross-thread handle isolation (thread A handle passed to thread B does not mutate thread B's stack), and re-entrant export via `SimpleSpanProcessor` / `BatchSpanProcessor` (exporter calling back into a shared instrumented dependency mid-export degrades to handle 0 with no panic and no deadlock, `BatchSpanProcessor` behavior unchanged) |
 
-**Total Test Count:** **143 tests** across 10 suites (139 passed in default offline run, 4 gated registry tests ignored in default and verified with `-- --ignored`; 0 failures, 0 clippy warnings).
+**Total Test Count:** **145 tests** across 10 suites (141 passed in default offline run, 4 gated registry tests ignored in default and verified with `-- --ignored`; 0 failures, 0 clippy warnings).
 
 ### Prototype CLI Commands & Demonstration Workflows
 
@@ -674,7 +678,7 @@ All components of the Phase 1 prototype can be demonstrated interactively via `c
 
 5. **Automated Test Suites & Benchmarks**:
    ```bash
-   # 140 default offline unit & integration tests
+   # 141 default offline unit & integration tests
    cargo test --workspace
 
    # Gated real-registry E2E integration tests
@@ -686,6 +690,12 @@ All components of the Phase 1 prototype can be demonstrated interactively via `c
    # Performance & overhead benchmark suite (A17)
    cargo bench --bench bench_overhead
    ```
+
+6. **Shared-Dependency Re-Entrancy Proof (`otel-shim` examples)**:
+   ```bash
+   cargo run --example shared_dependency_repro -p otel-shim
+   ```
+   - *Proves:* When the application and the OTel exporter both call the same compile-time-instrumented function (e.g. both link an instrumented `hyper`), the exporter's re-entrant call — made from inside `SimpleSpanProcessor`'s synchronous, inline export — degrades cleanly to handle `0` instead of panicking or deadlocking; the original span still exports and the process exits normally.
 
 ---
 
