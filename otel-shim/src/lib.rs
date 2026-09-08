@@ -7,7 +7,7 @@
 //! - Thread-local LIFO stack enforces strict single-thread context attachment and detachment (S5).
 //! - Calling [`init`] in application code satisfies ADR-003 / E-10, preventing `rustc` extern-crate pruning.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::slice;
 use std::str;
 
@@ -28,6 +28,39 @@ thread_local! {
 /// Global monotonic atomic counter for span handles.
 /// Non-zero values only; 0 is reserved for null/disabled spans (S9).
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// Re-entrancy flag (C1). Set while the shim is inside OpenTelemetry code that can
+    /// call back into an instrumented dependency: span creation, and — critically — the
+    /// span export that `SimpleSpanProcessor::on_end` runs inline from `Drop`. An OTLP
+    /// exporter built on an instrumented `hyper`/`tonic` re-enters the trampoline from
+    /// there; without this flag that recursion panics on `STACK` and, once the borrow is
+    /// released, deadlocks on the processor's exporter `Mutex` instead.
+    static IN_SHIM: Cell<bool> = const { Cell::new(false) };
+}
+
+/// RAII flag for [`IN_SHIM`], cleared even if the guarded region unwinds.
+struct ReentrancyGuard;
+
+impl ReentrancyGuard {
+    /// Returns `None` when the shim is already active on this thread.
+    fn acquire() -> Option<Self> {
+        IN_SHIM.with(|f| {
+            if f.get() {
+                None
+            } else {
+                f.set(true);
+                Some(ReentrancyGuard)
+            }
+        })
+    }
+}
+
+impl Drop for ReentrancyGuard {
+    fn drop(&mut self) {
+        IN_SHIM.with(|f| f.set(false));
+    }
+}
 
 /// Explicit entry-point reference for application code (ADR-003 / E-10).
 ///
@@ -62,6 +95,20 @@ pub unsafe extern "C" fn __otel_span_enter(
     if name.is_null() || name_len == 0 {
         return 0; // S9: Handle 0 is null/no-op
     }
+
+    // C1: the SDK suppresses telemetry inside its own export machinery (the
+    // `BatchSpanProcessor` export thread enters `enter_telemetry_suppressed_scope`).
+    // Honour that signal explicitly instead of relying on `SdkTracer` returning a
+    // non-recording span.
+    if Context::is_current_telemetry_suppressed() {
+        return 0; // S9
+    }
+
+    // C1: an exporter built on an instrumented dependency re-enters here from the
+    // export path. Fail open rather than recurse.
+    let Some(_reentrancy) = ReentrancyGuard::acquire() else {
+        return 0; // S9
+    };
 
     let name_bytes = slice::from_raw_parts(name, name_len);
     let name_str = match str::from_utf8(name_bytes) {
@@ -101,6 +148,14 @@ pub unsafe extern "C" fn __otel_span_exit(handle: u64) {
         return; // S9
     }
 
+    // C1: re-entry from inside the shim's own OpenTelemetry work is a no-op.
+    let Some(_reentrancy) = ReentrancyGuard::acquire() else {
+        return; // S9
+    };
+
+    // C2: pop inside the borrow, drop outside it. The popped tuple's `Drop` ends the
+    // span and runs export, which is user-reachable code; running it while `STACK` is
+    // still borrowed panics with "RefCell already borrowed".
     let popped = STACK.with(|s| {
         let mut st = s.borrow_mut();
         // LIFO enforcement: pop if and only if handle matches the top of the stack
@@ -127,6 +182,11 @@ pub unsafe extern "C" fn __otel_span_set_error(handle: u64) {
     if handle == 0 {
         return; // S9
     }
+
+    // C1: same stack, same re-entrancy hazard.
+    let Some(_reentrancy) = ReentrancyGuard::acquire() else {
+        return; // S9
+    };
 
     STACK.with(|s| {
         let st = s.borrow();
