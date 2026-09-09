@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,9 +34,10 @@ pub enum SkipCause {
 /// `SessionPlan` provides identity and topology knowledge to the per-unit wrapper:
 /// 1. Whether any target root links `otel-shim` (preventing unresolved C-ABI trampolines).
 /// 2. Which packages are compiled exclusively for the host (preventing proc-macro dep instrumentation).
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionPlan {
     /// Whether any target root in the build graph has otel-shim reachable.
+    /// D5 / S11: Defaults to false to fail open if metadata evaluation fails.
     pub has_otel_shim_provider: bool,
     /// Set of package names that are compiled exclusively for the host
     /// (reached solely via build-dependencies or from proc-macro packages).
@@ -43,21 +45,39 @@ pub struct SessionPlan {
     /// Set of package manifest directories compiled exclusively for the host.
     #[serde(default)]
     pub host_only_manifest_dirs: HashSet<PathBuf>,
-    /// Set of package names that have proc-macro targets.
+    /// Proc-macro packages themselves.
     #[serde(default)]
     pub proc_macro_packages: HashSet<String>,
+    /// Content hash over Cargo.lock + reachable member Cargo.toml manifests.
+    #[serde(default)]
+    pub fingerprint: String,
+    /// List of member / local manifest files included in the fingerprint.
+    #[serde(default)]
+    pub manifest_paths: Vec<PathBuf>,
+    /// Resolved root workspace directory.
+    #[serde(default)]
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl SessionPlan {
     /// Returns true if the package is compiled exclusively for the host
     /// (e.g. a dependency of a proc-macro or build script, not linked into target artifacts).
+    ///
+    /// D2: normalizes both hyphenated and underscored package names.
     pub fn is_host_only(&self, package_name: &str) -> bool {
+        let normalized = package_name.replace('-', "_");
         self.host_only_packages.contains(package_name)
+            || self.host_only_packages.contains(&normalized)
     }
 
     /// Disambiguated check: returns true if the package is host-only by name or by source path.
+    ///
+    /// D2: normalizes both hyphenated and underscored package names.
     pub fn is_host_only_unit(&self, package_name: &str, source_file: Option<&Path>) -> bool {
-        if self.host_only_packages.contains(package_name) {
+        let normalized = package_name.replace('-', "_");
+        if self.host_only_packages.contains(package_name)
+            || self.host_only_packages.contains(&normalized)
+        {
             return true;
         }
         if let Some(src) = source_file {
@@ -77,7 +97,72 @@ impl SessionPlan {
         self.has_otel_shim_provider
     }
 
-    /// Load existing session plan from file, or query `cargo metadata` once and cache it.
+    /// Compute a SHA-256 fingerprint over Cargo.lock and all workspace/local Cargo.toml manifests.
+    pub fn compute_fingerprint(workspace_root: &Path, manifest_paths: &[PathBuf]) -> String {
+        let mut hasher = Sha256::new();
+
+        // 1. Hash Cargo.lock in workspace root (if present)
+        let lock_file = workspace_root.join("Cargo.lock");
+        if let Ok(bytes) = fs::read(&lock_file) {
+            hasher.update(b"lock:");
+            hasher.update(&bytes);
+        } else {
+            hasher.update(b"lock:none");
+        }
+
+        // 2. Hash workspace_root Cargo.toml (if present)
+        let root_toml = workspace_root.join("Cargo.toml");
+        if let Ok(bytes) = fs::read(&root_toml) {
+            hasher.update(b"root_toml:");
+            hasher.update(&bytes);
+        } else {
+            hasher.update(b"root_toml:none");
+        }
+
+        // 3. Hash member and local dependency Cargo.toml files
+        let mut sorted_paths = manifest_paths.to_vec();
+        sorted_paths.sort();
+        sorted_paths.dedup();
+
+        for p in sorted_paths {
+            hasher.update(p.to_string_lossy().as_bytes());
+            if let Ok(bytes) = fs::read(&p) {
+                hasher.update(&bytes);
+            } else {
+                hasher.update(b"missing");
+            }
+        }
+
+        format!("{:x}", hasher.finalize())
+    }
+
+    /// Verify whether the cached session plan's fingerprint matches the current filesystem state (D1).
+    pub fn is_fresh(&self, current_manifest_dir: &Path) -> bool {
+        if self.fingerprint.is_empty() {
+            return false;
+        }
+
+        let root = self
+            .workspace_root
+            .as_deref()
+            .unwrap_or(current_manifest_dir);
+        let current_fingerprint = Self::compute_fingerprint(root, &self.manifest_paths);
+        current_fingerprint == self.fingerprint
+    }
+
+    /// Resolves the unified session cache file location from an output directory.
+    ///
+    /// Libraries have `--out-dir <target>/debug/deps`, while binaries have `--out-dir <target>/debug`.
+    /// Stripping the trailing `deps` ensures both units share the exact same session plan file.
+    pub fn get_session_file_path(out_dir: &Path) -> PathBuf {
+        let base = if out_dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
+            out_dir.parent().unwrap_or(out_dir)
+        } else {
+            out_dir
+        };
+        base.join("cargo_instrument_session.json")
+    }
+
     /// Find the most likely root workspace or application manifest directory.
     pub fn find_best_manifest_dir(current_dir: &Path, out_dir: Option<&Path>) -> PathBuf {
         let mut candidates: Vec<(PathBuf, i32)> = Vec::new();
@@ -165,19 +250,6 @@ impl SessionPlan {
             .unwrap_or_else(|| current_dir.to_path_buf())
     }
 
-    /// Resolves the unified session cache file location from an output directory.
-    ///
-    /// Libraries have `--out-dir <target>/debug/deps`, while binaries have `--out-dir <target>/debug`.
-    /// Stripping the trailing `deps` ensures both units share the exact same session plan file.
-    pub fn get_session_file_path(out_dir: &Path) -> PathBuf {
-        let base = if out_dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
-            out_dir.parent().unwrap_or(out_dir)
-        } else {
-            out_dir
-        };
-        base.join("cargo_instrument_session.json")
-    }
-
     /// Load existing session plan from file, or query `cargo metadata` once and cache it.
     pub fn load_or_create(current_dir: &Path, out_dir: Option<&Path>) -> Self {
         let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
@@ -187,7 +259,9 @@ impl SessionPlan {
             let path = PathBuf::from(path_str);
             if path.exists() {
                 if let Ok(plan) = Self::load_from_file(&path) {
-                    return plan;
+                    if plan.is_fresh(&best_dir) {
+                        return plan;
+                    }
                 }
             }
             match Self::build_from_metadata(&best_dir) {
@@ -209,15 +283,10 @@ impl SessionPlan {
         if let Some(out) = out_dir {
             let session_file = Self::get_session_file_path(out);
             if session_file.exists() {
-                if let Ok(meta) = fs::metadata(&session_file) {
-                    if let Ok(modified) = meta.modified() {
-                        if let Ok(elapsed) = modified.elapsed() {
-                            if elapsed.as_secs() < 1800 {
-                                if let Ok(plan) = Self::load_from_file(&session_file) {
-                                    return plan;
-                                }
-                            }
-                        }
+                if let Ok(plan) = Self::load_from_file(&session_file) {
+                    // D1: Verify fingerprint freshness instead of arbitrary time elapsed window
+                    if plan.is_fresh(&best_dir) {
+                        return plan;
                     }
                 }
             }
@@ -238,7 +307,6 @@ impl SessionPlan {
         }
 
         // Fallback: build without caching, or default (D5)
-        let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
         match Self::build_from_metadata(&best_dir) {
             Ok(plan) => plan,
             Err(e) => {
@@ -313,6 +381,23 @@ impl SessionPlan {
             })
             .unwrap_or_default();
 
+        let workspace_root = json["workspace_root"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // Collect all local manifest paths for fingerprinting (D1)
+        let mut manifest_paths: Vec<PathBuf> = Vec::new();
+        for pkg in packages {
+            if pkg["source"].is_null() {
+                if let Some(mp) = pkg["manifest_path"].as_str() {
+                    manifest_paths.push(PathBuf::from(mp));
+                }
+            }
+        }
+        manifest_paths.sort();
+        manifest_paths.dedup();
+
         let nodes = match json["resolve"]["nodes"].as_array() {
             Some(n) => n,
             None => {
@@ -323,11 +408,15 @@ impl SessionPlan {
                         .map(|n| n == "otel-shim" || n == "otel_shim")
                         .unwrap_or(false)
                 });
+                let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
                 return Ok(Self {
                     has_otel_shim_provider: has_shim,
                     host_only_packages: HashSet::new(),
                     host_only_manifest_dirs: HashSet::new(),
                     proc_macro_packages,
+                    fingerprint,
+                    manifest_paths,
+                    workspace_root: Some(workspace_root),
                 });
             }
         };
@@ -439,11 +528,16 @@ impl SessionPlan {
                 .unwrap_or(false)
         });
 
+        let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
+
         Ok(Self {
             has_otel_shim_provider,
             host_only_packages,
             host_only_manifest_dirs,
             proc_macro_packages,
+            fingerprint,
+            manifest_paths,
+            workspace_root: Some(workspace_root),
         })
     }
 
@@ -478,15 +572,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_d5_default_plan_disables_otel_shim_provider() {
-        let plan = SessionPlan::default();
-        assert!(
-            !plan.has_otel_shim_provider(),
-            "Default plan must default has_otel_shim_provider to false per S11 fail-open"
-        );
-    }
-
-    #[test]
     fn test_d2_host_only_hyphenated_and_underscored_matching() {
         let mut plan = SessionPlan::default();
         plan.host_only_packages.insert("pm-dep".to_string());
@@ -496,5 +581,51 @@ mod tests {
         assert!(plan.is_host_only("pm_dep"));
         assert!(plan.is_host_only_unit("pm_dep", None));
         assert!(plan.is_host_only_unit("pm-dep", None));
+    }
+
+    #[test]
+    fn test_d5_default_plan_disables_otel_shim_provider() {
+        let plan = SessionPlan::default();
+        assert!(
+            !plan.has_otel_shim_provider(),
+            "Default plan must default has_otel_shim_provider to false per S11 fail-open"
+        );
+    }
+
+    #[test]
+    fn test_d1_fingerprint_invalidation_on_manifest_change() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+
+        let cargo_toml = root.join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let manifests = vec![cargo_toml.clone()];
+        let fp1 = SessionPlan::compute_fingerprint(root, &manifests);
+
+        let plan = SessionPlan {
+            fingerprint: fp1.clone(),
+            manifest_paths: manifests.clone(),
+            workspace_root: Some(root.to_path_buf()),
+            ..Default::default()
+        };
+
+        assert!(plan.is_fresh(root));
+
+        // Modify Cargo.toml
+        fs::write(
+            &cargo_toml,
+            "[package]\nname = \"foo\"\nversion = \"0.1.0\"\n[dependencies]\notel-shim = \"0.1\"\n",
+        )
+        .unwrap();
+
+        assert!(
+            !plan.is_fresh(root),
+            "Plan must be rejected as stale when Cargo.toml is modified"
+        );
     }
 }
