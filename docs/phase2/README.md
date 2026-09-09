@@ -5,10 +5,10 @@
 # Phase 2 - Production Hardening
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
-**Status:** Complete (P2.1 Steps 1–7 complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
+**Status:** Complete (P2.1 Steps 1–7 + Closeout D1–D5 complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
 **Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
-**Phase 2 test suite status:** 4 regression tests + 1 105-unit scale test added, all passing
+**Phase 2 test suite status:** 8 regression tests + 1 105-unit scale test added, all passing
 
 ---
 
@@ -23,12 +23,16 @@ Phase 1 - Compile-Time Instrumentation (Complete, P1.1–P1.8)
           ▼
 Phase 2 - Production Hardening (In Progress)
           │
-          ├── P2.1 Unit Identity, Instrumentation Policy & Mirror Isolation  ◀── current
+          ├── P2.1 Unit Identity, Instrumentation Policy & Mirror Isolation  ✅ Complete
           │       ├── Step 1  Regression lock-down          ✅ Complete
           │       ├── Step 2  Unit identity (-C metadata)   ✅ Complete
           │       ├── Step 3  Mirror isolation & atomicity  ✅ Complete
-          │       └── Step 4  Instrumentation policy        ✅ Complete
-          ├── P2.2 Macro Expansion Resilience               ⬜ Planned
+          │       ├── Step 4  Instrumentation policy        ✅ Complete
+          │       ├── Step 5  Dep-info scoping (G6)         ✅ Complete
+          │       ├── Step 6  Preflight fail-open (G5)      ✅ Complete
+          │       ├── Step 7  Scale & stress validation     ✅ Complete
+          │       └── Closeout (D1–D5) Hardening            ✅ Complete
+          ├── P2.2 Macro Expansion Resilience               ⬜ Planned ◀── current
           ├── P2.3 Async Dependency Trampolines             ⬜ Planned
           ├── P2.4 Large Dependency Graphs                  ⬜ Planned
           └── P2.5 Cross-Platform Validation                ⬜ Planned
@@ -180,6 +184,42 @@ satisfies the check rather than working around it, so the test isolates the mirr
 writes into a directory that other `rustc` processes are concurrently populating. The
 unit's own dep-info file name is derivable from `-C extra-filename`, which is already in argv.
 
+### P2.1 Closeout Defect Register (D1–D5)
+
+Following initial P2.1 delivery, a closeout review surfaced five secondary defects in the caching, normalization, manifest discovery, and fail-open defaults of `SessionPlan`:
+
+#### D1 - Session cache has no fingerprint, only a 1800s time window
+
+`SessionPlan::load_or_create` originally checked only whether the session file was less than 1800 seconds old. If `Cargo.toml` was edited within this window:
+- Removing `otel-shim`: The warm cache retained `has_otel_shim_provider: true`. The wrapper spliced trampolines into dependencies, causing `LNK2019: unresolved external symbol __otel_span_enter` (reinstating the G4 regression).
+- Adding `otel-shim`: The warm cache retained `false`. Instrumentation was skipped silently with no warnings and no telemetry.
+
+**Fix:** Replaced time window with a SHA-256 fingerprint over `Cargo.lock` and all workspace-member `Cargo.toml` manifests. Cache is rejected and rebuilt whenever manifests change. Covered by `test_d1_session_cache_fingerprint_invalidation_both_directions`.
+
+#### D2 - Host-only package matching compares hyphenated names against underscored crate names
+
+`host_only_packages` was populated with Cargo package names from metadata (`pm-dep`), but was queried using `--crate-name` from rustc argv, which always normalizes hyphens to underscores (`pm_dep`). The primary name match was dead for any package with a hyphen in its name.
+
+**Fix:** Normalized both package names at metadata insertion and target crate queries to underscores (`replace('-', "_")`). Covered by `test_d2_hyphenated_proc_macro_host_dependency`.
+
+#### D3 - `find_best_manifest_dir` is a heuristic that can pick the wrong manifest
+
+In nested or multi-package workspaces, the directory walking heuristic in `find_best_manifest_dir` scored candidate `Cargo.toml` files by text keywords, potentially choosing a sibling or incorrect manifest when invoked via the CLI.
+
+**Fix:** In `main.rs`, `execute_cargo_with_wrapper` now precomputes `SessionPlan::build_from_metadata` from the manifest directory specified via `--manifest-path` (or current directory if omitted), and passes it to worker processes via `CARGO_INSTRUMENT_SESSION`. `find_best_manifest_dir` remains strictly as a fallback for raw `RUSTC_WRAPPER` invocations. Covered by `test_d3_cli_session_plan_avoids_wrong_manifest_heuristic` and `test_d3_cli_session_plan_respects_manifest_path_flag`.
+
+#### D4 - Parallel wrapper query storm on cold cache mitigated via CLI precomputation
+
+Without CLI orchestration, the first wave of parallel `rustc` processes hitting a cold cache could concurrently shell out to `cargo metadata`.
+
+**Fix & Measurement:** In CLI invocations (`cargo instrument -- build`), `main.rs` precomputes the session plan upfront, reducing wrapper queries to zero. For raw `RUSTC_WRAPPER` invocations, atomic file writes ensure clean plan persistence. Validated on the 105-unit parallel build fixture (`graph_scale_tests.rs`).
+
+#### D5 - Unsafe default when `cargo metadata` fails
+
+`SessionPlan::default()` originally set `has_otel_shim_provider: true`. If `cargo metadata` failed (e.g., malformed workspace or environment issue), the wrapper fell back to this default, falsely assuming a provider existed and attempting Tier-2 trampoline injection.
+
+**Fix:** Flipped default to `false` and emitted a warning diagnostic upon failure to adhere strictly to S11 fail-open policy. Covered by `test_d5_metadata_failure_safe_default`.
+
 ---
 
 ## 3. P2.1 Scope
@@ -216,6 +256,10 @@ the corresponding fix lands.
 | `test_proc_macro_host_dependency_must_not_be_instrumented` | G2 | `app → pmmacro (proc-macro) → pmdep` | No mirror is produced for `pmdep`; build succeeds |
 | `test_lib_and_test_units_must_not_share_a_mirror` | G3 | one package, `src/lib.rs` + `tests/it.rs` | Mirror directory count equals the number of units the wrapper reports mirroring |
 | `test_no_shim_provider_must_not_emit_trampolines` | G4 | `app (bin) → dep_lib`, no `otel-shim` | No trampoline symbols spliced; build succeeds |
+| `test_d1_session_cache_fingerprint_invalidation_both_directions` | D1 | `app → dep_lib`, edit `Cargo.toml` | Cache invalidates on manifest hash change; both add and remove directions transition policy correctly |
+| `test_d2_hyphenated_proc_macro_host_dependency` | D2 | `app → pm-macro → pm-dep` (hyphenated) | Hyphenated package names normalized to underscores; host dependency excluded from instrumentation |
+| `test_d3_cli_session_plan_avoids_wrong_manifest_heuristic` | D3 | workspace with decoy sibling manifest | CLI precomputes plan from execution dir and passes via `CARGO_INSTRUMENT_SESSION`; correct manifest policy used |
+| `test_d5_metadata_failure_safe_default` | D5 | workspace where `cargo metadata` fails | Default plan sets `has_otel_shim_provider: false`; fails open without injecting trampolines |
 
 ### Design notes
 
@@ -244,7 +288,7 @@ the corresponding fix lands.
 cargo test --test graph_topology_tests -- --ignored --nocapture
 ```
 
-Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed: **4 passed; 0 failed.**
+Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed and closeout complete: **8 passed; 0 failed.**
 
 ---
 
@@ -264,8 +308,10 @@ Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed: **4 passed; 0 f
 9. All Phase-2 regression tests pass, having been demonstrated red on `409b774`.
 10. `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings` clean.
 11. Items 1-10 green on Linux, Windows and macOS.
-12. Clean-build overhead stays within the Phase-1 band (+3.7% to +5.3%) at N=5, and any
-    build-graph query runs at most once per build.
+12. Clean-build overhead stays within the Phase-1 band (+3.7% to +5.3%) at N=5. In CLI invocations
+    (`cargo instrument -- build`), build-graph queries run at most once per build (precomputed upfront in
+    `main.rs` and exported via `CARGO_INSTRUMENT_SESSION`). In raw `RUSTC_WRAPPER` invocations, atomic
+    caching ensures deterministic resolution without cross-process corruption.
 
 ---
 
@@ -280,6 +326,7 @@ Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed: **4 passed; 0 f
 | 5 | Scope `remap_dep_info_files` to the unit's own `-C extra-filename` (G6) | ✅ Complete |
 | 6 | Downgrade the preflight hard-exit to an S11 warning (G5) | ✅ Complete |
 | 7 | Scale fixture (≥100 units) and cross-platform validation | ✅ Complete |
+| Closeout | Closeout hardening: D1 (fingerprint cache), D2 (hyphen normalization), D3 (CLI session export), D4 (parallel query storm verification), D5 (fail-open metadata default) | ✅ Complete |
 
 Steps 2-3 alone close G1 and G3.
 
