@@ -516,8 +516,10 @@ pub fn transform_source_file_scoped_with_emitter<E: Emitter + ?Sized>(
         }
     }
 
-    fs::write(output_path, transformed.as_bytes()).map_err(|e| TransformError::Io {
-        path: output_path.to_path_buf(),
+    // Write to a temporary file in the same directory and atomically rename into place
+    let temp_output = output_path.with_extension(format!("tmp.{}", std::process::id()));
+    fs::write(&temp_output, transformed.as_bytes()).map_err(|e| TransformError::Io {
+        path: temp_output.to_path_buf(),
         message: e.to_string(),
     })?;
 
@@ -525,9 +527,25 @@ pub fn transform_source_file_scoped_with_emitter<E: Emitter + ?Sized>(
     // build fingerprint does not consider the file modified during/after the build.
     if let Ok(metadata) = fs::metadata(input_path) {
         if let Ok(mtime) = metadata.modified() {
-            if let Ok(file) = fs::OpenOptions::new().write(true).open(output_path) {
+            if let Ok(file) = fs::OpenOptions::new().write(true).open(&temp_output) {
                 let times = fs::FileTimes::new().set_modified(mtime);
                 let _ = file.set_times(times);
+            }
+        }
+    }
+
+    if let Err(e) = fs::rename(&temp_output, output_path) {
+        let _ = fs::remove_file(&temp_output);
+        fs::write(output_path, transformed.as_bytes()).map_err(|write_err| TransformError::Io {
+            path: output_path.to_path_buf(),
+            message: format!("rename failed ({e}); direct write failed ({write_err})"),
+        })?;
+        if let Ok(metadata) = fs::metadata(input_path) {
+            if let Ok(mtime) = metadata.modified() {
+                if let Ok(file) = fs::OpenOptions::new().write(true).open(output_path) {
+                    let times = fs::FileTimes::new().set_modified(mtime);
+                    let _ = file.set_times(times);
+                }
             }
         }
     }
