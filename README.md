@@ -20,8 +20,8 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | Phase | Status | Focus |
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
-| **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across 145 automated tests) |
-| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience (P2.2), async dependency trampolines (P2.3), large dependency graphs (P2.4), cross-platform validation (P2.5) |
+| **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across the automated suite) |
+| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), async dependency trampolines (P2.3), large dependency graphs (P2.4), cross-platform validation (P2.5). Decisions recorded as [ADR-007 … ADR-010](docs/phase2/decision-records.md) |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
@@ -79,7 +79,8 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
 
 - [x] **P2.1 - Unit Identity, Instrumentation Policy & Mirror Isolation** - COMPLETE
   Introduces unique compilation unit identity (`UnitId`) parsed from `-C metadata` in rustc argv, isolates instrumented source mirrors per unit (`{crate_name}-{metadata_hash}`), performs atomic mirror writes with fail-open fallback, enforces build session policy via single-pass `cargo metadata` resolution (host-only package exclusion and link-provider reachability gating), scopes `.d` dep-info remapping, and downgrades preflight checks to non-fatal warnings.
-- [ ] **P2.2 - Macro Expansion Resilience** - PLANNED
+- [x] **P2.2 - Macro Expansion Resilience & Coexistence** - COMPLETE
+  Establishes clean coexistence between automatic instrumentation and developer-written annotations ([ADR-009](docs/phase2/decision-records.md#adr-009---explicit-instrumentation-wins-at-whole-function-granularity)). Widens the explicit-instrumentation matcher to any qualified path (`#[tracing::instrument]`, `#[tracing_attributes::instrument]`, `#[otel_instrument::instrument]`, `#[propagate_context]`), skips such functions whole to prevent duplicate spans and `__otel_cx` identifier shadowing, and proves hybrid parenting - an explicit `#[tracing::instrument]` caller adopting automatically instrumented dependency spans as children - across both synchronous and `#[async_trait]` boundaries ([ADR-010](docs/phase2/decision-records.md#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry)). Measured over-suppression on `census-0.4.2` and `async-trait`: 0.0%.
 - [ ] **P2.3 - Async Dependency Trampolines** - PLANNED
 - [ ] **P2.4 - Large Dependency Graphs** - PLANNED
 - [ ] **P2.5 - Cross-Platform Validation** - PLANNED
@@ -105,11 +106,11 @@ Planned evaluation:
 
 ### Current Focus: Phase 2 - Production Hardening
 
-Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestone P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) is **COMPLETE** with 4 dedicated regression tests, a 105-unit parallel scale fixture, and all 145 Phase 1 tests passing. Next milestone: P2.2 (Macro Expansion Resilience).
+Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestones P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) and P2.2 (Macro Expansion Resilience & Coexistence) are **COMPLETE**, with 9 graph-topology regression tests covering defects G1–G4 and closeout defects D1–D5, a 105-unit parallel scale fixture, a 5-test hybrid coexistence suite, and 167 tests total across the workspace. Next milestone: P2.3 (Async Dependency Trampolines), which also carries the Tier-2 C ABI extensions R-1 (per-crate instrumentation scope) and R-2 (§16.14 file/line/kind attributes).
 
 ## Documentation
 
-- **[docs/phase2/](docs/phase2/)** - the Phase 2 implementation record, defect register, regression suite, and design plans for production hardening (unit identity, mirror isolation, policy gating, macro expansion, and graph scale). Start at [docs/phase2/README.md](docs/phase2/README.md).
+- **[docs/phase2/](docs/phase2/)** - the Phase 2 implementation record, defect register, regression suite, and design plans for production hardening (unit identity, mirror isolation, policy gating, macro expansion, and graph scale). Start at [docs/phase2/README.md](docs/phase2/README.md); the architecture decisions taken during Phase 2 are recorded separately as [ADR-007 … ADR-010](docs/phase2/decision-records.md), continuing the Phase 0 numbering.
 - **[docs/phase1/](docs/phase1/)** - the Phase 1 implementation record, architecture, empirical findings, and verification matrix for all milestones P1.1–P1.8 (wrapper interception, classification, AST analysis, surgical byte transformation, native OTel, async instrumentation, dependency trampolines, registry validation, and overhead benchmarks). Start at [docs/phase1/README.md](docs/phase1/README.md).
 - **[docs/research/](docs/research/)** - the full Phase 0 investigation: landscape survey, architecture candidates, the [instrumentation semantics specification](docs/research/16-instrumentation-semantics.md) (the correctness oracle Phase 1's tests are written against), the [architecture decision records](docs/research/17-decision-records.md), and four rounds of verification (hands-on experiments, an adversarial review, a maintainer Q&A round, and a validated experiment matrix). Start at [docs/research/README.md](docs/research/README.md).
 - Later phases receive their own sibling documentation folders under `docs/` as milestones land. `docs/research/` remains specifically the archived Phase 0 record and stays frozen.
@@ -175,7 +176,7 @@ cargo run --bin cargo-instrument -- -- check
 Validate the complete 145-test suite across unit, integration, and registry fixtures, or run empirical benchmarks:
 
 ```bash
-# Run offline test suite (141 tests pass; 4 registry tests safely gated)
+# Run offline test suite (154 tests pass; 13 network/topology tests gated behind --ignored)
 cargo test --workspace
 
 # Run live crates.io registry E2E validation suite
@@ -184,8 +185,11 @@ $env:CARGO_INSTRUMENT_REGISTRY="1"; cargo test --workspace --test e2e_registry_t
 # Bash:
 CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
 
-# Run Phase 2 graph topology regression suite (G1-G4)
+# Run Phase 2 graph topology regression suite (G1-G4, D1-D5)
 cargo test --test graph_topology_tests -- --ignored --nocapture
+
+# Run Phase 2 hybrid coexistence suite (explicit + automatic instrumentation, P2.2)
+cargo test --test hybrid_instrumentation_tests -- --nocapture
 
 # Run Phase 2 scale fixture test (>=100 units under parallel compilation)
 cargo test --test graph_scale_tests -- --nocapture

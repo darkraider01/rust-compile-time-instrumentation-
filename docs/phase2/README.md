@@ -1,14 +1,15 @@
-← [Project overview](../../README.md) | [Phase 0 Research](../research/README.md) | [Phase 1 Implementation](../phase1/README.md)
+← [Project overview](../../README.md) | [Phase 0 Research](../research/README.md) | [Phase 1 Implementation](../phase1/README.md) | [Phase 2 ADRs (007–010)](decision-records.md)
 
 ---
 
 # Phase 2 - Production Hardening
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
-**Status:** Complete (P2.1 Steps 1–7 + Closeout D1–D5 complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
+**Status:** In progress (P2.1 Steps 1–7 + Closeout D1–D5 complete; P2.2 coexistence complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
 **Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
-**Phase 2 test suite status:** 8 regression tests + 1 105-unit scale test added, all passing
+**Phase 2 test suite status:** 9 graph-topology regression tests + 1 105-unit scale test + 5 hybrid coexistence tests added, all passing (167 tests total across the workspace)
+**Architecture decisions:** [ADR-007 … ADR-010](decision-records.md), continuing the frozen Phase 0 numbering
 
 ---
 
@@ -32,8 +33,11 @@ Phase 2 - Production Hardening (In Progress)
           │       ├── Step 6  Preflight fail-open (G5)      ✅ Complete
           │       ├── Step 7  Scale & stress validation     ✅ Complete
           │       └── Closeout (D1–D5) Hardening            ✅ Complete
-          ├── P2.2 Macro Expansion Resilience               ⬜ Planned ◀── current
-          ├── P2.3 Async Dependency Trampolines             ⬜ Planned
+          ├── P2.2 Macro Expansion Resilience & Coexistence ✅ Complete
+          │       ├── Attribute matcher widening (ADR-009)  ✅ Complete
+          │       ├── Collision prevention (__otel_cx)      ✅ Complete
+          │       └── Hybrid parenting proof (ADR-010)      ✅ Complete
+          ├── P2.3 Async Dependency Trampolines             ⬜ Planned ◀── current
           ├── P2.4 Large Dependency Graphs                  ⬜ Planned
           └── P2.5 Cross-Platform Validation                ⬜ Planned
           │
