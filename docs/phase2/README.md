@@ -224,6 +224,27 @@ Without CLI orchestration, the first wave of parallel `rustc` processes hitting 
 
 **Fix:** Flipped default to `false` and emitted a warning diagnostic upon failure to adhere strictly to S11 fail-open policy. Covered by `test_d5_metadata_failure_safe_default`.
 
+#### D6 - R7 method-call recursion arm over-suppressed on shared method names
+
+`is_directly_self_recursive` matched a method call on the method identifier alone, with no receiver
+check. Any function named `foo` calling `anything.foo()` was classified as self-recursive and
+skipped - so `fn clone()` calling `self.inner.clone()` (Arc's clone) and `fn len()` calling
+`self.lock_items().len()` (Vec's len) were both dropped from instrumentation on `census-0.4.2`,
+the crate used in the hero demo. The R7 note documented the conservative *path*-call false positive
+(`OtherType::helper()` inside `fn helper()`) as deliberate, but the method arm was broader than
+what R7 described, and it fired on the most common method names in Rust (`new`, `len`, `next`,
+`clone`, `poll`, `build`, `fmt`).
+
+**Fix:** The method arm now requires a bare `self` receiver, which needs no type resolution:
+`self.foo()` counts, `self.inner.foo()` and `v.foo()` do not. The path arm is unchanged, since
+distinguishing `Self::foo()` from `OtherType::foo()` does need type information the tool does not
+have - that conservatism stays deliberate. Covered by
+`test_r7_method_recursion_requires_self_receiver`.
+
+**Measurement:** On `census-0.4.2`, `self_recursive` drops from 3 to 1 and eligible candidates rise
+from 16 to 18. The universal reconciliation identity is unaffected in total - it moves from
+$16 + 16 = 32$ to $18 + 14 = 32$. Phase 1 documents record the pre-fix split as measured at P1.8.
+
 ### Architecture Risks for Later Integration (P2.3 Scope)
 
 Two risks in the Tier-2 C ABI are recorded here to be batched into the P2.3 ABI extension:

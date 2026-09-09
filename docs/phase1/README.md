@@ -508,6 +508,7 @@ Milestone P1.8 validates the complete compile-time instrumentation pipeline on r
      $$\text{Detected Candidates} + \sum \text{Skipped Stats} = \text{Total Crate Functions}$$
    - Empirically verified across real registry crates and runtime fixtures:
      - `census-0.4.2`: Total 32 = Eligible 16 + Adapter 3 + Drop 1 + CfgTest 9 + SelfRec 3 ($16 + 16 = 32$ ✓)
+       (as measured at P1.8; the split is $18 + 14 = 32$ after the Phase 2 D6 recursion-detector fix, total unchanged)
      - `async-trait`: Total 55 = Eligible 34 + SelfRec 18 + Nested 3 ($34 + 21 = 55$ ✓)
      - `atoi-2.0.0`: Total 18 = Eligible 14 + CfgTest 4 ($14 + 4 = 18$ ✓)
      - `itoa-1.0.15`: Total 6 = Eligible 1 + Inline 5 ($1 + 5 = 6$ ✓)
