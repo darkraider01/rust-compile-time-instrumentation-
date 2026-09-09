@@ -207,6 +207,24 @@ pub fn already_instrumented_attr() {}
 #[tracing::instrument(skip_all)]
 pub fn already_instrumented_tracing() {}
 
+#[tracing_attributes::instrument]
+pub fn already_instrumented_tracing_attributes() {}
+
+#[::tracing::instrument]
+pub fn already_instrumented_rooted_tracing() {}
+
+#[otel_instrument::instrument]
+pub fn already_instrumented_otel_custom() {}
+
+#[instrument_span]
+pub fn already_instrumented_instrument_span() {}
+
+#[propagate_context]
+pub fn already_instrumented_propagate_sync() {}
+
+#[propagate_context]
+pub async fn already_instrumented_propagate_async() {}
+
 pub fn already_instrumented_otel_body() {
     let span = tracer.start("my_span");
 }
@@ -216,13 +234,105 @@ pub async fn already_instrumented_with_context() {
 }
 
 pub fn uninstrumented_clean() {}
+
+#[my_crate::propagate_config]
+pub fn uninstrumented_unrelated_attribute() {}
+
+pub fn instrument() {}
+
+pub fn propagate_context() {}
 "#;
 
     let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
         .expect("analysis should succeed");
 
-    assert_eq!(report.candidates.len(), 1);
-    assert_eq!(report.candidates[0].function_name, "uninstrumented_clean");
+    // 4 clean candidates: uninstrumented_clean, uninstrumented_unrelated_attribute, instrument, propagate_context
+    assert_eq!(report.candidates.len(), 4);
+    let candidate_names: Vec<&str> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+    assert!(candidate_names.contains(&"uninstrumented_clean"));
+    assert!(candidate_names.contains(&"uninstrumented_unrelated_attribute"));
+    assert!(candidate_names.contains(&"instrument"));
+    assert!(candidate_names.contains(&"propagate_context"));
+
+    // 10 functions skipped via handwritten_otel (8 attribute + 2 body)
+    assert_eq!(report.skipped_stats.handwritten_otel, 10);
+    // Total functions = 4 candidates + 10 skipped = 14
+    assert_eq!(report.candidates.len() + report.skipped_stats.total(), 14);
+}
+
+#[test]
+fn test_coexistence_two_class_attribute_matcher_widening() {
+    let code = r#"
+// Span-creating attributes
+#[instrument]
+fn f1() {}
+
+#[tracing::instrument]
+fn f2() {}
+
+#[tracing_attributes::instrument]
+fn f3() {}
+
+#[::tracing::instrument]
+fn f4() {}
+
+#[otel_instrument::instrument]
+fn f5() {}
+
+#[instrument_span]
+fn f6() {}
+
+// Context-propagating attributes (upstream contrib#791)
+#[propagate_context]
+fn f7() {}
+
+#[custom_scope::propagate_context]
+async fn f8() {}
+
+// Negative cases — must be included as candidates
+#[inline]
+fn f9_inline() {}
+
+#[allow(dead_code)]
+fn f10_normal() {}
+
+#[my_crate::propagate_config]
+fn f11_unrelated_attr() {}
+
+fn instrument() {}
+
+fn propagate_context() {}
+"#;
+
+    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), code)
+        .expect("analysis should succeed");
+
+    // 8 functions skipped via handwritten_otel
+    assert_eq!(report.skipped_stats.handwritten_otel, 8);
+    // f9_inline is skipped via inline_attribute
+    assert_eq!(report.skipped_stats.inline_attribute, 1);
+
+    // Candidates: f10_normal, f11_unrelated_attr, instrument, propagate_context = 4
+    assert_eq!(report.candidates.len(), 4);
+    let names: Vec<&str> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+    assert!(names.contains(&"f10_normal"));
+    assert!(names.contains(&"f11_unrelated_attr"));
+    assert!(names.contains(&"instrument"));
+    assert!(names.contains(&"propagate_context"));
+
+    // Reconciliation identity: candidates + skipped == total
+    assert_eq!(
+        report.candidates.len() + report.skipped_stats.total(),
+        13
+    );
 }
 
 #[test]
