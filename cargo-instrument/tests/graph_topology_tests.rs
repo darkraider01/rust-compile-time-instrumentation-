@@ -584,6 +584,149 @@ fn test_no_shim_provider_must_not_emit_trampolines() {
 }
 
 // ----------------------------------------------------------------------------
+// D1 — Session cache fingerprint invalidation across Cargo.toml edits
+// ----------------------------------------------------------------------------
+
+/// **Defect (D1):** Previously, SessionPlan relied only on an arbitrary 1800s time
+/// window. If `Cargo.toml` was edited to add or remove `otel-shim`, a warm cache
+/// would reuse the stale plan:
+/// - Removing `otel-shim`: warm cache retains `has_otel_shim_provider: true`, causing
+///   trampolines to be spliced into non-application crates with no provider at link time (loud failure).
+/// - Adding `otel-shim`: warm cache retains `false`, causing instrumentation to be silently skipped.
+///
+/// **Fix:** Fingerprinting over `Cargo.lock` + reachable manifests. Cache is rejected
+/// as stale when manifests change.
+#[test]
+#[ignore = "P2.1 closeout: asserts cache invalidation on Cargo.toml edits in both directions"]
+fn test_d1_session_cache_fingerprint_invalidation_both_directions() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+
+    let dep_dir = root.join("dep_lib");
+    write_file(
+        &dep_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    );
+    write_file(
+        &dep_dir.join("src").join("lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n",
+    );
+
+    let app_dir = root.join("app");
+    // Step 1: Initial build with otel-shim present
+    write_file(
+        &app_dir.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+             [dependencies]\ndep_lib = {{ path = \"../dep_lib\" }}\n\
+             otel-shim = {{ path = \"{}\" }}\n",
+            otel_shim_dep_path()
+        ),
+    );
+    write_file(
+        &app_dir.join("src").join("main.rs"),
+        "fn main() {\n    otel_shim::init();\n    println!(\"{}\", dep_lib::add(1, 2));\n}\n",
+    );
+
+    let target_dir = root.join("target").join("instrumented");
+    let out1 = run_cargo_instrument_cli(&app_dir, &target_dir, &["build"]);
+    assert!(
+        out1.status.success(),
+        "Step 1 build must succeed.\n{}",
+        describe(&out1)
+    );
+
+    let session_path = target_dir.join("cargo_instrument_session.json");
+    assert!(session_path.exists(), "Session cache must be created");
+    let session_content = fs::read_to_string(&session_path).unwrap();
+    assert!(session_content.contains("\"has_otel_shim_provider\": true"));
+
+    // Direction 1 (Loud): Remove otel-shim and touch dep_lib
+    write_file(
+        &app_dir.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+         [dependencies]\ndep_lib = { path = \"../dep_lib\" }\n",
+    );
+    write_file(
+        &app_dir.join("src").join("main.rs"),
+        "fn main() {\n    println!(\"{}\", dep_lib::add(1, 2));\n}\n",
+    );
+    // Touch dep_lib so Cargo recompiles it within the same target dir
+    write_file(
+        &dep_dir.join("src").join("lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n",
+    );
+
+    // Clean mirror directory from Step 1 to isolate Step 2's mirror creation
+    let mirror_path = mirror_root(&target_dir);
+    if mirror_path.exists() {
+        let _ = fs::remove_dir_all(&mirror_path);
+    }
+
+    let out2 = run_cargo_instrument_cli(&app_dir, &target_dir, &["build"]);
+    assert!(
+        out2.status.success(),
+        "Step 2 rebuild with otel-shim removed must succeed (cache must invalidate).\n{}",
+        describe(&out2)
+    );
+    let session_content2 = fs::read_to_string(&session_path).unwrap();
+    assert!(session_content2.contains("\"has_otel_shim_provider\": false"));
+
+    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    assert!(
+        stderr2.contains("no otel-shim provider found in build graph for 'dep_lib'"),
+        "Step 2 must emit S11 fail-open warning for dep_lib when otel-shim is absent.\n{}",
+        describe(&out2)
+    );
+
+    // Verify dep_lib was not mirrored
+    assert!(
+        mirror_dirs_for(&target_dir, "dep_lib").is_empty(),
+        "dep_lib must not be mirrored after otel-shim was removed"
+    );
+
+    // Direction 2 (Silent): Add otel-shim back and touch dep_lib
+    write_file(
+        &app_dir.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+             [dependencies]\ndep_lib = {{ path = \"../dep_lib\" }}\n\
+             otel-shim = {{ path = \"{}\" }}\n",
+            otel_shim_dep_path()
+        ),
+    );
+    write_file(
+        &app_dir.join("src").join("main.rs"),
+        "fn main() {\n    otel_shim::init();\n    println!(\"{}\", dep_lib::add(1, 2));\n}\n",
+    );
+    write_file(
+        &dep_dir.join("src").join("lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n\n",
+    );
+
+    let out3 = run_cargo_instrument_cli(&app_dir, &target_dir, &["build"]);
+    assert!(
+        out3.status.success(),
+        "Step 3 rebuild with otel-shim restored must succeed.\n{}",
+        describe(&out3)
+    );
+    let session_content3 = fs::read_to_string(&session_path).unwrap();
+    assert!(session_content3.contains("\"has_otel_shim_provider\": true"));
+
+    // Verify dep_lib mirror DOES receive trampolines
+    let dep_mirrors = mirror_dirs_for(&target_dir, "dep_lib");
+    assert!(!dep_mirrors.is_empty(), "dep_lib must have mirror");
+    let has_trampoline = dep_mirrors.iter().any(|d| {
+        let dir = mirror_root(&target_dir).join(d);
+        contains_trampoline_symbols(&dir)
+    });
+    assert!(
+        has_trampoline,
+        "dep_lib must receive trampolines when otel-shim is present"
+    );
+}
+
+// ----------------------------------------------------------------------------
 // D2 — Hyphenated proc-macro package name normalization
 // ----------------------------------------------------------------------------
 
