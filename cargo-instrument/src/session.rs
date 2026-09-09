@@ -40,6 +40,9 @@ pub struct SessionPlan {
     /// Set of package names that are compiled exclusively for the host
     /// (reached solely via build-dependencies or from proc-macro packages).
     pub host_only_packages: HashSet<String>,
+    /// Set of package manifest directories compiled exclusively for the host.
+    #[serde(default)]
+    pub host_only_manifest_dirs: HashSet<PathBuf>,
     /// Set of package names that have proc-macro targets.
     pub proc_macro_packages: HashSet<String>,
 }
@@ -49,6 +52,7 @@ impl Default for SessionPlan {
         Self {
             has_otel_shim_provider: true,
             host_only_packages: HashSet::new(),
+            host_only_manifest_dirs: HashSet::new(),
             proc_macro_packages: HashSet::new(),
         }
     }
@@ -59,6 +63,23 @@ impl SessionPlan {
     /// (e.g. a dependency of a proc-macro or build script, not linked into target artifacts).
     pub fn is_host_only(&self, package_name: &str) -> bool {
         self.host_only_packages.contains(package_name)
+    }
+
+    /// Disambiguated check: returns true if the package is host-only by name or by source path.
+    pub fn is_host_only_unit(&self, package_name: &str, source_file: Option<&Path>) -> bool {
+        if self.host_only_packages.contains(package_name) {
+            return true;
+        }
+        if let Some(src) = source_file {
+            if self
+                .host_only_manifest_dirs
+                .iter()
+                .any(|dir| src.starts_with(dir))
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// Returns true if `otel-shim` is reachable in the target dependency graph.
@@ -135,9 +156,13 @@ impl SessionPlan {
                     }
                 }
             } else {
-                // If no 'target' in path, check immediate parent only
-                if let Some(parent) = out.parent() {
-                    add_candidate(parent, 0);
+                // If no 'target' in path, check ancestors up to depth 5, stopping at system temp
+                let temp = std::env::temp_dir();
+                for ancestor in out.ancestors().take(5) {
+                    if ancestor == temp {
+                        break;
+                    }
+                    add_candidate(ancestor, 0);
                 }
             }
         }
@@ -270,6 +295,7 @@ impl SessionPlan {
                 return Ok(Self {
                     has_otel_shim_provider: has_shim,
                     host_only_packages: HashSet::new(),
+                    host_only_manifest_dirs: HashSet::new(),
                     proc_macro_packages,
                 });
             }
@@ -359,6 +385,19 @@ impl SessionPlan {
             }
         }
 
+        // Exact manifest directories of packages that are not reachable from target roots
+        let mut host_only_manifest_dirs: HashSet<PathBuf> = HashSet::new();
+        for pkg in packages {
+            if let (Some(id), Some(manifest)) = (pkg["id"].as_str(), pkg["manifest_path"].as_str())
+            {
+                if !target_reachable_ids.contains(id) {
+                    if let Some(parent) = Path::new(manifest).parent() {
+                        host_only_manifest_dirs.insert(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+
         // Check if otel-shim is reachable from target packages
         let has_otel_shim_provider = target_reachable_ids.iter().any(|id| {
             pkg_id_to_name
@@ -370,6 +409,7 @@ impl SessionPlan {
         Ok(Self {
             has_otel_shim_provider,
             host_only_packages,
+            host_only_manifest_dirs,
             proc_macro_packages,
         })
     }
@@ -379,9 +419,17 @@ impl SessionPlan {
             fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_vec_pretty(self)?;
-        let temp_path = path.with_extension(format!("tmp.{}", std::process::id()));
+        static SESSION_TEMP_COUNTER: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let counter = SESSION_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), counter));
         fs::write(&temp_path, &data)?;
-        let _ = fs::rename(&temp_path, path);
+        if let Err(e) = fs::rename(&temp_path, path) {
+            let _ = fs::remove_file(&temp_path);
+            fs::write(path, &data).map_err(|write_err| {
+                format!("rename failed ({e}); direct write failed ({write_err})")
+            })?;
+        }
         Ok(())
     }
 
