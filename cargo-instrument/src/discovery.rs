@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
+use crate::unit::UnitId;
+
 #[derive(Debug, Error)]
 pub enum DiscoveryError {
     #[error("Missing rustc arguments")]
@@ -37,6 +39,8 @@ pub enum CompilationUnit {
         is_test: bool,
         has_opentelemetry: bool,
         has_otel_shim: bool,
+        metadata_hash: Option<String>,
+        extra_filename: Option<String>,
     },
 
     /// A build script compilation (e.g. `build_script_build` or `build.rs`).
@@ -118,6 +122,40 @@ impl CompilationUnit {
     pub fn edition(&self) -> Option<&str> {
         match self {
             CompilationUnit::RustCrate { edition, .. } => edition.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Returns the compilation unit identity (UnitId).
+    pub fn unit_id(&self) -> Option<UnitId> {
+        match self {
+            CompilationUnit::RustCrate {
+                crate_name,
+                metadata_hash,
+                ..
+            } => Some(UnitId::new(crate_name.clone(), metadata_hash.clone())),
+            CompilationUnit::BuildScript { crate_name, .. } => {
+                Some(UnitId::new(crate_name.clone(), None))
+            }
+            CompilationUnit::ProcMacro { crate_name, .. } => {
+                Some(UnitId::new(crate_name.clone(), None))
+            }
+            _ => None,
+        }
+    }
+
+    /// The metadata hash from -C metadata=<hash>, if available.
+    pub fn metadata_hash(&self) -> Option<&str> {
+        match self {
+            CompilationUnit::RustCrate { metadata_hash, .. } => metadata_hash.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The extra filename suffix from -C extra-filename=<val>, if available.
+    pub fn extra_filename(&self) -> Option<&str> {
+        match self {
+            CompilationUnit::RustCrate { extra_filename, .. } => extra_filename.as_deref(),
             _ => None,
         }
     }
@@ -228,6 +266,8 @@ impl CrateInvocation {
         let mut is_test = false;
         let mut has_opentelemetry = false;
         let mut has_otel_shim = false;
+        let mut metadata_hash: Option<String> = None;
+        let mut extra_filename: Option<String> = None;
         let mut positional_source: Option<PathBuf> = None;
 
         let mut i = 0;
@@ -288,6 +328,30 @@ impl CrateInvocation {
                 }
                 i += 1;
                 continue;
+            }
+
+            // Parse -C metadata=... and -C extra-filename=...
+            if arg == "-C" {
+                if i + 1 < args.len() {
+                    let next = &args[i + 1];
+                    if let Some(val) = next.strip_prefix("metadata=") {
+                        metadata_hash = Some(val.to_string());
+                    } else if let Some(val) = next.strip_prefix("extra-filename=") {
+                        extra_filename = Some(val.to_string());
+                    }
+                    i += 2;
+                    continue;
+                }
+            } else if let Some(stripped) = arg.strip_prefix("-C") {
+                if let Some(val) = stripped.strip_prefix("metadata=") {
+                    metadata_hash = Some(val.to_string());
+                    i += 1;
+                    continue;
+                } else if let Some(val) = stripped.strip_prefix("extra-filename=") {
+                    extra_filename = Some(val.to_string());
+                    i += 1;
+                    continue;
+                }
             }
 
             // Skip options that consume the next argument
@@ -382,6 +446,8 @@ impl CrateInvocation {
                 is_test,
                 has_opentelemetry,
                 has_otel_shim,
+                metadata_hash,
+                extra_filename,
             },
             original_args,
         })
