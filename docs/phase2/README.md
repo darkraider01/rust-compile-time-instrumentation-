@@ -5,10 +5,10 @@
 # Phase 2 - Production Hardening
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
-**Status:** In progress - P2.1 Step 1 (regression lock-down) complete; no fixes implemented yet
+**Status:** In progress - P2.1 Steps 1–6 complete; Step 7 scale fixture & cross-platform validation in progress
 **Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
-**Phase 2 test suite status:** 4 regression tests added, all 4 red on `409b774` by design
+**Phase 2 test suite status:** 4 regression tests added, all 4 passing
 
 ---
 
@@ -25,9 +25,9 @@ Phase 2 - Production Hardening (In Progress)
           │
           ├── P2.1 Unit Identity, Instrumentation Policy & Mirror Isolation  ◀── current
           │       ├── Step 1  Regression lock-down          ✅ Complete
-          │       ├── Step 2  Unit identity (-C metadata)   ⬜ Not started
-          │       ├── Step 3  Mirror isolation & atomicity  ⬜ Not started
-          │       └── Step 4  Instrumentation policy        ⬜ Not started
+          │       ├── Step 2  Unit identity (-C metadata)   ✅ Complete
+          │       ├── Step 3  Mirror isolation & atomicity  ✅ Complete
+          │       └── Step 4  Instrumentation policy        ✅ Complete
           ├── P2.2 Macro Expansion Resilience               ⬜ Planned
           ├── P2.3 Async Dependency Trampolines             ⬜ Planned
           ├── P2.4 Large Dependency Graphs                  ⬜ Planned
@@ -244,7 +244,7 @@ the corresponding fix lands.
 cargo test --test graph_topology_tests -- --ignored --nocapture
 ```
 
-Expected result on `409b774` and until P2.1 lands: **0 passed; 4 failed.**
+Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed: **4 passed; 0 failed.**
 
 ---
 
@@ -274,12 +274,12 @@ Expected result on `409b774` and until P2.1 lands: **0 passed; 4 failed.**
 | Step | Work | Status |
 |---|---|---|
 | 1 | Regression lock-down - fixtures and tests for G1-G4 | ✅ Complete |
-| 2 | `UnitId` + `-C metadata` parsing (pure, unit-testable) | ⬜ |
-| 3 | Re-key the mirror path on `UnitId`; atomic mirror writes | ⬜ |
-| 4 | Instrumentation policy: host-set exclusion + link-provider gate | ⬜ |
-| 5 | Scope `remap_dep_info_files` to the unit's own `-C extra-filename` (G6) | ⬜ |
-| 6 | Downgrade the preflight hard-exit to an S11 warning (G5) | ⬜ |
-| 7 | Scale fixture (≥100 units) and cross-platform validation | ⬜ |
+| 2 | `UnitId` + `-C metadata` parsing (pure, unit-testable) | ✅ Complete |
+| 3 | Re-key the mirror path on `UnitId`; atomic mirror writes | ✅ Complete |
+| 4 | Instrumentation policy: host-set exclusion + link-provider gate | ✅ Complete |
+| 5 | Scope `remap_dep_info_files` to the unit's own `-C extra-filename` (G6) | ✅ Complete |
+| 6 | Downgrade the preflight hard-exit to an S11 warning (G5) | ✅ Complete |
+| 7 | Scale fixture (≥100 units) and cross-platform validation | ⬜ In progress |
 
 Steps 2-3 alone close G1 and G3.
 
