@@ -1142,18 +1142,30 @@ pub(crate) fn returns_reference_or_lifetime(output: &syn::ReturnType) -> bool {
     false
 }
 
-/// Check for existing instrumentation attributes (`#[instrument]`, `#[tracing::instrument]`).
+/// Span-creating explicit instrumentation attributes that define a new trace span.
+/// Per S10, functions bearing these attributes must not be automatically instrumented.
+const SPAN_CREATING_ATTRIBUTES: &[&str] = &["instrument", "instrument_span"];
+
+/// Context-propagating explicit instrumentation attributes that propagate existing context
+/// without creating a new span (e.g. upstream draft opentelemetry-rust-contrib#791).
+/// In P2.2, these are conservatively skipped to prevent identifier shadowing collisions (__otel_cx).
+const CONTEXT_PROPAGATING_ATTRIBUTES: &[&str] = &["propagate_context"];
+
+/// Check for existing instrumentation attributes (both span-creating and context-propagating).
+///
+/// Matches the attribute path's final segment against known sets (e.g. `#[instrument]`,
+/// `#[tracing::instrument]`, `#[tracing_attributes::instrument]`, `#[::tracing::instrument]`,
+/// `#[otel_instrument::instrument]`, and `#[propagate_context]`).
 fn has_instrument_attribute(attrs: &[syn::Attribute]) -> bool {
     for attr in attrs {
         let path = attr.path();
-        if path.is_ident("instrument") {
-            return true;
-        }
-        if path.segments.len() >= 2
-            && path.segments[0].ident == "tracing"
-            && path.segments[1].ident == "instrument"
-        {
-            return true;
+        if let Some(last_segment) = path.segments.last() {
+            let ident = &last_segment.ident;
+            if SPAN_CREATING_ATTRIBUTES.iter().any(|&s| ident == s)
+                || CONTEXT_PROPAGATING_ATTRIBUTES.iter().any(|&s| ident == s)
+            {
+                return true;
+            }
         }
     }
     false
