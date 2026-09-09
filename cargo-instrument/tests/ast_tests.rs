@@ -329,10 +329,7 @@ fn propagate_context() {}
     assert!(names.contains(&"propagate_context"));
 
     // Reconciliation identity: candidates + skipped == total
-    assert_eq!(
-        report.candidates.len() + report.skipped_stats.total(),
-        13
-    );
+    assert_eq!(report.candidates.len() + report.skipped_stats.total(), 13);
 }
 
 #[test]

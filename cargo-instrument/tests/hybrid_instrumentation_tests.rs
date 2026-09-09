@@ -236,12 +236,7 @@ pub fn unannotated_clean(x: i32) -> i32 {
     );
 
     // Run cargo check with RUSTC_WRAPPER=cargo-instrument
-    let output = run_cargo(
-        &root.join("collision_crate"),
-        &target_dir,
-        &["check"],
-        true,
-    );
+    let output = run_cargo(&root.join("collision_crate"), &target_dir, &["check"], true);
     assert!(
         output.status.success(),
         "cargo check under #![deny(warnings)] failed with cargo-instrument wrapper!\n{}",
@@ -254,7 +249,7 @@ pub fn unannotated_clean(x: i32) -> i32 {
         .join("debug")
         .join("deps")
         .join("instrumented_sources");
-    
+
     let mut mirrored_lib_paths = Vec::new();
     if let Ok(entries) = fs::read_dir(&mirror_dir) {
         for entry in entries.flatten() {
@@ -271,19 +266,21 @@ pub fn unannotated_clean(x: i32) -> i32 {
         mirror_dir
     );
 
-    let mirrored_content = fs::read_to_string(&mirrored_lib_paths[0])
-        .expect("read mirrored lib.rs");
+    let mirrored_content =
+        fs::read_to_string(&mirrored_lib_paths[0]).expect("read mirrored lib.rs");
 
     assert!(
         mirrored_content.contains("/* __cargo_instrument_anchor: \"unannotated_clean\" */"),
         "Unannotated function must be instrumented"
     );
     assert!(
-        !mirrored_content.contains("/* __cargo_instrument_anchor: \"function_with_propagate_context\" */"),
+        !mirrored_content
+            .contains("/* __cargo_instrument_anchor: \"function_with_propagate_context\" */"),
         "#[propagate_context] function must NOT be instrumented"
     );
     assert!(
-        !mirrored_content.contains("/* __cargo_instrument_anchor: \"function_with_body_context\" */"),
+        !mirrored_content
+            .contains("/* __cargo_instrument_anchor: \"function_with_body_context\" */"),
         "Body with_context function must NOT be instrumented"
     );
 }
@@ -395,7 +392,10 @@ impl AsyncCalculator for CalculatorService {
 
     // 3. Tests in `hybrid_app`
     write_file(
-        &root.join("hybrid_app").join("tests").join("hybrid_suite.rs"),
+        &root
+            .join("hybrid_app")
+            .join("tests")
+            .join("hybrid_suite.rs"),
         r#"
 use hybrid_app::*;
 
@@ -552,7 +552,10 @@ impl AsyncCalculator for CalculatorService {
 
     // 3. Test in `async_hybrid_app`
     write_file(
-        &root.join("async_hybrid_app").join("tests").join("async_suite.rs"),
+        &root
+            .join("async_hybrid_app")
+            .join("tests")
+            .join("async_suite.rs"),
         r#"
 use async_hybrid_app::*;
 
