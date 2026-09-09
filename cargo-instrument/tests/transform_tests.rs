@@ -1150,12 +1150,22 @@ fn main() {
     );
 
     // 3. Verify the mirrored source exists under target/instrumented and contains the sentinel
-    let mirrored_sources_dir = target_dir
+    let instrumented_sources = target_dir
         .join("debug")
         .join("deps")
-        .join("instrumented_sources")
-        .join("live_pkg")
-        .join("src");
+        .join("instrumented_sources");
+
+    let live_pkg_dir = fs::read_dir(&instrumented_sources)
+        .ok()
+        .and_then(|entries| {
+            entries.flatten().map(|e| e.path()).find(|p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                name == "live_pkg" || name.starts_with("live_pkg-")
+            })
+        })
+        .unwrap_or_else(|| instrumented_sources.join("live_pkg"));
+
+    let mirrored_sources_dir = live_pkg_dir.join("src");
 
     assert!(
         mirrored_sources_dir.exists(),
