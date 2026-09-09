@@ -55,6 +55,12 @@ jobs:
       - name: Run wrapper + Cargo integration tests
         run: cargo test --workspace --test cargo_integration_tests --test wrapper_tests --test trampoline_tests -- --nocapture
 
+      - name: Run Phase 2 graph topology regression tests
+        run: cargo test --test graph_topology_tests -- --ignored --nocapture
+
+      - name: Run Phase 2 scale fixture tests (>=100 units)
+        run: cargo test --test graph_scale_tests -- --nocapture
+
       # Documents precisely what the tests above do and do not prove.
       # Written per-matrix-leg deliberately: process spawning, path
       # resolution (Path::is_absolute()/join() in wrapper.rs), and
