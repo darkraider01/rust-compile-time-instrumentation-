@@ -105,7 +105,7 @@ Planned evaluation:
 
 ### Current Focus: Phase 2 - Production Hardening
 
-Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestone P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) is **IMPLEMENTED** with 4 dedicated regression/characterization tests verified green and all 145 Phase 1 tests passing. Active focus is on scale testing (≥100 units) and advancing to P2.2 (Macro Expansion Resilience).
+Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestone P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) is **COMPLETE** with 4 dedicated regression tests, a 105-unit parallel scale fixture, and all 145 Phase 1 tests passing. Next milestone: P2.2 (Macro Expansion Resilience).
 
 ## Documentation
 
@@ -186,6 +186,9 @@ CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace --test e2e_registry_tests -- 
 
 # Run Phase 2 graph topology regression suite (G1-G4)
 cargo test --test graph_topology_tests -- --ignored --nocapture
+
+# Run Phase 2 scale fixture test (>=100 units under parallel compilation)
+cargo test --test graph_scale_tests -- --nocapture
 
 # Run compile-time, runtime nanosecond latency, and binary size benchmarks (A17)
 cargo bench --bench bench_overhead

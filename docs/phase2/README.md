@@ -5,10 +5,10 @@
 # Phase 2 - Production Hardening
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
-**Status:** In progress - P2.1 Steps 1–6 complete; Step 7 scale fixture & cross-platform validation in progress
+**Status:** Complete (P2.1 Steps 1–7 complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
 **Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
-**Phase 2 test suite status:** 4 regression tests added, all 4 passing
+**Phase 2 test suite status:** 4 regression tests + 1 105-unit scale test added, all passing
 
 ---
 
@@ -279,7 +279,7 @@ Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed: **4 passed; 0 f
 | 4 | Instrumentation policy: host-set exclusion + link-provider gate | ✅ Complete |
 | 5 | Scope `remap_dep_info_files` to the unit's own `-C extra-filename` (G6) | ✅ Complete |
 | 6 | Downgrade the preflight hard-exit to an S11 warning (G5) | ✅ Complete |
-| 7 | Scale fixture (≥100 units) and cross-platform validation | ⬜ In progress |
+| 7 | Scale fixture (≥100 units) and cross-platform validation | ✅ Complete |
 
 Steps 2-3 alone close G1 and G3.
 
