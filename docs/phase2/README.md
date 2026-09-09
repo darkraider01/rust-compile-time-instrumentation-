@@ -220,6 +220,31 @@ Without CLI orchestration, the first wave of parallel `rustc` processes hitting 
 
 **Fix:** Flipped default to `false` and emitted a warning diagnostic upon failure to adhere strictly to S11 fail-open policy. Covered by `test_d5_metadata_failure_safe_default`.
 
+### Architecture Risks for Later Integration (P2.3 Scope)
+
+Two risks in the Tier-2 C ABI are recorded here to be batched into the P2.3 ABI extension:
+
+#### R-1: Dependency spans share hardcoded instrumentation scope
+
+`otel-shim/src/lib.rs:119` uses `global::tracer("dependency")` as a literal string for all third-party crates, whereas Tier-1 uses `global::tracer(crate_name)`. Per-crate `InstrumentationScope` attribution is lost in Tier-2. Passing crate name across the ABI will be batched into P2.3.
+
+#### R-2: File, line, and kind transmitted across ABI and discarded
+
+`__otel_span_enter(name, name_len, _file, _file_len, _line, _kind)` in `otel-shim/src/lib.rs:87-137` leaves file, line, and kind underscore-prefixed and unused, hardcoding `SpanKind::Internal`. Semantic convention attributes (`code.function.name`, `code.file.path`, `code.line.number` per §16.14) will be wired into the span builder during P2.3.
+
+### Coexistence with Explicit Instrumentation
+
+Explicit developer instrumentation (`#[tracing::instrument]`, manual `tracer.start()`, and draft `#[propagate_context]`) coexists cleanly with automatic compile-time instrumentation:
+
+1. **Precedence (S10):** Explicit instrumentation always wins at function granularity. Functions bearing span-creating attributes (`#[instrument]`, `#[instrument_span]`) or manual span creation are skipped by `ast.rs` to avoid double-instrumentation. Context-propagating attributes (`#[propagate_context]`) are also conservatively skipped in P2.2 to prevent identifier shadowing collisions (`__otel_cx`).
+2. **Hybrid Parenting via `tracing-opentelemetry`:** `OpenTelemetryLayer::with_context_activation` defaults to enabled. When execution enters a `#[tracing::instrument]` span, its OpenTelemetry `Context` is automatically activated on the current thread/task. Any downstream automatically-instrumented dependency spans query `Context::current()` and automatically parent under the caller's explicit span with zero manual coordination.
+3. **Three-Level Source of Truth:**
+   - **Unit Level (`SessionPlan` + `CrateRole` + `UnitId`):** Determines whether an entire compilation unit is eligible for instrumentation (excluding host tools, proc-macro dependencies, and crates lacking `otel-shim`).
+   - **Function Level (`DiscoveryReport.candidates` / `skipped_stats`):** Pure AST analysis in `ast.rs` that determines which individual functions are instrumented vs skipped. Preserves the reconciliation identity: `candidates.len() + skipped_stats.total() == total_functions`.
+   - **Splice Level (`TransformationPlan.skipped`):** Final idempotence guard inspecting existing anchor sentinels.
+4. **Safety Tradeoff (Over-Suppression):** `body_has_handwritten_otel` conservatively checks the entire function body. If an un-annotated function calls `.with_context(cx)`, automatic span creation is suppressed for that function. This trades minor span coverage for guaranteed prevention of double instrumentation and trace corruption.
+5. **Upstream Alignment:** Tracking [opentelemetry-rust-contrib#791](https://github.com/open-telemetry/opentelemetry-rust-contrib/issues/791) / [PR #792](https://github.com/open-telemetry/opentelemetry-rust-contrib/pull/792) (`#[propagate_context]`). Its design is span-neutral (propagation-only), fully complementary to this tool's automatic span creation.
+
 ---
 
 ## 3. P2.1 Scope
@@ -259,6 +284,7 @@ the corresponding fix lands.
 | `test_d1_session_cache_fingerprint_invalidation_both_directions` | D1 | `app → dep_lib`, edit `Cargo.toml` | Cache invalidates on manifest hash change; both add and remove directions transition policy correctly |
 | `test_d2_hyphenated_proc_macro_host_dependency` | D2 | `app → pm-macro → pm-dep` (hyphenated) | Hyphenated package names normalized to underscores; host dependency excluded from instrumentation |
 | `test_d3_cli_session_plan_avoids_wrong_manifest_heuristic` | D3 | workspace with decoy sibling manifest | CLI precomputes plan from execution dir and passes via `CARGO_INSTRUMENT_SESSION`; correct manifest policy used |
+| `test_d3_cli_session_plan_respects_manifest_path_flag` | D3 | `--manifest-path` to external crate with decoy cwd | CLI parses `--manifest-path` and computes plan for target workspace rather than caller cwd |
 | `test_d5_metadata_failure_safe_default` | D5 | workspace where `cargo metadata` fails | Default plan sets `has_otel_shim_provider: false`; fails open without injecting trampolines |
 
 ### Design notes
@@ -288,7 +314,7 @@ the corresponding fix lands.
 cargo test --test graph_topology_tests -- --ignored --nocapture
 ```
 
-Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed and closeout complete: **8 passed; 0 failed.**
+Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed and closeout complete: **9 passed; 0 failed.**
 
 ---
 
