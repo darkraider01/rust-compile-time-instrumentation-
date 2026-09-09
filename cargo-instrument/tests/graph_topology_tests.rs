@@ -569,6 +569,76 @@ fn test_no_shim_provider_must_not_emit_trampolines() {
 }
 
 // ----------------------------------------------------------------------------
+// D2 — Hyphenated proc-macro package name normalization
+// ----------------------------------------------------------------------------
+
+/// **Defect (D2):** Cargo metadata uses hyphenated package names (`pm-dep`), but rustc
+/// passes underscored crate names (`pm_dep`). Name matching must normalize hyphens to
+/// underscores so host-only dependencies are recognized by name.
+#[test]
+#[ignore = "P2.1 closeout: asserts hyphenated host-only proc-macro dependency is excluded"]
+fn test_d2_hyphenated_proc_macro_host_dependency() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+
+    // Crate package name has a hyphen: "pm-dep"
+    write_file(
+        &root.join("pm-dep").join("Cargo.toml"),
+        "[package]\nname = \"pm-dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    );
+    write_file(
+        &root.join("pm-dep").join("src").join("lib.rs"),
+        "pub fn greet() -> &'static str { \"hello\" }\n",
+    );
+
+    write_file(
+        &root.join("pm-macro").join("Cargo.toml"),
+        "[package]\nname = \"pm-macro\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+         [lib]\nproc-macro = true\n\n\
+         [dependencies]\npm-dep = { path = \"../pm-dep\" }\n",
+    );
+    write_file(
+        &root.join("pm-macro").join("src").join("lib.rs"),
+        "use proc_macro::TokenStream;\n\n\
+         #[proc_macro]\n\
+         pub fn emit_greet(_input: TokenStream) -> TokenStream {\n    \
+         let s = pm_dep::greet();\n    \
+         format!(\"{:?}\", s).parse().unwrap()\n}\n",
+    );
+
+    let app_dir = root.join("app");
+    write_file(
+        &app_dir.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+             [dependencies]\npm-macro = {{ path = \"../pm-macro\" }}\n\
+             otel-shim = {{ path = \"{}\" }}\n",
+            otel_shim_dep_path()
+        ),
+    );
+    write_file(
+        &app_dir.join("src").join("main.rs"),
+        "fn main() {\n    otel_shim::init();\n    println!(\"{}\", pm_macro::emit_greet!());\n}\n",
+    );
+
+    let target_dir = root.join("target").join("instrumented");
+    let output = run_cargo(&app_dir, &target_dir, &["build"], true);
+
+    // Host-only package "pm-dep" (compiled as crate "pm_dep") must not have mirrors
+    let mirrors = mirror_dirs_for(&target_dir, "pm_dep");
+    assert!(
+        mirrors.is_empty(),
+        "hyphenated host-side dependency 'pm-dep' must not be instrumented; mirrors found: {mirrors:?}"
+    );
+
+    assert!(
+        output.status.success(),
+        "build with hyphenated proc-macro dependency must succeed.\n{}",
+        describe(&output)
+    );
+}
+
+// ----------------------------------------------------------------------------
 // D5 — Unsafe default when cargo metadata fails
 // ----------------------------------------------------------------------------
 
