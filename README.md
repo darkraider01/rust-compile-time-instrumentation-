@@ -9,7 +9,7 @@
 [![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust)](https://www.rust-lang.org)
 [![No nightly](https://img.shields.io/badge/nightly-not%20required-brightgreen)](docs/research/17-decision-records.md)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Phase](https://img.shields.io/badge/phase-1%20complete-brightgreen)](#status)
+[![Phase](https://img.shields.io/badge/phase-2%20in%20progress-blue)](#status)
 
 </div>
 
@@ -21,7 +21,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
 | **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across 145 automated tests) |
-| **Phase 2 - Production Hardening** | **Next** | Production dependency scheduler, macro expansion resilience, async dependency trampolines, large dependency graphs, cross-platform validation |
+| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience (P2.2), async dependency trampolines (P2.3), large dependency graphs (P2.4), cross-platform validation (P2.5) |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
@@ -73,18 +73,16 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
 ---
 
 ### Phase 2 - Production Hardening
-**Status:** NEXT (Planned)
+**Status:** IN PROGRESS
 
 **Goal:** Establish the reliability, usability, and scale required for production build environments.
 
-Planned areas:
-- **Broader Cargo/workspace coverage:** Full support for complex virtual workspaces, custom build profiles, and Cargo features.
-- **Toolchain & MSRV compatibility:** Formalize MSRV policy and test across supported stable compiler releases.
-- **Performance optimization:** Minimize AST traversal and parsing overhead during incremental and full builds.
-- **Incremental compilation:** Ensure tight integration with rustc's incremental cache without invalidating unchanged compilation units.
-- **Cross-platform validation:** Comprehensive testing across Tier 1 platforms (Linux x86_64/aarch64, Windows, macOS).
-- **Large dependency graphs:** Stress-testing on industrial dependency trees (e.g. 500+ crates).
-- **OpenTelemetry Rust compatibility:** Track upcoming API/SDK changes in the `opentelemetry` crate ecosystem.
+- [x] **P2.1 - Unit Identity, Instrumentation Policy & Mirror Isolation** - COMPLETE
+  Introduces unique compilation unit identity (`UnitId`) parsed from `-C metadata` in rustc argv, isolates instrumented source mirrors per unit (`{crate_name}-{metadata_hash}`), performs atomic mirror writes with fail-open fallback, enforces build session policy via single-pass `cargo metadata` resolution (host-only package exclusion and link-provider reachability gating), scopes `.d` dep-info remapping, and downgrades preflight checks to non-fatal warnings.
+- [ ] **P2.2 - Macro Expansion Resilience** - PLANNED
+- [ ] **P2.3 - Async Dependency Trampolines** - PLANNED
+- [ ] **P2.4 - Large Dependency Graphs** - PLANNED
+- [ ] **P2.5 - Cross-Platform Validation** - PLANNED
 
 ---
 
@@ -107,10 +105,11 @@ Planned evaluation:
 
 ### Current Focus: Phase 2 - Production Hardening
 
-Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. The full compile-time instrumentation pipeline is verified with **145 automated tests** across Linux, Windows, and macOS, with 0 compiler warnings and 0 clippy warnings. Focus is now shifting to Phase 2: Production Hardening (production dependency scheduler, macro expansion resilience, async dependency trampolines, and large-scale ecosystem testing).
+Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestone P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) is **IMPLEMENTED** with 4 dedicated regression/characterization tests verified green and all 145 Phase 1 tests passing. Active focus is on scale testing (≥100 units) and advancing to P2.2 (Macro Expansion Resilience).
 
 ## Documentation
 
+- **[docs/phase2/](docs/phase2/)** - the Phase 2 implementation record, defect register, regression suite, and design plans for production hardening (unit identity, mirror isolation, policy gating, macro expansion, and graph scale). Start at [docs/phase2/README.md](docs/phase2/README.md).
 - **[docs/phase1/](docs/phase1/)** - the Phase 1 implementation record, architecture, empirical findings, and verification matrix for all milestones P1.1–P1.8 (wrapper interception, classification, AST analysis, surgical byte transformation, native OTel, async instrumentation, dependency trampolines, registry validation, and overhead benchmarks). Start at [docs/phase1/README.md](docs/phase1/README.md).
 - **[docs/research/](docs/research/)** - the full Phase 0 investigation: landscape survey, architecture candidates, the [instrumentation semantics specification](docs/research/16-instrumentation-semantics.md) (the correctness oracle Phase 1's tests are written against), the [architecture decision records](docs/research/17-decision-records.md), and four rounds of verification (hands-on experiments, an adversarial review, a maintainer Q&A round, and a validated experiment matrix). Start at [docs/research/README.md](docs/research/README.md).
 - Later phases receive their own sibling documentation folders under `docs/` as milestones land. `docs/research/` remains specifically the archived Phase 0 record and stays frozen.
@@ -184,6 +183,9 @@ cargo test --workspace
 $env:CARGO_INSTRUMENT_REGISTRY="1"; cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
 # Bash:
 CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
+
+# Run Phase 2 graph topology regression suite (G1-G4)
+cargo test --test graph_topology_tests -- --ignored --nocapture
 
 # Run compile-time, runtime nanosecond latency, and binary size benchmarks (A17)
 cargo bench --bench bench_overhead
