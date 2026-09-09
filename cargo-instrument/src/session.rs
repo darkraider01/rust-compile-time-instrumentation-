@@ -265,6 +265,7 @@ impl SessionPlan {
                     });
                     if is_pm {
                         proc_macro_packages.insert(name.to_string());
+                        proc_macro_packages.insert(name.replace('-', "_"));
                         proc_macro_ids.insert(id.to_string());
                     }
                 }
@@ -376,11 +377,13 @@ impl SessionPlan {
             .filter_map(|id| pkg_id_to_name.get(id).cloned())
             .collect();
 
-        // Any package in the build graph whose name is NEVER reachable via target roots is host-only
+        // Any package in the build graph whose name is NEVER reachable via target roots is host-only.
+        // D2: Store both original and underscore-normalized names so rustc `--crate-name` matches.
         let mut host_only_packages: HashSet<String> = HashSet::new();
         for name in pkg_id_to_name.values() {
             if !target_reachable_names.contains(name) {
                 host_only_packages.insert(name.clone());
+                host_only_packages.insert(name.replace('-', "_"));
             }
         }
 
@@ -450,5 +453,17 @@ mod tests {
             !plan.has_otel_shim_provider(),
             "Default plan must default has_otel_shim_provider to false per S11 fail-open"
         );
+    }
+
+    #[test]
+    fn test_d2_host_only_hyphenated_and_underscored_matching() {
+        let mut plan = SessionPlan::default();
+        plan.host_only_packages.insert("pm-dep".to_string());
+        plan.host_only_packages.insert("pm_dep".to_string());
+
+        assert!(plan.is_host_only("pm-dep"));
+        assert!(plan.is_host_only("pm_dep"));
+        assert!(plan.is_host_only_unit("pm_dep", None));
+        assert!(plan.is_host_only_unit("pm-dep", None));
     }
 }
