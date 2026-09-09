@@ -45,9 +45,6 @@ pub struct SessionPlan {
     /// Set of package manifest directories compiled exclusively for the host.
     #[serde(default)]
     pub host_only_manifest_dirs: HashSet<PathBuf>,
-    /// Proc-macro packages themselves.
-    #[serde(default)]
-    pub proc_macro_packages: HashSet<String>,
     /// Content hash over Cargo.lock + reachable member Cargo.toml manifests.
     #[serde(default)]
     pub fingerprint: String,
@@ -348,7 +345,6 @@ impl SessionPlan {
             .ok_or("missing packages in metadata")?;
 
         let mut pkg_id_to_name: HashMap<String, String> = HashMap::new();
-        let mut proc_macro_packages: HashSet<String> = HashSet::new();
         let mut proc_macro_ids: HashSet<String> = HashSet::new();
 
         for pkg in packages {
@@ -362,8 +358,6 @@ impl SessionPlan {
                             .unwrap_or(false)
                     });
                     if is_pm {
-                        proc_macro_packages.insert(name.to_string());
-                        proc_macro_packages.insert(name.replace('-', "_"));
                         proc_macro_ids.insert(id.to_string());
                     }
                 }
@@ -412,7 +406,6 @@ impl SessionPlan {
                     has_otel_shim_provider: has_shim,
                     host_only_packages: HashSet::new(),
                     host_only_manifest_dirs: HashSet::new(),
-                    proc_macro_packages,
                     fingerprint,
                     manifest_paths,
                     workspace_root: Some(workspace_root),
@@ -499,13 +492,8 @@ impl SessionPlan {
 
         // Any package in the build graph whose name is NEVER reachable via target roots is host-only.
         // D2: Store normalized underscored names so rustc `--crate-name` matches without cross-collision.
-        let mut host_only_packages: HashSet<String> = HashSet::new();
-        for name in pkg_id_to_name.values() {
-            let normalized = name.replace('-', "_");
-            if !target_reachable_names.contains(&normalized) {
-                host_only_packages.insert(normalized);
-            }
-        }
+        let host_only_packages =
+            compute_host_only(pkg_id_to_name.values(), &target_reachable_names);
 
         // Exact manifest directories of packages that are not reachable from target roots
         let mut host_only_manifest_dirs: HashSet<PathBuf> = HashSet::new();
@@ -534,7 +522,6 @@ impl SessionPlan {
             has_otel_shim_provider,
             host_only_packages,
             host_only_manifest_dirs,
-            proc_macro_packages,
             fingerprint,
             manifest_paths,
             workspace_root: Some(workspace_root),
@@ -567,6 +554,21 @@ impl SessionPlan {
     }
 }
 
+/// Compute the set of host-only package names by filtering out target-reachable packages.
+///
+/// Both target-reachable names and candidate package names are normalized to underscored
+/// form so hyphenated and underscored representations compare equivalently without cross-pollution.
+pub(crate) fn compute_host_only<S: AsRef<str>>(
+    package_names: impl IntoIterator<Item = S>,
+    target_reachable_names: &HashSet<String>,
+) -> HashSet<String> {
+    package_names
+        .into_iter()
+        .map(|n| n.as_ref().replace('-', "_"))
+        .filter(|n| !target_reachable_names.contains(n))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,26 +587,11 @@ mod tests {
 
     #[test]
     fn test_d2_normalization_does_not_cross_pollute_target_reachable() {
-        let mut pkg_id_to_name = std::collections::HashMap::new();
-        pkg_id_to_name.insert("id_host", "foo-bar".to_string());
-        pkg_id_to_name.insert("id_target", "foo_bar".to_string());
+        let target_reachable_names: HashSet<String> = ["foo_bar".to_string()].into_iter().collect();
+        let all_packages = ["foo-bar", "foo_bar"];
 
-        let target_reachable_ids: std::collections::HashSet<&str> =
-            ["id_target"].into_iter().collect();
-
-        let target_reachable_names: HashSet<String> = target_reachable_ids
-            .iter()
-            .filter_map(|id| pkg_id_to_name.get(id).cloned())
-            .map(|n| n.replace('-', "_"))
-            .collect();
-
-        let mut host_only_packages: HashSet<String> = HashSet::new();
-        for name in pkg_id_to_name.values() {
-            let normalized = name.replace('-', "_");
-            if !target_reachable_names.contains(&normalized) {
-                host_only_packages.insert(normalized);
-            }
-        }
+        // Calls the shared compute_host_only function directly
+        let host_only_packages = compute_host_only(all_packages, &target_reachable_names);
 
         let plan = SessionPlan {
             host_only_packages,
