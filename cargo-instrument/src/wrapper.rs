@@ -8,10 +8,12 @@ use thiserror::Error;
 use crate::ast::{analyze_source_file, check_application_preflight};
 use crate::candidate::{Candidate, DiscoveryReport, UnsafePolicy};
 use crate::discovery::{CrateInvocation, CrateRole, DiscoveryError};
+use crate::session::SessionPlan;
 use crate::transform::{
     paths_are_identical, transform_source_file_scoped_with_emitter, Emitter, NativeOtelEmitter,
     SentinelEmitter, SkipReason, TrampolineEmitter,
 };
+use crate::unit::UnitId;
 
 pub const RECURSION_GUARD_ENV: &str = "CARGO_INSTRUMENT_ACTIVE";
 pub const DEBUG_ENV: &str = "INSTRUMENT_DEBUG";
@@ -113,15 +115,32 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                     // Resolve relative source paths against current working directory
                     let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                     let role = invocation.unit.role(&current_dir);
+                    let unit_id = invocation
+                        .unit
+                        .unit_id()
+                        .unwrap_or_else(|| UnitId::from_crate_name(crate_name));
+
+                    // Load session policy once per build session
+                    let session_plan =
+                        SessionPlan::load_or_create(&current_dir, invocation.unit.out_dir());
 
                     // Registry dependency opt-in gate (§12.1, §12.3):
-                    // In Phase 1, registry dependencies are skipped by default. Setting CARGO_INSTRUMENT_REGISTRY=1
-                    // enables empirical validation on eligible third-party crates (e.g. census).
                     let registry_enabled = env::var("CARGO_INSTRUMENT_REGISTRY")
                         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                         .unwrap_or(false);
 
+                    let is_host_only = session_plan.is_host_only(crate_name);
+
                     let should_skip = if invocation.unit.is_telemetry_or_tool_crate() {
+                        true
+                    } else if is_host_only {
+                        if config.debug_output {
+                            eprintln!(
+                                "[cargo-instrument PID={} crate={}] skipping host-only dependency",
+                                std::process::id(),
+                                crate_name
+                            );
+                        }
                         true
                     } else if role == CrateRole::RegistryDependency {
                         !registry_enabled
@@ -156,37 +175,43 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                     let native_otel_enforced =
                                         env::var("CARGO_INSTRUMENT_NATIVE_OTEL").is_ok();
 
-                                    // Preflight check for application crates declaring otel-shim (G2 / C2)
+                                    // Preflight check for application crates declaring otel-shim (G5 / S11)
+                                    // Downgraded from hard-exit to fail-open warning per P2.1 DoD #7
+                                    let mut preflight_failed = false;
                                     if has_otel_shim {
                                         if let Err(msg) =
                                             check_application_preflight(crate_name, &resolved_path)
                                         {
-                                            eprintln!("error: {msg}");
-                                            return Ok(1);
+                                            eprintln!(
+                                                "warning: cargo-instrument: preflight check for application crate '{crate_name}' failed: {msg}. \
+                                                Compiling unmodified per S11 fail-open."
+                                            );
+                                            preflight_failed = true;
                                         }
                                     }
 
                                     // H1: Splicing pipeline integration
                                     if !report.candidates.is_empty() {
-                                        let emitter: Option<Box<dyn Emitter>> = if report
-                                            .has_colliding_symbols
+                                        let emitter: Option<Box<dyn Emitter>> = if preflight_failed
                                         {
+                                            None
+                                        } else if report.has_colliding_symbols {
                                             eprintln!(
-                                            "warning: cargo-instrument: crate '{crate_name}' exports an ABI symbol conflicting with otel-shim. \
-                                            Skipping instrumentation per S11 fail-open."
-                                        );
+                                                "warning: cargo-instrument: crate '{crate_name}' exports an ABI symbol conflicting with otel-shim. \
+                                                Skipping instrumentation per S11 fail-open."
+                                            );
                                             None
                                         } else if report.is_no_std {
                                             eprintln!(
-                                            "warning: cargo-instrument: crate '{crate_name}' specifies `#![no_std]`. \
-                                            Skipping instrumentation per §12.3."
-                                        );
+                                                "warning: cargo-instrument: crate '{crate_name}' specifies `#![no_std]`. \
+                                                Skipping instrumentation per §12.3."
+                                            );
                                             None
                                         } else if report.unsafe_policy == UnsafePolicy::Forbidden {
                                             eprintln!(
-                                            "warning: cargo-instrument: crate '{crate_name}' specifies `#![forbid(unsafe_code)]`. \
-                                            Skipping instrumentation per R26."
-                                        );
+                                                "warning: cargo-instrument: crate '{crate_name}' specifies `#![forbid(unsafe_code)]`. \
+                                                Skipping instrumentation per R26."
+                                            );
                                             None
                                         } else if use_sentinel {
                                             Some(Box::new(SentinelEmitter))
@@ -195,19 +220,29 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                 Some(Box::new(NativeOtelEmitter::new(crate_name)))
                                             } else if native_otel_enforced {
                                                 eprintln!(
-                                            "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry'. \
-                                            Skipping instrumentation per S11 fail-open."
-                                        );
+                                                    "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry'. \
+                                                    Skipping instrumentation per S11 fail-open."
+                                                );
                                                 None
                                             } else {
                                                 Some(Box::new(SentinelEmitter))
                                             }
                                         } else {
-                                            Some(Box::new(TrampolineEmitter::new(
-                                                crate_name,
-                                                invocation.unit.edition().map(String::from),
-                                                report.unsafe_policy,
-                                            )))
+                                            // Tier 2: Non-application crate
+                                            // G4 link provider gate: verify otel-shim is reachable in the build graph
+                                            if !session_plan.has_otel_shim_provider() {
+                                                eprintln!(
+                                                    "warning: cargo-instrument: no otel-shim provider found in build graph for '{crate_name}'. \
+                                                    Skipping instrumentation per S11 fail-open."
+                                                );
+                                                None
+                                            } else {
+                                                Some(Box::new(TrampolineEmitter::new(
+                                                    crate_name,
+                                                    invocation.unit.edition().map(String::from),
+                                                    report.unsafe_policy,
+                                                )))
+                                            }
                                         };
 
                                         if let Some(emitter) = emitter {
@@ -215,6 +250,8 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                 &current_dir,
                                                 source_file,
                                                 crate_name,
+                                                &unit_id,
+                                                invocation.unit.extra_filename(),
                                                 invocation.unit.out_dir(),
                                                 &report,
                                                 emitter.as_ref(),
@@ -291,6 +328,8 @@ pub struct MirroredCrateInfo {
     pub base_rel_dir: PathBuf,
     pub is_in_tree: bool,
     pub source_was_relative: bool,
+    pub crate_name: String,
+    pub extra_filename: Option<String>,
 }
 
 /// Mirror and surgically transform all source files for an eligible crate compilation unit.
@@ -298,29 +337,33 @@ pub struct MirroredCrateInfo {
 /// Places instrumented source files into an isolated directory under `--out-dir` (or temporary
 /// directory if `--out-dir` is unspecified), leaving original source files 100% untouched.
 /// Returns the updated root source file path to be passed to `rustc`.
+#[allow(clippy::too_many_arguments)]
 fn mirror_and_transform_crate_sources(
     current_dir: &Path,
     source_file: &Path,
     crate_name: &str,
+    unit_id: &UnitId,
+    extra_filename: Option<&str>,
     out_dir: Option<&Path>,
     report: &DiscoveryReport,
     emitter: &dyn Emitter,
     debug_output: bool,
 ) -> Result<MirroredCrateInfo, Box<dyn std::error::Error>> {
-    // 1. Determine destination mirror directory
+    // 1. Determine destination mirror directory re-keyed on UnitId
+    let mirror_dir_name = unit_id.dir_name();
     let mirror_base = if let Some(out) = out_dir {
         if out.is_absolute() {
-            out.join("instrumented_sources").join(crate_name)
+            out.join("instrumented_sources").join(&mirror_dir_name)
         } else {
             current_dir
                 .join(out)
                 .join("instrumented_sources")
-                .join(crate_name)
+                .join(&mirror_dir_name)
         }
     } else {
         std::env::temp_dir().join(format!(
             "cargo_instrument_{}_{}",
-            crate_name,
+            mirror_dir_name,
             std::process::id()
         ))
     };
@@ -515,6 +558,8 @@ fn mirror_and_transform_crate_sources(
         base_rel_dir: base_rel_dir.to_path_buf(),
         is_in_tree,
         source_was_relative: source_file.is_relative(),
+        crate_name: crate_name.to_string(),
+        extra_filename: extra_filename.map(String::from),
     })
 }
 
@@ -590,12 +635,26 @@ fn mirror_dir_recursive(
                         }
                     }
                 }
-                fs::copy(&path, &dest)?;
+                // Atomic copy to temporary destination first
+                let temp_dest = dest.with_extension(format!("tmp.{}", std::process::id()));
+                fs::copy(&path, &temp_dest)?;
                 if let Ok(metadata) = fs::metadata(&path) {
                     if let Ok(mtime) = metadata.modified() {
-                        if let Ok(file) = fs::OpenOptions::new().write(true).open(&dest) {
+                        if let Ok(file) = fs::OpenOptions::new().write(true).open(&temp_dest) {
                             let times = fs::FileTimes::new().set_modified(mtime);
                             let _ = file.set_times(times);
+                        }
+                    }
+                }
+                if fs::rename(&temp_dest, &dest).is_err() {
+                    let _ = fs::remove_file(&temp_dest);
+                    fs::copy(&path, &dest)?;
+                    if let Ok(metadata) = fs::metadata(&path) {
+                        if let Ok(mtime) = metadata.modified() {
+                            if let Ok(file) = fs::OpenOptions::new().write(true).open(&dest) {
+                                let times = fs::FileTimes::new().set_modified(mtime);
+                                let _ = file.set_times(times);
+                            }
                         }
                     }
                 }
@@ -624,9 +683,6 @@ fn execute_real_rustc(rustc: &Path, args: &[String]) -> Result<ExitStatus, Wrapp
 /// Rewriting the .d file restores Cargo's ability to watch original source files for incremental changes
 /// while avoiding false dirty rebuild triggers on repeat builds (A13).
 fn remap_dep_info_files(out_dir: &Path, info: &MirroredCrateInfo) {
-    let Ok(entries) = fs::read_dir(out_dir) else {
-        return;
-    };
     let mirror_str = info.mirror_base.to_string_lossy();
     let mirror_str_fwd = mirror_str.replace('\\', "/");
 
@@ -637,32 +693,63 @@ fn remap_dep_info_files(out_dir: &Path, info: &MirroredCrateInfo) {
     };
     let replacement_fwd = replacement.replace('\\', "/");
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|e| e == "d") {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if content.contains(&*mirror_str) || content.contains(&mirror_str_fwd) {
-                    let mirror_slash = format!("{}/", mirror_str_fwd.trim_end_matches('/'));
-                    let mirror_backslash = format!("{}\\", mirror_str.trim_end_matches('\\'));
+    let remap_file = |path: &Path| {
+        if let Ok(content) = fs::read_to_string(path) {
+            if content.contains(&*mirror_str) || content.contains(&mirror_str_fwd) {
+                let mirror_slash = format!("{}/", mirror_str_fwd.trim_end_matches('/'));
+                let mirror_backslash = format!("{}\\", mirror_str.trim_end_matches('\\'));
 
-                    let rep_slash = if replacement_fwd.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{}/", replacement_fwd.trim_end_matches('/'))
-                    };
-                    let rep_backslash = if replacement.is_empty() {
-                        String::new()
-                    } else {
-                        format!("{}\\", replacement.trim_end_matches('\\'))
-                    };
+                let rep_slash = if replacement_fwd.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}/", replacement_fwd.trim_end_matches('/'))
+                };
+                let rep_backslash = if replacement.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\\", replacement.trim_end_matches('\\'))
+                };
 
-                    let updated = content
-                        .replace(&mirror_slash, &rep_slash)
-                        .replace(&mirror_backslash, &rep_backslash)
-                        .replace(&mirror_str_fwd, &replacement_fwd)
-                        .replace(&*mirror_str, &replacement);
+                let updated = content
+                    .replace(&mirror_slash, &rep_slash)
+                    .replace(&mirror_backslash, &rep_backslash)
+                    .replace(&mirror_str_fwd, &replacement_fwd)
+                    .replace(&*mirror_str, &replacement);
 
-                    let _ = fs::write(&path, updated);
+                let _ = fs::write(path, updated);
+            }
+        }
+    };
+
+    // Scoped remapping (G6): target this unit's own dep-info file directly
+    let extra = info.extra_filename.as_deref().unwrap_or("");
+    let candidate_names = [
+        format!("{}{}.d", info.crate_name, extra),
+        format!("lib{}{}.d", info.crate_name, extra),
+        format!("{}.d", info.crate_name),
+        format!("lib{}.d", info.crate_name),
+    ];
+
+    let mut found = false;
+    for name in &candidate_names {
+        let p = out_dir.join(name);
+        if p.is_file() {
+            remap_file(&p);
+            found = true;
+        }
+    }
+
+    if !found {
+        if let Ok(entries) = fs::read_dir(out_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().is_some_and(|e| e == "d") {
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if file_name.starts_with(&info.crate_name)
+                        || file_name.starts_with(&format!("lib{}", info.crate_name))
+                    {
+                        remap_file(&path);
+                    }
                 }
             }
         }
