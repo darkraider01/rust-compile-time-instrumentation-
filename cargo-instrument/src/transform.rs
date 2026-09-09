@@ -517,7 +517,9 @@ pub fn transform_source_file_scoped_with_emitter<E: Emitter + ?Sized>(
     }
 
     // Write to a temporary file in the same directory and atomically rename into place
-    let temp_output = output_path.with_extension(format!("tmp.{}", std::process::id()));
+    static TEMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let counter = TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp_output = output_path.with_extension(format!("tmp.{}.{}", std::process::id(), counter));
     fs::write(&temp_output, transformed.as_bytes()).map_err(|e| TransformError::Io {
         path: temp_output.to_path_buf(),
         message: e.to_string(),

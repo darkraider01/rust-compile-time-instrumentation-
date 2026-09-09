@@ -128,8 +128,14 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                     let registry_enabled = env::var("CARGO_INSTRUMENT_REGISTRY")
                         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                         .unwrap_or(false);
+                    let resolved_path = if source_file.is_absolute() {
+                        source_file.to_path_buf()
+                    } else {
+                        current_dir.join(source_file)
+                    };
 
-                    let is_host_only = session_plan.is_host_only(crate_name);
+                    let is_host_only =
+                        session_plan.is_host_only_unit(crate_name, Some(&resolved_path));
 
                     let should_skip = if invocation.unit.is_telemetry_or_tool_crate() {
                         true
@@ -148,159 +154,147 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                         false
                     };
 
-                    if !should_skip {
-                        let resolved_path = if source_file.is_absolute() {
-                            source_file.to_path_buf()
-                        } else {
-                            current_dir.join(source_file)
-                        };
+                    if !should_skip && resolved_path.exists() {
+                        match analyze_source_file(crate_name, &resolved_path) {
+                            Ok(report) => {
+                                if config.debug_output {
+                                    eprintln!(
+                                        "[cargo-instrument PID={} crate={}]\n{}",
+                                        std::process::id(),
+                                        crate_name,
+                                        report.format_debug()
+                                    );
+                                }
 
-                        if resolved_path.exists() {
-                            match analyze_source_file(crate_name, &resolved_path) {
-                                Ok(report) => {
-                                    if config.debug_output {
+                                // S11 / C3: Dependency check before transformation
+                                let has_otel = invocation.unit.has_opentelemetry();
+                                let has_otel_shim = invocation.unit.has_otel_shim();
+                                let use_sentinel =
+                                    env::var("CARGO_INSTRUMENT_SENTINEL_MODE").is_ok();
+                                let native_otel_enforced =
+                                    env::var("CARGO_INSTRUMENT_NATIVE_OTEL").is_ok();
+
+                                // Preflight check for application crates declaring otel-shim (G5 / S11)
+                                // Downgraded from hard-exit to fail-open warning per P2.1 DoD #7
+                                let mut preflight_failed = false;
+                                if has_otel_shim {
+                                    if let Err(msg) =
+                                        check_application_preflight(crate_name, &resolved_path)
+                                    {
                                         eprintln!(
-                                            "[cargo-instrument PID={} crate={}]\n{}",
-                                            std::process::id(),
-                                            crate_name,
-                                            report.format_debug()
-                                        );
-                                    }
-
-                                    // S11 / C3: Dependency check before transformation
-                                    let has_otel = invocation.unit.has_opentelemetry();
-                                    let has_otel_shim = invocation.unit.has_otel_shim();
-                                    let use_sentinel =
-                                        env::var("CARGO_INSTRUMENT_SENTINEL_MODE").is_ok();
-                                    let native_otel_enforced =
-                                        env::var("CARGO_INSTRUMENT_NATIVE_OTEL").is_ok();
-
-                                    // Preflight check for application crates declaring otel-shim (G5 / S11)
-                                    // Downgraded from hard-exit to fail-open warning per P2.1 DoD #7
-                                    let mut preflight_failed = false;
-                                    if has_otel_shim {
-                                        if let Err(msg) =
-                                            check_application_preflight(crate_name, &resolved_path)
-                                        {
-                                            eprintln!(
                                                 "warning: cargo-instrument: preflight check for application crate '{crate_name}' failed: {msg}. \
                                                 Compiling unmodified per S11 fail-open."
                                             );
-                                            preflight_failed = true;
-                                        }
+                                        preflight_failed = true;
                                     }
+                                }
 
-                                    // H1: Splicing pipeline integration
-                                    if !report.candidates.is_empty() {
-                                        let emitter: Option<Box<dyn Emitter>> = if preflight_failed
-                                        {
-                                            None
-                                        } else if report.has_colliding_symbols {
-                                            eprintln!(
+                                // H1: Splicing pipeline integration
+                                if !report.candidates.is_empty() {
+                                    let emitter: Option<Box<dyn Emitter>> = if preflight_failed {
+                                        None
+                                    } else if report.has_colliding_symbols {
+                                        eprintln!(
                                                 "warning: cargo-instrument: crate '{crate_name}' exports an ABI symbol conflicting with otel-shim. \
                                                 Skipping instrumentation per S11 fail-open."
                                             );
-                                            None
-                                        } else if report.is_no_std {
-                                            eprintln!(
+                                        None
+                                    } else if report.is_no_std {
+                                        eprintln!(
                                                 "warning: cargo-instrument: crate '{crate_name}' specifies `#![no_std]`. \
                                                 Skipping instrumentation per §12.3."
                                             );
-                                            None
-                                        } else if report.unsafe_policy == UnsafePolicy::Forbidden {
-                                            eprintln!(
+                                        None
+                                    } else if report.unsafe_policy == UnsafePolicy::Forbidden {
+                                        eprintln!(
                                                 "warning: cargo-instrument: crate '{crate_name}' specifies `#![forbid(unsafe_code)]`. \
                                                 Skipping instrumentation per R26."
                                             );
-                                            None
-                                        } else if use_sentinel {
-                                            Some(Box::new(SentinelEmitter))
-                                        } else if role == CrateRole::Application {
-                                            if has_otel {
-                                                Some(Box::new(NativeOtelEmitter::new(crate_name)))
-                                            } else if native_otel_enforced {
-                                                eprintln!(
+                                        None
+                                    } else if use_sentinel {
+                                        Some(Box::new(SentinelEmitter))
+                                    } else if role == CrateRole::Application {
+                                        if has_otel {
+                                            Some(Box::new(NativeOtelEmitter::new(crate_name)))
+                                        } else if native_otel_enforced {
+                                            eprintln!(
                                                     "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry'. \
                                                     Skipping instrumentation per S11 fail-open."
                                                 );
-                                                None
-                                            } else {
-                                                Some(Box::new(SentinelEmitter))
-                                            }
+                                            None
                                         } else {
-                                            // Tier 2: Non-application crate
-                                            // G4 link provider gate: verify otel-shim is reachable in the build graph
-                                            if !session_plan.has_otel_shim_provider() {
-                                                eprintln!(
+                                            Some(Box::new(SentinelEmitter))
+                                        }
+                                    } else {
+                                        // Tier 2: Non-application crate
+                                        // G4 link provider gate: verify otel-shim is reachable in the build graph
+                                        if !session_plan.has_otel_shim_provider() {
+                                            eprintln!(
                                                     "warning: cargo-instrument: no otel-shim provider found in build graph for '{crate_name}'. \
                                                     Skipping instrumentation per S11 fail-open."
                                                 );
-                                                None
-                                            } else {
-                                                Some(Box::new(TrampolineEmitter::new(
-                                                    crate_name,
-                                                    invocation.unit.edition().map(String::from),
-                                                    report.unsafe_policy,
-                                                )))
-                                            }
-                                        };
-
-                                        if let Some(emitter) = emitter {
-                                            match mirror_and_transform_crate_sources(
-                                                &current_dir,
-                                                source_file,
+                                            None
+                                        } else {
+                                            Some(Box::new(TrampolineEmitter::new(
                                                 crate_name,
-                                                &unit_id,
-                                                invocation.unit.extra_filename(),
-                                                invocation.unit.out_dir(),
-                                                &report,
-                                                emitter.as_ref(),
-                                                config.debug_output,
-                                            ) {
-                                                Ok(info) => {
-                                                    // Replace root source file argument with mirrored instrumented root
-                                                    for arg in &mut args_to_run {
-                                                        let p = Path::new(arg);
-                                                        if p == source_file
-                                                            || p == resolved_path
-                                                            || paths_are_identical(
-                                                                p,
-                                                                &resolved_path,
-                                                            )
-                                                        {
-                                                            *arg = info
-                                                                .new_root
-                                                                .to_string_lossy()
-                                                                .to_string();
-                                                            break;
-                                                        }
-                                                    }
-                                                    if let Some(out) = invocation.unit.out_dir() {
-                                                        let out_dir = if out.is_absolute() {
-                                                            out.to_path_buf()
-                                                        } else {
-                                                            current_dir.join(out)
-                                                        };
-                                                        mirrored_info = Some((info, out_dir));
+                                                invocation.unit.edition().map(String::from),
+                                                report.unsafe_policy,
+                                            )))
+                                        }
+                                    };
+
+                                    if let Some(emitter) = emitter {
+                                        match mirror_and_transform_crate_sources(
+                                            &current_dir,
+                                            source_file,
+                                            crate_name,
+                                            &unit_id,
+                                            invocation.unit.extra_filename(),
+                                            invocation.unit.out_dir(),
+                                            &report,
+                                            emitter.as_ref(),
+                                            config.debug_output,
+                                        ) {
+                                            Ok(info) => {
+                                                // Replace root source file argument with mirrored instrumented root
+                                                for arg in &mut args_to_run {
+                                                    let p = Path::new(arg);
+                                                    if p == source_file
+                                                        || p == resolved_path
+                                                        || paths_are_identical(p, &resolved_path)
+                                                    {
+                                                        *arg = info
+                                                            .new_root
+                                                            .to_string_lossy()
+                                                            .to_string();
+                                                        break;
                                                     }
                                                 }
-                                                Err(e) => {
-                                                    // S11 fail-open per crate: log warning and compile unmodified
-                                                    eprintln!(
+                                                if let Some(out) = invocation.unit.out_dir() {
+                                                    let out_dir = if out.is_absolute() {
+                                                        out.to_path_buf()
+                                                    } else {
+                                                        current_dir.join(out)
+                                                    };
+                                                    mirrored_info = Some((info, out_dir));
+                                                }
+                                            }
+                                            Err(e) => {
+                                                // S11 fail-open per crate: log warning and compile unmodified
+                                                eprintln!(
                                                 "warning: cargo-instrument: failed to instrument '{crate_name}': {e}. \
                                                 Compiling original source unmodified per S11."
                                             );
-                                                }
                                             }
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    eprintln!(
+                            }
+                            Err(e) => {
+                                eprintln!(
                                         "warning: cargo-instrument: failed to analyze '{crate_name}': {e}. \
                                         Compiling original source unmodified per S11."
                                     );
-                                }
                             }
                         }
                     }
@@ -636,7 +630,12 @@ fn mirror_dir_recursive(
                     }
                 }
                 // Atomic copy to temporary destination first
-                let temp_dest = dest.with_extension(format!("tmp.{}", std::process::id()));
+                static MIRROR_TEMP_COUNTER: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let counter =
+                    MIRROR_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let temp_dest =
+                    dest.with_extension(format!("tmp.{}.{}", std::process::id(), counter));
                 fs::copy(&path, &temp_dest)?;
                 if let Ok(metadata) = fs::metadata(&path) {
                     if let Ok(mtime) = metadata.modified() {
@@ -723,12 +722,17 @@ fn remap_dep_info_files(out_dir: &Path, info: &MirroredCrateInfo) {
 
     // Scoped remapping (G6): target this unit's own dep-info file directly
     let extra = info.extra_filename.as_deref().unwrap_or("");
-    let candidate_names = [
-        format!("{}{}.d", info.crate_name, extra),
-        format!("lib{}{}.d", info.crate_name, extra),
-        format!("{}.d", info.crate_name),
-        format!("lib{}.d", info.crate_name),
-    ];
+    let candidate_names: Vec<String> = if !extra.is_empty() {
+        vec![
+            format!("{}{}.d", info.crate_name, extra),
+            format!("lib{}{}.d", info.crate_name, extra),
+        ]
+    } else {
+        vec![
+            format!("{}.d", info.crate_name),
+            format!("lib{}.d", info.crate_name),
+        ]
+    };
 
     let mut found = false;
     for name in &candidate_names {
