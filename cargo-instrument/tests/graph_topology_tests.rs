@@ -179,6 +179,21 @@ fn run_cargo(manifest_dir: &Path, target_dir: &Path, args: &[&str], instrumented
     cmd.output().expect("failed to execute cargo")
 }
 
+/// Run cargo-instrument CLI entry point (`cargo-instrument -- build ...`).
+fn run_cargo_instrument_cli(manifest_dir: &Path, target_dir: &Path, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"));
+    cmd.arg("--")
+        .args(args)
+        .arg("--target-dir")
+        .arg(target_dir)
+        .current_dir(manifest_dir)
+        .env("CARGO_TERM_COLOR", "never")
+        .env("INSTRUMENT_DEBUG", "1");
+
+    cmd.output()
+        .expect("failed to execute cargo-instrument CLI")
+}
+
 // ----------------------------------------------------------------------------
 // Regression 1 — two versions of one package share a single mirror directory
 // ----------------------------------------------------------------------------
@@ -635,6 +650,144 @@ fn test_d2_hyphenated_proc_macro_host_dependency() {
         output.status.success(),
         "build with hyphenated proc-macro dependency must succeed.\n{}",
         describe(&output)
+    );
+}
+
+// ----------------------------------------------------------------------------
+// D3 — CLI exports precomputed SessionPlan, bypassing manifest search heuristic
+// ----------------------------------------------------------------------------
+
+/// **Defect (D3):** `find_best_manifest_dir` is a heuristic that can pick an unrelated
+/// sibling directory if that sibling contains more scoring keywords. The CLI entry
+/// point precomputes `SessionPlan` in `current_dir()` and exports it via
+/// `CARGO_INSTRUMENT_SESSION`, guaranteeing wrapper child processes use the correct graph.
+#[test]
+#[ignore = "P2.1 closeout: asserts CLI precomputes plan from current directory rather than heuristic decoy"]
+fn test_d3_cli_session_plan_avoids_wrong_manifest_heuristic() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+
+    // Sibling decoy directory with otel-shim that scores highly on keywords
+    let decoy_dir = root.join("decoy");
+    write_file(
+        &decoy_dir.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"decoy\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+             [dependencies]\notel-shim = {{ path = \"{}\" }}\n",
+            otel_shim_dep_path()
+        ),
+    );
+    write_file(&decoy_dir.join("src").join("main.rs"), "fn main() {}\n");
+
+    // Real target app being built: has NO otel-shim
+    let app_dir = root.join("actual_app");
+    write_file(
+        &app_dir.join("Cargo.toml"),
+        "[package]\nname = \"actual_app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    );
+    write_file(
+        &app_dir.join("src").join("main.rs"),
+        "fn main() { println!(\"hello\"); }\n",
+    );
+
+    let target_dir = root.join("target").join("instrumented");
+    let output = run_cargo_instrument_cli(&app_dir, &target_dir, &["build"]);
+    assert!(
+        output.status.success(),
+        "CLI build must succeed.\n{}",
+        describe(&output)
+    );
+
+    // The generated session plan must reflect `actual_app` (has_otel_shim_provider: false),
+    // not the decoy sibling.
+    let session_path = target_dir.join("cargo_instrument_session.json");
+    assert!(session_path.exists(), "Session cache must exist");
+    let session_content = fs::read_to_string(&session_path).unwrap();
+    assert!(
+        session_content.contains("\"has_otel_shim_provider\": false"),
+        "Session plan must be computed from actual_app (no otel-shim), not the decoy sibling!\n{session_content}"
+    );
+}
+
+/// **Defect (D3 follow-up):** CLI entry point must parse `--manifest-path` so that
+/// `SessionPlan` is computed for the target workspace being built, not the directory
+/// from which `cargo-instrument` was invoked.
+#[test]
+#[ignore = "P2.1 closeout: asserts CLI precomputes plan respecting --manifest-path"]
+fn test_d3_cli_session_plan_respects_manifest_path_flag() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+
+    // Decoy crate with NO otel-shim dependency (invocation cwd)
+    let decoy_dir = root.join("decoy");
+    write_file(
+        &decoy_dir.join("Cargo.toml"),
+        "[package]\nname = \"decoy\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    );
+    write_file(&decoy_dir.join("src").join("main.rs"), "fn main() {}\n");
+
+    // Real dependency library: dep_lib (has code to instrument)
+    let dep_dir = root.join("real").join("dep_lib");
+    write_file(
+        &dep_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_lib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write_file(
+        &dep_dir.join("src").join("lib.rs"),
+        "pub fn compute() -> i32 { 42 }\n",
+    );
+
+    // Real target app: depends on dep_lib AND otel-shim
+    let app_dir = root.join("real").join("app");
+    let dep_lib_escaped = dep_dir.to_string_lossy().replace('\\', "/");
+    write_file(
+        &app_dir.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+             [dependencies]\ndep_lib = {{ path = \"{}\" }}\notel-shim = {{ path = \"{}\" }}\n",
+            dep_lib_escaped,
+            otel_shim_dep_path()
+        ),
+    );
+    write_file(
+        &app_dir.join("src").join("main.rs"),
+        "fn main() {\n    otel_shim::init();\n    println!(\"{}\", dep_lib::compute());\n}\n",
+    );
+
+    let target_dir = root.join("target").join("instrumented");
+    let app_manifest = app_dir.join("Cargo.toml");
+    let app_manifest_str = app_manifest.to_string_lossy().to_string();
+
+    let output = run_cargo_instrument_cli(
+        &decoy_dir,
+        &target_dir,
+        &["build", "--manifest-path", &app_manifest_str],
+    );
+    assert!(
+        output.status.success(),
+        "CLI build must succeed.\n{}",
+        describe(&output)
+    );
+
+    // 1. Session plan must have has_otel_shim_provider = true
+    let session_path = target_dir.join("cargo_instrument_session.json");
+    assert!(session_path.exists(), "Session cache must exist");
+    let session_content = fs::read_to_string(&session_path).unwrap();
+    assert!(
+        session_content.contains("\"has_otel_shim_provider\": true"),
+        "Session plan must be computed from real/app (has otel-shim), not the decoy cwd!\n{session_content}"
+    );
+
+    // 2. dep_lib mirror directory must contain spliced __otel_span_enter calls
+    let dep_mirrors = mirror_dirs_for(&target_dir, "dep_lib");
+    assert!(!dep_mirrors.is_empty(), "dep_lib must have mirror");
+    let has_trampoline = dep_mirrors.iter().any(|d| {
+        let dir = mirror_root(&target_dir).join(d);
+        contains_trampoline_symbols(&dir)
+    });
+    assert!(
+        has_trampoline,
+        "dep_lib mirror must receive spliced __otel_span_enter calls when built via --manifest-path"
     );
 }
 

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
 use cargo_instrument::{
-    analyze_source_file, run_wrapper, transform_source_file, transform_source_str, WrapperConfig,
-    DEBUG_ENV,
+    analyze_source_file, run_wrapper, transform_source_file, transform_source_str, SessionPlan,
+    WrapperConfig, DEBUG_ENV, SESSION_ENV,
 };
 
 const WRAPPER_MODE_ENV: &str = "CARGO_INSTRUMENT_WRAPPER_MODE";
@@ -248,6 +248,66 @@ fn execute_cargo_with_wrapper(args: &[String]) {
     if !has_target_dir {
         cargo_args.push("--target-dir".to_string());
         cargo_args.push(DEFAULT_TARGET_DIR.to_string());
+    }
+
+    let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+
+    // Extract target directory from args or use DEFAULT_TARGET_DIR
+    let target_dir_str = args
+        .iter()
+        .position(|a| a == "--target-dir")
+        .and_then(|idx| args.get(idx + 1).cloned())
+        .or_else(|| {
+            args.iter()
+                .find(|a| a.starts_with("--target-dir="))
+                .map(|a| a.trim_start_matches("--target-dir=").to_string())
+        })
+        .unwrap_or_else(|| DEFAULT_TARGET_DIR.to_string());
+
+    let target_dir = PathBuf::from(target_dir_str);
+    let resolved_target_dir = if target_dir.is_absolute() {
+        target_dir
+    } else {
+        current_dir.join(target_dir)
+    };
+
+    // Extract manifest directory from --manifest-path if specified (D3)
+    let manifest_dir = args
+        .iter()
+        .position(|a| a == "--manifest-path")
+        .and_then(|idx| args.get(idx + 1).cloned())
+        .or_else(|| {
+            args.iter()
+                .find(|a| a.starts_with("--manifest-path="))
+                .map(|a| a.trim_start_matches("--manifest-path=").to_string())
+        })
+        .map(PathBuf::from)
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .map(|p| {
+            if p.is_absolute() {
+                p
+            } else {
+                current_dir.join(p)
+            }
+        })
+        .unwrap_or_else(|| current_dir.clone());
+
+    // Precompute SessionPlan once in manifest_dir (unambiguous user invocation or manifest directory)
+    // and export via CARGO_INSTRUMENT_SESSION for all wrapper child processes (D3 / D4).
+    let session_file = resolved_target_dir.join("cargo_instrument_session.json");
+    match SessionPlan::build_from_metadata(&manifest_dir) {
+        Ok(plan) => {
+            if let Err(e) = plan.save_to_file(&session_file) {
+                eprintln!("warning: cargo-instrument: failed to save session plan: {e}");
+            }
+            cargo_cmd.env(SESSION_ENV, &session_file);
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: cargo-instrument: failed to precompute session plan from metadata ({e}). \
+                 Continuing with wrapper fallback."
+            );
+        }
     }
 
     cargo_cmd.args(&cargo_args);
