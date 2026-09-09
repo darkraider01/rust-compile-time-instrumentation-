@@ -1174,11 +1174,23 @@ fn has_instrument_attribute(attrs: &[syn::Attribute]) -> bool {
 /// Detect if the function is directly self-recursive (calls itself by name in its body).
 ///
 /// NOTE on conservative recursion detection (R7):
-/// We match if the path's last segment matches the function name (e.g., `foo()`, `Self::foo()`,
-/// `crate::foo()`, `super::foo()`). As documented in R7, this intentionally accepts a conservative
-/// false positive: calling `OtherType::helper()` inside a function named `fn helper()` will be
-/// classified as recursive and skipped. This is preferred over accidentally recursing infinitely
-/// on genuine self-recursive functions.
+/// For a *path* call we match if the path's last segment matches the function name (e.g. `foo()`,
+/// `Self::foo()`, `crate::foo()`, `super::foo()`). As documented in R7, this intentionally accepts
+/// a conservative false positive: calling `OtherType::helper()` inside a function named
+/// `fn helper()` is classified as recursive and skipped. Distinguishing the two needs type
+/// resolution we do not have, so the conservative side is taken deliberately.
+///
+/// For a *method* call the receiver is checked, which needs no type resolution: only `self.foo()`
+/// counts. `self.inner.foo()`, `v.foo()` and `other.foo()` are different functions that merely
+/// share a name, and skipping them was over-suppression rather than conservatism - it fired on
+/// `fn clone()` calling `self.inner.clone()` and `fn len()` calling `self.lock_items().len()` in
+/// `census-0.4.2`.
+/// Whether `expr` is literally the receiver `self`, as opposed to `self.field` or any other
+/// expression that merely ends in a call of the same name.
+fn is_bare_self(expr: &syn::Expr) -> bool {
+    matches!(expr, syn::Expr::Path(p) if p.qself.is_none() && p.path.is_ident("self"))
+}
+
 fn is_directly_self_recursive(fn_ident: &syn::Ident, block: &syn::Block) -> bool {
     struct RecursionDetector<'a> {
         target: &'a syn::Ident,
@@ -1199,7 +1211,9 @@ fn is_directly_self_recursive(fn_ident: &syn::Ident, block: &syn::Block) -> bool
         }
 
         fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-            if call.method == *self.target {
+            // Only `self.foo()` is self-recursion. A receiver of any other shape - `self.inner`,
+            // a local, a call result - names a different function that happens to share an ident.
+            if call.method == *self.target && is_bare_self(&call.receiver) {
                 self.found = true;
                 return;
             }

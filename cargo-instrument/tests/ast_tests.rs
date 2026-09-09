@@ -945,9 +945,13 @@ fn test_census_exact_reconciliation() {
     assert!(!report.is_no_std, "census is a pure std crate");
     assert!(!report.has_colliding_symbols, "census has no ABI collision");
     assert_eq!(
+        report.skipped_stats.self_recursive, 1,
+        "only Inventory::list_lock is genuinely self-recursive; `clone` calling          self.inner.clone() and `len` calling self.lock_items().len() are not (R7 method arm)"
+    );
+    assert_eq!(
         report.candidates.len(),
-        16,
-        "Census has 16 eligible production functions"
+        18,
+        "Census has 18 eligible production functions"
     );
 }
 
@@ -1064,5 +1068,53 @@ fn test_no_std_attribute_detection() {
     assert!(
         !report_normal.is_no_std,
         "normal crate must not be flagged as no_std"
+    );
+}
+
+#[test]
+fn test_r7_method_recursion_requires_self_receiver() {
+    // Only `self.foo()` is genuine self-recursion. A receiver of any other shape names a
+    // different function that happens to share an identifier.
+    let code = r#"
+pub struct Wrapper { inner: Vec<u32> }
+
+impl Wrapper {
+    // self.inner.clone() is Vec's clone, not this one.
+    pub fn clone_it(&self) -> Vec<u32> { self.inner.clone() }
+
+    // self.lock_items().len() is Vec's len, not this one.
+    pub fn len(&self) -> usize { self.inner.len() }
+
+    // Genuine self-recursion via `self`.
+    pub fn walk(&self, n: u32) -> u32 { if n == 0 { 0 } else { self.walk(n - 1) } }
+}
+"#;
+
+    let report =
+        analyze_source_str("t", Path::new("src/lib.rs"), code).expect("analysis should succeed");
+
+    let names: Vec<&str> = report
+        .candidates
+        .iter()
+        .map(|c| c.function_name.as_str())
+        .collect();
+
+    assert!(
+        names.iter().any(|n| n.ends_with("len")),
+        "fn len() calling self.inner.len() must not be treated as self-recursive: {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n.ends_with("clone_it")),
+        "fn clone_it() calling self.inner.clone() must not be treated as self-recursive: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.ends_with("walk")),
+        "genuine self.walk() recursion must still be skipped: {names:?}"
+    );
+    assert_eq!(report.skipped_stats.self_recursive, 1);
+    assert_eq!(
+        report.candidates.len() + report.skipped_stats.total(),
+        3,
+        "Reconciliation invariant must hold"
     );
 }
