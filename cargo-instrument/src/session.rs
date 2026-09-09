@@ -65,18 +65,17 @@ impl SessionPlan {
     ///
     /// D2: normalizes both hyphenated and underscored package names.
     pub fn is_host_only(&self, package_name: &str) -> bool {
-        let normalized = package_name.replace('-', "_");
-        self.host_only_packages.contains(package_name)
-            || self.host_only_packages.contains(&normalized)
+        self.host_only_packages
+            .contains(&package_name.replace('-', "_"))
     }
 
     /// Disambiguated check: returns true if the package is host-only by name or by source path.
     ///
     /// D2: normalizes both hyphenated and underscored package names.
     pub fn is_host_only_unit(&self, package_name: &str, source_file: Option<&Path>) -> bool {
-        let normalized = package_name.replace('-', "_");
-        if self.host_only_packages.contains(package_name)
-            || self.host_only_packages.contains(&normalized)
+        if self
+            .host_only_packages
+            .contains(&package_name.replace('-', "_"))
         {
             return true;
         }
@@ -491,19 +490,20 @@ impl SessionPlan {
             }
         }
 
-        // Target-reachable package names
+        // Target-reachable package names (normalized to underscored form for consistent comparison)
         let target_reachable_names: HashSet<String> = target_reachable_ids
             .iter()
             .filter_map(|id| pkg_id_to_name.get(id).cloned())
+            .map(|n| n.replace('-', "_"))
             .collect();
 
         // Any package in the build graph whose name is NEVER reachable via target roots is host-only.
-        // D2: Store both original and underscore-normalized names so rustc `--crate-name` matches.
+        // D2: Store normalized underscored names so rustc `--crate-name` matches without cross-collision.
         let mut host_only_packages: HashSet<String> = HashSet::new();
         for name in pkg_id_to_name.values() {
-            if !target_reachable_names.contains(name) {
-                host_only_packages.insert(name.clone());
-                host_only_packages.insert(name.replace('-', "_"));
+            let normalized = name.replace('-', "_");
+            if !target_reachable_names.contains(&normalized) {
+                host_only_packages.insert(normalized);
             }
         }
 
@@ -574,13 +574,48 @@ mod tests {
     #[test]
     fn test_d2_host_only_hyphenated_and_underscored_matching() {
         let mut plan = SessionPlan::default();
-        plan.host_only_packages.insert("pm-dep".to_string());
+        // Since host_only_packages now stores only normalized underscored names:
         plan.host_only_packages.insert("pm_dep".to_string());
 
         assert!(plan.is_host_only("pm-dep"));
         assert!(plan.is_host_only("pm_dep"));
         assert!(plan.is_host_only_unit("pm_dep", None));
         assert!(plan.is_host_only_unit("pm-dep", None));
+    }
+
+    #[test]
+    fn test_d2_normalization_does_not_cross_pollute_target_reachable() {
+        let mut pkg_id_to_name = std::collections::HashMap::new();
+        pkg_id_to_name.insert("id_host", "foo-bar".to_string());
+        pkg_id_to_name.insert("id_target", "foo_bar".to_string());
+
+        let target_reachable_ids: std::collections::HashSet<&str> =
+            ["id_target"].into_iter().collect();
+
+        let target_reachable_names: HashSet<String> = target_reachable_ids
+            .iter()
+            .filter_map(|id| pkg_id_to_name.get(id).cloned())
+            .map(|n| n.replace('-', "_"))
+            .collect();
+
+        let mut host_only_packages: HashSet<String> = HashSet::new();
+        for name in pkg_id_to_name.values() {
+            let normalized = name.replace('-', "_");
+            if !target_reachable_names.contains(&normalized) {
+                host_only_packages.insert(normalized);
+            }
+        }
+
+        let plan = SessionPlan {
+            host_only_packages,
+            ..Default::default()
+        };
+
+        // foo_bar is target-reachable, so neither form should be marked host-only
+        assert!(!plan.is_host_only("foo_bar"));
+        assert!(!plan.is_host_only("foo-bar"));
+        assert!(!plan.is_host_only_unit("foo_bar", None));
+        assert!(!plan.is_host_only_unit("foo-bar", None));
     }
 
     #[test]
