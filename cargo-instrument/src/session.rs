@@ -165,9 +165,24 @@ impl SessionPlan {
             .unwrap_or_else(|| current_dir.to_path_buf())
     }
 
+    /// Resolves the unified session cache file location from an output directory.
+    ///
+    /// Libraries have `--out-dir <target>/debug/deps`, while binaries have `--out-dir <target>/debug`.
+    /// Stripping the trailing `deps` ensures both units share the exact same session plan file.
+    pub fn get_session_file_path(out_dir: &Path) -> PathBuf {
+        let base = if out_dir.file_name().and_then(|n| n.to_str()) == Some("deps") {
+            out_dir.parent().unwrap_or(out_dir)
+        } else {
+            out_dir
+        };
+        base.join("cargo_instrument_session.json")
+    }
+
     /// Load existing session plan from file, or query `cargo metadata` once and cache it.
     pub fn load_or_create(current_dir: &Path, out_dir: Option<&Path>) -> Self {
-        // 1. Check CARGO_INSTRUMENT_SESSION env var
+        let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
+
+        // 1. Check CARGO_INSTRUMENT_SESSION env var (preferred path from CLI / D3)
         if let Ok(path_str) = std::env::var(SESSION_ENV) {
             let path = PathBuf::from(path_str);
             if path.exists() {
@@ -175,16 +190,24 @@ impl SessionPlan {
                     return plan;
                 }
             }
-            let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
-            if let Ok(plan) = Self::build_from_metadata(&best_dir) {
-                let _ = plan.save_to_file(&path);
-                return plan;
+            match Self::build_from_metadata(&best_dir) {
+                Ok(plan) => {
+                    let _ = plan.save_to_file(&path);
+                    return plan;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: cargo-instrument: failed to compute session plan from metadata ({e}). \
+                         Defaulting to no-shim provider per S11 fail-open."
+                    );
+                    return Self::default();
+                }
             }
         }
 
-        // 2. Check cache file in out_dir
+        // 2. Check cache file in out_dir (fallback for raw RUSTC_WRAPPER invocations)
         if let Some(out) = out_dir {
-            let session_file = out.join("cargo_instrument_session.json");
+            let session_file = Self::get_session_file_path(out);
             if session_file.exists() {
                 if let Ok(meta) = fs::metadata(&session_file) {
                     if let Ok(modified) = meta.modified() {
@@ -199,10 +222,18 @@ impl SessionPlan {
                 }
             }
 
-            let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
-            if let Ok(plan) = Self::build_from_metadata(&best_dir) {
-                let _ = plan.save_to_file(&session_file);
-                return plan;
+            match Self::build_from_metadata(&best_dir) {
+                Ok(plan) => {
+                    let _ = plan.save_to_file(&session_file);
+                    return plan;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: cargo-instrument: failed to compute session plan from metadata ({e}). \
+                         Defaulting to no-shim provider per S11 fail-open."
+                    );
+                    return Self::default();
+                }
             }
         }
 
