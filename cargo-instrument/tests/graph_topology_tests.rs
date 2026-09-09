@@ -567,3 +567,22 @@ fn test_no_shim_provider_must_not_emit_trampolines() {
         describe(&output)
     );
 }
+
+// ----------------------------------------------------------------------------
+// D5 — Unsafe default when cargo metadata fails
+// ----------------------------------------------------------------------------
+
+/// **Defect (D5):** SessionPlan::default() previously defaulted `has_otel_shim_provider`
+/// to true, which on metadata failure would splice trampolines into dependencies and cause
+/// link errors. It must default to false (fail-open per S11).
+#[test]
+#[ignore = "P2.1 closeout: asserts metadata failure defaults to no-shim provider per S11 fail-open"]
+fn test_d5_metadata_failure_safe_default() {
+    use cargo_instrument::SessionPlan;
+
+    let plan = SessionPlan::default();
+    assert!(
+        !plan.has_otel_shim_provider(),
+        "Default plan must have has_otel_shim_provider = false per S11 fail-open"
+    );
+}

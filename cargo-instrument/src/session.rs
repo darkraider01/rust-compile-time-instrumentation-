@@ -33,7 +33,7 @@ pub enum SkipCause {
 /// `SessionPlan` provides identity and topology knowledge to the per-unit wrapper:
 /// 1. Whether any target root links `otel-shim` (preventing unresolved C-ABI trampolines).
 /// 2. Which packages are compiled exclusively for the host (preventing proc-macro dep instrumentation).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionPlan {
     /// Whether any target root in the build graph has otel-shim reachable.
     pub has_otel_shim_provider: bool,
@@ -44,18 +44,8 @@ pub struct SessionPlan {
     #[serde(default)]
     pub host_only_manifest_dirs: HashSet<PathBuf>,
     /// Set of package names that have proc-macro targets.
+    #[serde(default)]
     pub proc_macro_packages: HashSet<String>,
-}
-
-impl Default for SessionPlan {
-    fn default() -> Self {
-        Self {
-            has_otel_shim_provider: true,
-            host_only_packages: HashSet::new(),
-            host_only_manifest_dirs: HashSet::new(),
-            proc_macro_packages: HashSet::new(),
-        }
-    }
 }
 
 impl SessionPlan {
@@ -216,9 +206,18 @@ impl SessionPlan {
             }
         }
 
-        // Fallback: build without caching, or default
+        // Fallback: build without caching, or default (D5)
         let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
-        Self::build_from_metadata(&best_dir).unwrap_or_default()
+        match Self::build_from_metadata(&best_dir) {
+            Ok(plan) => plan,
+            Err(e) => {
+                eprintln!(
+                    "warning: cargo-instrument: failed to compute session plan from metadata ({e}). \
+                     Defaulting to no-shim provider per S11 fail-open."
+                );
+                Self::default()
+            }
+        }
     }
 
     /// Query `cargo metadata` and build a `SessionPlan`.
@@ -437,5 +436,19 @@ impl SessionPlan {
         let content = fs::read(path)?;
         let plan: Self = serde_json::from_slice(&content)?;
         Ok(plan)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_d5_default_plan_disables_otel_shim_provider() {
+        let plan = SessionPlan::default();
+        assert!(
+            !plan.has_otel_shim_provider(),
+            "Default plan must default has_otel_shim_provider to false per S11 fail-open"
+        );
     }
 }
