@@ -14,7 +14,7 @@ The format is unchanged: what was chosen, what it was chosen over, what evidence
 | [008](#adr-008---the-session-plan-is-resolved-once-and-fingerprinted) | The session plan is resolved once and fingerprinted, not re-derived per unit | **Accepted** | P2.1 |
 | [009](#adr-009---explicit-instrumentation-wins-at-whole-function-granularity) | Explicit instrumentation wins at whole-function granularity | **Accepted** | P2.2 |
 | [010](#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry) | Hybrid parenting is delegated to `tracing-opentelemetry`'s context activation | **Accepted** | P2.2 |
-| [011](#adr-011---the-tier-2-c-abi-is-provisional) | The Tier-2 C ABI is provisional, not the intended endpoint | **Accepted, provisional** | P2.2 → P2.3 |
+| [011](#adr-011---the-tier-2-c-abi-is-provisional) | The Tier-2 C ABI is provisional, not the intended endpoint | **Accepted, provisional** | P2.2 → P2.4 |
 | [012](#adr-012---hybrid-first-partydependency-instrumentation-architecture) | Hybrid first-party/dependency instrumentation architecture | **Accepted** | P2.2 → P2.3 |
 
 ---
@@ -216,7 +216,7 @@ The last point is the load-bearing one. ADR-003's premise was that the dependenc
    - `extern "C-unwind"` on all nine declarations (seven exports in `otel-shim/src/lib.rs` plus the two spliced forms in `transform.rs`), providing the ABI backstop for any unwinding across the boundary.
    - **Stated limit:** `panic = "abort"` makes both layers inert. If a user's compilation profile specifies `panic = "abort"`, unwinding never runs and the abort occurs regardless.
 
-2. **Replacement investigation (P2.3).** Spiked 2026-09-10; results below. `--extern` injection is viable. The blocker is not the one this ADR originally named.
+2. **Replacement investigation (P2.4).** Spiked 2026-09-10; results below. `--extern` injection is viable. The blocker is not the one this ADR originally named. Under the hybrid architecture ([ADR-012](#adr-012---hybrid-first-partydependency-instrumentation-architecture)), dependency instrumentation is the opt-in path, so this investigation and any follow-on ABI work are scheduled in P2.4 behind the default first-party lint-apply driver (P2.3).
 
 #### Spike result (2026-09-10)
 
@@ -250,7 +250,7 @@ That path is authoritative and version-unambiguous. Store it in the `SessionPlan
 
 #### Consequences
 
-- ✅ **R-1 and R-2 may become moot.** Both are limitations of the ABI's width - a hardcoded `"dependency"` scope, and discarded file/line/kind. Native calls carry all of it for free, so the P2.3 ABI-extension work should not start until the replacement question is settled.
+- ✅ **R-1 and R-2 may become moot.** Both are limitations of the ABI's width - a hardcoded `"dependency"` scope, and discarded file/line/kind. Native calls carry all of it for free, so the P2.4 ABI-extension work should not start until the replacement question is settled.
 - ✅ **The Tier-1/Tier-2 split may collapse**, retiring what [ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls) called its *"largest unpriced consequence"*.
 - ❌ **The calling-convention cost is unmeasured.** The C ABI is forced at every instrumented dependency function. Two small lifecycle calls per span is plausibly noise against span creation itself, but that is an assumption, not a measurement, and it should be benchmarked rather than argued.
 - ⚠️ **`--extern` injection trades one unsanctioned mechanism for another.** It creates a dependency edge Cargo did not resolve, which is a stronger intervention than reading argv. If it works, its own failure modes need their own record.
@@ -259,7 +259,7 @@ That path is authoritative and version-unambiguous. Store it in the `SessionPlan
 
 - ~~`--extern` injection is shown to produce a single shared crate instance across the graph.~~ **Met, 2026-09-10.** It does. The remaining question is no longer identity but whether the pre-pass survives the untested cases listed above. If it does, Tier-2 is replaced and this ADR is superseded by the record of that decision.
 - ~~The pre-pass fails on cross-compilation, or a graph with no `opentelemetry` of its own.~~ **Tested 2026-09-10: it does not.** Both work.
-- Multi-version graphs cannot be made deterministic via the JSON-artifact mechanism above, or the per-target-root satisfiability limit turns out to be common rather than exotic. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.3.
+- Multi-version graphs cannot be made deterministic via the JSON-artifact mechanism above, or the per-target-root satisfiability limit turns out to be common rather than exotic. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.4.
 - The calling-convention overhead is measured and turns out to be material at realistic span rates. That would raise the priority of the replacement track independently of the panic issue.
 
 ---

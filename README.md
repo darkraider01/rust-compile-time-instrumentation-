@@ -21,7 +21,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
 | **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across the automated suite) |
-| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), async dependency trampolines (P2.3), large dependency graphs (P2.4), cross-platform validation (P2.5). Decisions recorded as [ADR-007 … ADR-012](docs/phase2/decision-records.md) |
+| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), first-party lint-apply driver (P2.3 in progress), async dependency trampolines & opt-in pipeline (P2.4), large graphs & cross-platform validation (P2.5). Decisions recorded as [ADR-007 … ADR-012](docs/phase2/decision-records.md) |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
@@ -81,9 +81,12 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
   Introduces unique compilation unit identity (`UnitId`) parsed from `-C metadata` in rustc argv, isolates instrumented source mirrors per unit (`{crate_name}-{metadata_hash}`), performs atomic mirror writes with fail-open fallback, enforces build session policy via single-pass `cargo metadata` resolution (host-only package exclusion and link-provider reachability gating), scopes `.d` dep-info remapping, and downgrades preflight checks to non-fatal warnings.
 - [x] **P2.2 - Macro Expansion Resilience & Coexistence** - COMPLETE
   Establishes clean coexistence between automatic instrumentation and developer-written annotations ([ADR-009](docs/phase2/decision-records.md#adr-009---explicit-instrumentation-wins-at-whole-function-granularity)). Widens the explicit-instrumentation matcher to any qualified path (`#[tracing::instrument]`, `#[tracing_attributes::instrument]`, `#[otel_instrument::instrument]`, `#[propagate_context]`), skips such functions whole to prevent duplicate spans and `__otel_cx` identifier shadowing, and proves hybrid parenting - an explicit `#[tracing::instrument]` caller adopting automatically instrumented dependency spans as children - across both synchronous and `#[async_trait]` boundaries ([ADR-010](docs/phase2/decision-records.md#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry)). Measured over-suppression on `census-0.4.2` and `async-trait`: 0.0%.
-- [ ] **P2.3 - Async Dependency Trampolines** - PLANNED
-- [ ] **P2.4 - Large Dependency Graphs** - PLANNED
-- [ ] **P2.5 - Cross-Platform Validation** - PLANNED
+- [ ] **P2.3 - First-Party Lint-Apply Driver (`cargo instrument-rust`)** - IN PROGRESS ◀── current
+  Implements the default first-party workflow via `rustc_private` (`rustc_lint` and `rustc_errors`) per [ADR-012](docs/phase2/decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture). Generates visible compiler diagnostics (`--show`) and machine-applicable source modifications on disk (`--apply`) gated on a clean git working tree, eliminating recurring build overhead. Feasibility spike (`0b98e5f`) confirmed that body wrapping via `span_to_snippet` is expressible and proc-macro call-site span preservation allows `#[async_trait]` method bodies to be reached directly (`from_expansion = false`).
+- [ ] **P2.4 - Opt-In Dependency Pipeline & Async Trampolines** - PLANNED
+  Hardens the opt-in dependency instrumentation path. Resolves R-4 ([ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)): evaluates `--extern` injection pre-passes to eliminate the C ABI, or extends Tier-2 for R-1 (per-crate scope) and R-2 (file/line/kind attributes). Implements async dependency trampolines (`tokio::spawn` context propagation per ADR-001, Stream/Sink poll boundaries, and cancelled-vs-completed span lifecycle).
+- [ ] **P2.5 - Large Dependency Graphs & Cross-Platform Validation** - PLANNED
+  Validates both hybrid modes across large multi-crate workspaces and ≥100-unit dependency graphs. Implements tracer caching (`OnceLock`) per §16.3, and verifies cross-platform execution on Windows (MSVC with MAX_PATH mitigation), Linux (ELF), and macOS (Mach-O).
 
 ---
 
@@ -106,7 +109,9 @@ Planned evaluation:
 
 ### Current Focus: Phase 2 - Production Hardening
 
-Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestones P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) and P2.2 (Macro Expansion Resilience & Coexistence) are **COMPLETE**, with 11 graph-topology regression tests covering defects G1–G4, G7, and closeout defects D1–D5, a 105-unit parallel scale fixture, a 5-test hybrid coexistence suite, and 176 tests total across the workspace. Next milestone: P2.3 (Async Dependency Trampolines). Maintainer review on 2026-09-10 reopened the Tier-2 C ABI itself ([ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)): R-3 records that a panic inside the shim aborts the host process rather than unwinding, and R-4 records that `--extern` injection may remove the need for a C ABI entirely - which would make the planned R-1/R-2 ABI extensions moot. P2.3 resolves R-4 before starting them.
+Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestones P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) and P2.2 (Macro Expansion Resilience & Coexistence) are **COMPLETE**, with 11 graph-topology regression tests covering defects G1–G4, G7, and closeout defects D1–D5, a 105-unit parallel scale fixture, a 5-test hybrid coexistence suite, and 176 tests total across the workspace.
+
+Architecture decisions [ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional) and [ADR-012](docs/phase2/decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture) establish a hybrid architecture: first-party lint-apply (`cargo instrument-rust`) becomes the default workflow, while compile-time wrapper dependency instrumentation is preserved as an explicit opt-in mode. Current milestone: **P2.3 - First-Party Lint-Apply Driver**. A feasibility spike (`0b98e5f`) confirmed that `rustc_lint` suggestions can wrap function bodies and successfully reach `#[async_trait]` methods without regressing coverage. P2.4 follows with async dependency trampolines and R-4 resolution (`--extern` injection vs C-ABI) on the opt-in track.
 
 ## Documentation
 
