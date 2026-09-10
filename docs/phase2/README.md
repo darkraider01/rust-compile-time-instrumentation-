@@ -36,10 +36,24 @@ Phase 2 - Production Hardening (In Progress)
           ├── P2.2 Macro Expansion Resilience & Coexistence ✅ Complete
           │       ├── Attribute matcher widening (ADR-009)  ✅ Complete
           │       ├── Collision prevention (__otel_cx)      ✅ Complete
-          │       └── Hybrid parenting proof (ADR-010)      ✅ Complete
-          ├── P2.3 Async Dependency Trampolines             ⬜ Planned ◀── current
-          ├── P2.4 Large Dependency Graphs                  ⬜ Planned
-          └── P2.5 Cross-Platform Validation                ⬜ Planned
+          │       ├── Hybrid parenting proof (ADR-010)      ✅ Complete
+          │       └── Contain panic at C ABI boundary (R-3) ✅ Complete
+          ├── P2.3 First-Party Lint-Apply (`cargo instrument-rust`) ⬜ In Progress ◀── current
+          │       ├── Spike: Body wrapping & `#[async_trait]` reachability (ADR-012) ✅ Complete
+          │       ├── Step 1  `rustc_private` lint driver foundation
+          │       ├── Step 2  HIR eligibility analysis & visit dedup
+          │       ├── Step 3  `span_suggestion` transformation engine (`span_to_snippet`)
+          │       ├── Step 4  CLI surface (`--show` preview, `--apply` clean-tree gate)
+          │       └── Step 5  `cargo fix` round-trip & regression suite
+          ├── P2.4 Opt-In Dependency Pipeline & Async Trampolines   ⬜ Planned
+          │       ├── R-4 investigation: `--extern` injection vs C-ABI / R-1 / R-2
+          │       ├── Async dependency trampolines & `tokio::spawn` context propagation
+          │       ├── Stream / Sink instrumentation & span completion status
+          │       └── Opt-in integration (`--with-dependencies` / env flag)
+          └── P2.5 Large Graphs & Cross-Platform Validation         ⬜ Planned
+                  ├── Multi-crate workspace scale & opt-in graph scale (≥100 units)
+                  ├── Tracer caching (`OnceLock`)
+                  └── Cross-platform verification: Windows MSVC (MAX_PATH), Linux ELF, macOS Mach-O
           │
           ▼
 Phase 3 - Evaluation & Research (Planned)
@@ -285,24 +299,21 @@ have - that conservatism stays deliberate. Covered by
 from 16 to 18. The universal reconciliation identity is unaffected in total - it moves from
 $16 + 16 = 32$ to $18 + 14 = 32$. Phase 1 documents record the pre-fix split as measured at P1.8.
 
-### Architecture Risks for Later Integration (P2.3 Scope)
+### Architecture Risks for Later Integration (P2.4 Opt-In Scope)
 
-Four risks in the Tier-2 C ABI. R-1 and R-2 are limitations of the ABI's width and were originally
-scheduled as a P2.3 ABI extension. R-3 and R-4 came out of maintainer review on 2026-09-10 and
-question whether the ABI should exist at all - see
-[ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional). **R-1 and R-2 are now
-blocked on R-4:** if `--extern` injection replaces the tier, native calls carry scope, file, line
-and kind for free and both risks disappear rather than being fixed.
+Four risks in the Tier-2 C ABI. Under the hybrid architecture ([ADR-012](decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture)), dependency instrumentation is the opt-in path, so these risks and their resolution are scheduled in P2.4 behind the default first-party lint-apply driver (P2.3).
 
-R-3 is independent of that outcome and is a live defect either way.
+R-1 and R-2 are limitations of the ABI's width and were originally scheduled as an ABI extension. R-3 and R-4 came out of maintainer review on 2026-09-10 and question whether the ABI should exist at all - see [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional). **R-1 and R-2 are now blocked on R-4:** if `--extern` injection replaces the tier, native calls carry scope, file, line and kind for free and both risks disappear rather than being fixed.
+
+R-3 is independent of that outcome and was resolved in P2.2 (commit [`6bf0880`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/6bf0880)).
 
 #### R-1: Dependency spans share hardcoded instrumentation scope
 
-`otel-shim/src/lib.rs:119` uses `global::tracer("dependency")` as a literal string for all third-party crates, whereas Tier-1 uses `global::tracer(crate_name)`. Per-crate `InstrumentationScope` attribution is lost in Tier-2. Passing crate name across the ABI will be batched into P2.3.
+`otel-shim/src/lib.rs:119` uses `global::tracer("dependency")` as a literal string for all third-party crates, whereas Tier-1 uses `global::tracer(crate_name)`. Per-crate `InstrumentationScope` attribution is lost in Tier-2. Passing crate name across the ABI will be batched into P2.4 if the C ABI is retained.
 
 #### R-2: File, line, and kind transmitted across ABI and discarded
 
-`__otel_span_enter(name, name_len, _file, _file_len, _line, _kind)` in `otel-shim/src/lib.rs:87-137` leaves file, line, and kind underscore-prefixed and unused, hardcoding `SpanKind::Internal`. Semantic convention attributes (`code.function.name`, `code.file.path`, `code.line.number` per §16.14) will be wired into the span builder during P2.3.
+`__otel_span_enter(name, name_len, _file, _file_len, _line, _kind)` in `otel-shim/src/lib.rs:87-137` leaves file, line, and kind underscore-prefixed and unused, hardcoding `SpanKind::Internal`. Semantic convention attributes (`code.function.name`, `code.file.path`, `code.line.number` per §16.14) will be wired into the span builder during P2.4 if the C ABI is retained.
 
 #### R-3: A panic inside the shim aborts the host process
 
@@ -470,9 +481,9 @@ Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 and G7 landed: **11 pas
     `main.rs` and exported via `CARGO_INSTRUMENT_SESSION`). In raw `RUSTC_WRAPPER` invocations, atomic
     caching ensures deterministic resolution without cross-process corruption.
 
----
+## 6. Phase 2 Milestone Roadmap & Implementation Sequences
 
-## 6. Implementation Sequence
+### 6.1 P2.1 - Unit Identity, Instrumentation Policy & Mirror Isolation (Complete)
 
 | Step | Work | Status |
 |---|---|---|
@@ -487,29 +498,115 @@ Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 and G7 landed: **11 pas
 
 Steps 2-3 alone close G1 and G3.
 
+### 6.2 P2.2 - Macro Expansion Resilience & Coexistence (Complete)
+
+- **Attribute Matcher Widening ([ADR-009](decision-records.md#adr-009---explicit-instrumentation-wins-at-whole-function-granularity)):** Recognizes any qualified path (`#[tracing::instrument]`, `#[tracing_attributes::instrument]`, `#[otel_instrument::instrument]`, `#[propagate_context]`) and skips such functions whole to avoid double-instrumentation.
+- **Identifier Collision Prevention:** Avoids `__otel_cx` name shadowing when explicit context propagation is present.
+- **Hybrid Parenting Proof ([ADR-010](decision-records.md#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry)):** Explicit `#[tracing::instrument]` caller activates its context via `tracing-opentelemetry`, and downstream automatic dependency spans attach as children across sync and `#[async_trait]` boundaries.
+- **C-ABI Panic Containment (R-3, commit [`6bf0880`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/6bf0880)):** Implemented fail-open `catch_unwind` (Layer 1) and `extern "C-unwind"` boundary declarations (Layer 2) per [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional).
+
+### 6.3 P2.3 - First-Party Lint-Apply Driver (`cargo instrument-rust`) (In Progress ◀── current)
+
+**Objective:** Build the new default first-party workflow established in [ADR-012](decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture). Instead of intercepting every compilation with `RUSTC_WRAPPER` and rewriting sources invisibly, a compiler driver built on `rustc_private` (`rustc_lint` and `rustc_errors`) analyzes the crate and offers machine-applicable suggestions applied directly to disk via a CLI tool.
+
+#### Feasibility Spike Results (commit [`0b98e5f`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/0b98e5f), 2026-09-10)
+
+Spiked via a standalone driver (`spikes/adr012-lint-span-probe.rs`) against a multi-shape fixture (`spikes/adr012-lint-span-fixture.rs`):
+
+- **✅ `#[async_trait]` methods are reachable:** Proc-macro token pass-through preserves call-site spans (`body_span.from_expansion == false`, snippet `{ a + 4 }`). The outer `Box::pin(async move { .. })` wrapper is expansion, but the written body is not. The default path will not regress the `#[async_trait]` coverage proven in P2.2.
+- **✅ Body wrapping is expressible:** `SourceMap::span_to_snippet(body_span)` returns the original body text, allowing `span_suggestion` to emit a prologue (`__otel_tracer`, `__otel_span`, `__otel_cx`, `_guard`) and re-emit the original inner statements.
+- **❌ `macro_rules!`-generated functions are out of reach:** Correctly flagged with `from_expansion == true`. This is a real limit, but not a regression: `syn` operates pre-expansion and never saw generated items either.
+- **Implementation findings:**
+  1. *Async desugaring:* Emits an internal `<closure>` HIR body with `from_expansion = true` that must be skipped to avoid double-targeting.
+  2. *Visitor deduplication:* Impl items are visited twice under `rustc_middle::hir::nested_filter::All`, requiring deduplication by item ID.
+  3. *Windows MAX_PATH:* Linking `rustc_private` on Windows creates deep import-lib paths (~150+ chars) that exceed the 260-char limit in deep paths. In-tree driver builds require short paths or extended path prefixes.
+- **Remaining verification:** Confirming actual `span_suggestion` emission and round-trip application through `cargo fix`.
+
+#### Implementation Sequence
+
+| Step | Work | Status |
+|---|---|---|
+| Spike | Body wrapping expressibility & `#[async_trait]` call-site span reachability | ✅ Complete (`0b98e5f`) |
+| 1 | `rustc_private` lint driver foundation (`cargo-instrument-rust` crate) | ⬜ In Progress |
+| 2 | HIR eligibility rules (port `ast.rs` rules to HIR; skip async closures; dedup impl items) | ⬜ Planned |
+| 3 | `span_suggestion` transformation engine (`span_to_snippet` wrapping, `MachineApplicable`) | ⬜ Planned |
+| 4 | Developer CLI surface (`--show` diagnostics preview, `--apply` clean-tree gate) | ⬜ Planned |
+| 5 | `cargo fix` round-trip verification & integration regression test suite | ⬜ Planned |
+
+#### Definition of Done (P2.3)
+
+1. `cargo instrument-rust --show` outputs compiler diagnostics previewing span insertion for eligible functions across a crate.
+2. `cargo instrument-rust --apply` writes changes directly to disk and refuses to run if the git working tree has uncommitted changes.
+3. `#[async_trait]` method bodies are correctly wrapped with telemetry spans without syntax or compilation errors.
+4. Modified source files compile cleanly on stable Rust with zero compile-time wrapper latency on subsequent builds.
+5. Round-trip application verified through automated integration tests.
+
+### 6.4 P2.4 - Opt-In Dependency Pipeline & Async Trampolines (Planned)
+
+**Objective:** Harden the transparent dependency instrumentation pipeline (`RUSTC_WRAPPER`) as an explicit opt-in mode (`--with-dependencies` or `CARGO_INSTRUMENT_DEPENDENCIES=1`) for users who require zero-code telemetry across third-party crates.
+
+#### Key Focus Areas
+
+1. **R-4 Resolution ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)):** Evaluate `--extern` injection with version-qualified pre-pass artifact capture (`--message-format=json`). If viable, collapse Tier-2 into native calls (retiring R-1 scope attribution and R-2 file/line/kind limits). If multi-version satisfiability prevents full adoption, extend the C ABI for R-1 and R-2.
+2. **Async Dependency Trampolines:**
+   - `tokio::spawn` context propagation via spawn-site context capture and span links ([ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls)).
+   - Stream / Sink poll-boundary instrumentation.
+   - Cancelled-vs-completed span status tracking across task lifecycles.
+3. **Opt-In CLI Integration:** Seamless orchestration connecting first-party lint-applied crates with dependency wrapper builds.
+
+### 6.5 P2.5 - Large Graphs & Cross-Platform Validation (Planned)
+
+**Objective:** Validate performance, build caching, and cross-platform correctness across both hybrid modes at scale.
+
+#### Key Focus Areas
+
+1. **Scale Benchmarking:**
+   - First-party lint-apply: analysis speed across large multi-crate workspaces.
+   - Opt-in dependency wrapper: build-time overhead on ≥100-unit dependency graphs with atomic session plan caching.
+2. **Tracer Caching (`OnceLock`):** Re-baseline and implement tracer caching per §16.3.
+3. **Cross-Platform Verification:**
+   - Windows (`x86_64-pc-windows-msvc`) with MAX_PATH mitigation.
+   - Linux (`x86_64-unknown-linux-gnu`, ELF dynamic linking).
+   - macOS (`aarch64-apple-darwin`, Mach-O).
+
 ---
 
 ## 7. Milestone Ordering and Phase-1 Deferrals
 
 ```text
-P2.1 ──┬──► P2.2 Macro Expansion Resilience ──┐
-       ├──► P2.3 Async Dependency Trampolines ─┼──► P2.4 Large Graphs ──► P2.5 Cross-Platform
-       └───────────────────────────────────────┘
+P2.1 Unit Identity & Mirror Isolation ✅
+  │
+  ▼
+P2.2 Macro Expansion Resilience & Coexistence ✅
+  │
+  ├────────────────────────────────────────────────────────┐
+  ▼                                                        ▼
+P2.3 First-Party Lint-Apply (Default Path) ◀── current    P2.4 Opt-In Dependency Pipeline & Async
+  │                                                        │
+  └───────────────────────────┬────────────────────────────┘
+                              ▼
+            P2.5 Large Graphs & Cross-Platform Validation
 ```
 
-P2.1 is a hard prerequisite: P2.4 measures nothing meaningful while mirrors merge, and P2.3
-cannot be validated on real async dependencies while host-side units break links. P2.2
-precedes P2.3 because async-in-dependency frequently arrives through `#[async_trait]`, so
-async trampolines built without macro resilience would be validated on a fiction.
+P2.1 is a hard prerequisite: it established unique unit identity and mirror isolation, without which multi-unit builds collided.
+P2.2 proved coexistence with explicit instrumentation and demonstrated hybrid parenting across `#[async_trait]` boundaries.
+P2.2 directly enabled the ADR-012 feasibility spike: confirming that `#[async_trait]` method bodies preserve call-site spans, clearing P2.3 to build the new default first-party lint-apply path without fear of coverage regression.
+P2.3 is the active milestone: building the `cargo instrument-rust` lint driver, providing zero-overhead, reviewable instrumentation for first-party crates.
+P2.4 follows on the opt-in track: resolving R-4 (`--extern` injection vs C ABI) and implementing async dependency trampolines.
+P2.5 brings both paths together for large-scale graph benchmarking and cross-platform verification.
 
 | Phase-1 deferral | Lands in | Rationale |
 |---|---|---|
-| `tokio::spawn` context propagation | P2.3 | Needs the spawn-site context capture and span links (ADR-001) |
-| Stream / Sink instrumentation | P2.3 | Same poll-boundary machinery, larger surface |
-| Cancelled-vs-completed span status | P2.3 | Falls out of owning the async lifecycle |
-| Tracer caching (`OnceLock`) | P2.4 | Performance; gate on a re-baselined benchmark per §16.3 |
+| First-party body wrapping via `span_suggestion` | **P2.3** | Core engine for the default lint-apply workflow (ADR-012) |
+| HIR eligibility rules & AST reconciliation | **P2.3** | Port of `ast.rs` rules to rustc HIR with visit deduplication |
+| Developer CLI (`--show`, `--apply`) | **P2.3** | Reviewable diagnostics and clean-tree in-place rewriting |
+| `tokio::spawn` context propagation | **P2.4** | Needs spawn-site context capture and span links (ADR-001) for opt-in deps |
+| Stream / Sink instrumentation | **P2.4** | Same poll-boundary machinery, larger surface on opt-in deps |
+| Cancelled-vs-completed span status | **P2.4** | Falls out of owning the async lifecycle in dependencies |
+| R-4 `--extern` injection vs C-ABI | **P2.4** | Settles whether Tier-2 collapses into native calls or requires R-1/R-2 ABI extensions |
+| Tracer caching (`OnceLock`) | **P2.5** | Performance; gate on a re-baselined benchmark per §16.3 across both modes |
 | Build-script / package-graph metadata (H1) | **P2.1** | This is exactly the build-graph knowledge P2.1 introduces |
-| AST fallback coverage (`Result<&str, E>`) | P2.2 | Sits with the other return-type precision work |
+| AST fallback coverage (`Result<&str, E>`) | **P2.2** | Sits with the other return-type precision work |
 
 ---
 
@@ -523,5 +620,14 @@ async trampolines built without macro resilience would be validated on a fiction
   (`os error 32`, Windows file sharing) and as a silent miscompile with exit code 0. The
   regression test asserts the semantic outcome, which is stable on all platforms.
 - **G4 reproduces identically everywhere,** because executables require full symbol resolution.
+- **Windows MAX_PATH with `rustc_private` linking.** Linking against compiler-internal libraries
+  (`rustc_driver`, `rustc_interface`, etc.) produces deep intermediate symbol and library names.
+  During the P2.3 feasibility spike on Windows, deep paths (~150+ chars) exceeded the Win32 260-char
+  `MAX_PATH` limit, requiring execution from a short root (`C:\Users\branybuck\lspike`). In-tree
+  tooling and test fixtures must keep target paths compact or enable extended path syntax (`\\?\`).
+- **Toolchain channel dependency.** The default lint-apply driver (P2.3) requires `rustc_private`,
+  which is available on nightly toolchains (or via channel-unlock flags during development), though
+  the modified code it produces compiles on stable Rust. The opt-in dependency wrapper (P2.4)
+  continues to run on stable Rust.
 - The regression suite has so far been executed on Windows (x86_64-pc-windows-msvc, rustc
-  1.97.1). Linux and macOS confirmation is part of P2.1 Step 7.
+  1.97.1). Linux and macOS confirmation is part of P2.5.
