@@ -287,9 +287,17 @@ argv, and `--extern <name>=<path>` creates the dependency edge directly, with no
 Cargo resolution. If that holds, dependency crates emit the same native calls Tier-1 does and the
 tier collapses.
 
-The blocking unknown is crate-instance identity - whether an injected `opentelemetry` is the same
-compiled instance as the one Cargo resolves for the rest of the graph, or a second one whose
-`Context` is a distinct nominal type. P2.3 resolves this before any ABI-extension work starts.
+**Spiked 2026-09-10 - viable.** Crate-instance identity, the unknown this risk was originally
+blocked on, is not a problem: an injected `--extern` resolves to the same instance Cargo did, and a
+`Context` crosses the boundary in both directions. The real blocker is build ordering - on a cold
+build the dependency compiles before `opentelemetry` exists, since Cargo's DAG has no edge between
+them, and injection fails with `E0433`. A pre-pass (`cargo build -p opentelemetry` into the session
+target directory before the main build) resolves it on both `dev` and `release`, and Cargo reuses
+the artifact rather than rebuilding it, so the cost is scheduling rather than a second compile.
+
+Still untested: cross-compilation, graphs with two `opentelemetry` versions, graphs where the
+application does not depend on `opentelemetry` at all, and host/build-script units. Full results in
+[ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional).
 
 ### Coexistence with Explicit Instrumentation
 
