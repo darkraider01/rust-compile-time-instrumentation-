@@ -299,7 +299,7 @@ R-3 is independent of that outcome and is a live defect either way.
 
 #### R-3: A panic inside the shim aborts the host process
 
-All nine exported symbols in `otel-shim/src/lib.rs` and both declarations spliced by `transform.rs`
+All seven exported symbols in `otel-shim/src/lib.rs` and both declarations spliced by `transform.rs`
 are plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71, a panic reaching a plain
 `extern "C"` boundary aborts the process and cannot be caught by `catch_unwind` in the host
 application. This is reachable in practice, not in theory: the shim already carries a fix for a
