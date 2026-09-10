@@ -216,7 +216,19 @@ The last point is the load-bearing one. ADR-003's premise was that the dependenc
 
    The tension is real: `"C-unwind"` is correct, `catch_unwind` is fail-open, and S11 argues for the second. Recorded here rather than settled, because it is a policy call.
 
-2. **Replacement investigation (P2.3).** Determine whether `--extern` injection is viable. The open question is crate-instance identity: if the tool injects its own build of `opentelemetry` into a crate whose manifest does not declare it, and the final binary links `opentelemetry` through Cargo's own resolution, are those the same compiled instance? If they are two instances, `Context` from one is a distinct nominal type from `Context` in the other, and the graph fails to type-check or link. Viability turns entirely on whether the tool can pin the injected `--extern` to the exact rlib Cargo will use for the rest of the graph.
+2. **Replacement investigation (P2.3).** Spiked 2026-09-10; results below. `--extern` injection is viable. The blocker is not the one this ADR originally named.
+
+#### Spike result (2026-09-10)
+
+A minimal `RUSTC_WRAPPER` was built that appends `--extern opentelemetry=<rlib>` when it sees `--crate-name dep_lib`, against a workspace where `dep_lib`'s manifest declares no `opentelemetry` dependency at all.
+
+- **✅ Crate-instance identity is not a problem.** The injected instance is the same one Cargo resolved. A `Context` constructed in the app was accepted by `dep_lib::takes_context(&cx)`, and a `Context` returned from `dep_lib::make_context()` bound to the app's own `opentelemetry::Context` annotation. Both directions compile, link and run. The question this ADR was blocked on is answered favourably.
+- **❌ Build ordering is the real blocker.** On a cold build `dep_lib` compiles *before* `opentelemetry` exists, because Cargo's DAG has no edge between them. The rlib is absent at injection time and the build fails hard with `E0433: cannot find module or crate opentelemetry`.
+- **✅ A pre-pass resolves the ordering problem.** Running `cargo build -p opentelemetry` into the session target directory before the main build makes the rlib present when `dep_lib` compiles. Verified on both `dev` and `release`.
+- **✅ The pre-pass is not a double compile.** The main build emits no `Compiling opentelemetry` line and the rlib hash is unchanged (`bf349e284d4db059` on dev, `ebc2fd7a58a5e107` on release). Cargo's fingerprint matches and the artifact is reused, so the cost is scheduling, not recompilation. This matters because "the double perf cost" was one of the two objections raised in review.
+- **✅ `-p` resolves features graph-wide, not to bare defaults.** The pre-pass and the full build produce the identical hash, so the feature-mismatch hazard is much narrower than assumed - Cargo unifies features across the workspace before building the single package.
+
+**Not yet tested, and each could still sink it:** cross-compilation (`--target`), a graph containing two `opentelemetry` versions (the wrapper's ambiguity branch is currently a bail-out), a graph where the application does not depend on `opentelemetry` at all (the pre-pass would have nothing to build from the resolved graph), host/build-script units, and any interaction with the existing `-C metadata` unit identity from [ADR-007](#adr-007---cargo-is-the-scheduler-c-metadata-is-the-identity).
 
 #### Consequences
 
@@ -227,8 +239,8 @@ The last point is the load-bearing one. ADR-003's premise was that the dependenc
 
 #### Revisit if
 
-- `--extern` injection is shown to produce a single shared crate instance across the graph. Then Tier-2 is replaced and this ADR is superseded by the record of that decision.
-- It is shown not to, for a reason that is structural rather than incidental. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.3.
+- ~~`--extern` injection is shown to produce a single shared crate instance across the graph.~~ **Met, 2026-09-10.** It does. The remaining question is no longer identity but whether the pre-pass survives the untested cases listed above. If it does, Tier-2 is replaced and this ADR is superseded by the record of that decision.
+- The pre-pass fails on cross-compilation, multi-version graphs, or a graph with no `opentelemetry` of its own, in a way that has no clean workaround. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.3.
 - The calling-convention overhead is measured and turns out to be material at realistic span rates. That would raise the priority of the replacement track independently of the panic issue.
 
 ---
