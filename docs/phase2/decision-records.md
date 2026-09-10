@@ -15,6 +15,7 @@ The format is unchanged: what was chosen, what it was chosen over, what evidence
 | [009](#adr-009---explicit-instrumentation-wins-at-whole-function-granularity) | Explicit instrumentation wins at whole-function granularity | **Accepted** | P2.2 |
 | [010](#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry) | Hybrid parenting is delegated to `tracing-opentelemetry`'s context activation | **Accepted** | P2.2 |
 | [011](#adr-011---the-tier-2-c-abi-is-provisional) | The Tier-2 C ABI is provisional, not the intended endpoint | **Accepted, provisional** | P2.2 → P2.3 |
+| [012](#adr-012---hybrid-first-partydependency-instrumentation-architecture) | Hybrid first-party/dependency instrumentation architecture | **Accepted** | P2.2 → P2.3 |
 
 ---
 
@@ -262,6 +263,84 @@ That path is authoritative and version-unambiguous. Store it in the `SessionPlan
 - The calling-convention overhead is measured and turns out to be material at realistic span rates. That would raise the priority of the replacement track independently of the panic issue.
 
 ---
+
+<a id="adr-012---hybrid-first-partydependency-instrumentation-architecture"></a>
+<a id="adr-012---hybrid-first-party-dependency-instrumentation-architecture"></a>
+### ADR-012 - Hybrid first-party/dependency instrumentation architecture
+
+**Status:** Accepted, P2.2 → P2.3. Continues from [ADR-011](#adr-011---the-tier-2-c-abi-is-provisional). Establishes a dual-mode architecture: first-party lint-apply as the default workflow, and compile-time wrapper dependency instrumentation as an explicit opt-in.
+
+#### Context
+
+The compile-time instrumentation pipeline built across Phase 1 and Phase 2 intercepts `rustc` via `RUSTC_WRAPPER`, parses source via `syn`, and splices OpenTelemetry calls at the byte level before handing off to the compiler.
+
+Maintainer review (Scott Gerring, `#otel-rust`, 2026-09-10) raised that this `RUSTC_WRAPPER` + `syn`-splicing approach imposes three fundamental costs beyond what [ADR-011](#adr-011---the-tier-2-c-abi-is-provisional) already covers:
+
+1. **Runs on every build:** Source discovery, parsing, and mirror generation execute on every single compilation, imposing a recurring build-latency tax on developers and CI pipelines (real perf cost, unmeasured).
+2. **Invisible source rewriting with no reviewable diff:** Mutating source files inside intermediate mirror directories creates artifacts that no human reviews before they land in production binaries (*"this would be a showstopper for many folks"*).
+3. **Compiler approximation:** It relies on `syn` approximating what `rustc`'s own frontend parser and type checker already do with full authority.
+
+Scott pointed to [DataDog/cargo-pup](https://github.com/DataDog/cargo-pup) as prior art for an alternative: use `rustc_lint` and `rustc_errors` (the same `rustc_private` compiler-internal APIs on which Clippy is built) to implement instrumentation as a compiler lint with machine-applicable suggestions. Surfaced through a developer CLI:
+- `cargo instrument-rust --show`: previews proposed span additions as compiler diagnostics.
+- `cargo instrument-rust --apply`: writes the changes directly to disk, refusing to run if the git working tree has uncommitted modifications (the same safety discipline as `cargo fix`).
+
+He also highlighted the inherent tradeoff of this approach: *"you can't rewrite crate deps this way"* — a lint-apply tool operates strictly on the local crate being compiled and cannot modify external dependencies.
+
+#### Options considered
+
+1. **Pure `RUSTC_WRAPPER` + `syn`-splice (status quo).** Intercept every build, mirror and splice both first-party crates and dependencies invisibly. Rejected as the sole model: invisible source rewriting and recurring build overhead are unacceptable barriers to adoption for first-party application development.
+2. **Pure `cargo-pup` style lint-apply (`rustc_private`).** Abandon compiler interception entirely; provide only an explicit `--show` / `--apply` CLI modifying local source files. Rejected as the sole model: it completely abandons third-party dependency instrumentation, surrendering the core value proposition of zero-code telemetry across third-party boundaries.
+3. **Hybrid architecture (Chosen).** Adopt a dual-mode model: make first-party lint-apply the default workflow, while retaining compile-time wrapper dependency instrumentation as an explicit opt-in mode.
+
+#### Evidence
+
+- **Maintainer, Scott Gerring (`#otel-rust`), 2026-09-10:** *"this would be a showstopper for many folks"* (referring to invisible source mutation at build time without a developer-reviewed diff).
+- **Maintainer, same source:** *"you can't rewrite crate deps this way"* (referring to the inability of in-tree lint tools like `cargo-pup` to touch upstream third-party dependencies).
+- **[Fact]** `cargo-pup` demonstrates that `rustc_lint` and `rustc_errors` provide robust `Applicability::MachineApplicable` suggestions that integrate seamlessly into Cargo's diagnostic workflows, eliminating ongoing build latency once code is committed.
+- **[Fact]** Dependency instrumentation remains uniquely valuable for architectures that cannot annotate or modify upstream crates. The investments in `UnitId` ([ADR-007](#adr-007---cargo-is-the-scheduler-c-metadata-is-the-identity)), session plan fingerprinting ([ADR-008](#adr-008---the-session-plan-is-resolved-once-and-fingerprinted)), S11 fail-open gating, and the G1–G7 defect fixes provide a solid foundation for this capability.
+
+#### Decision
+
+**Adopt a hybrid architecture:**
+
+1. **Default mode (First-party lint-apply):**
+   - The primary entry point becomes a developer-facing CLI tool (`cargo instrument-rust`) built on `rustc_private` (`rustc_lint` and `rustc_errors`).
+   - Generates visible, reviewable compiler diagnostics via `--show`.
+   - Modifies source files in-place on disk via `--apply`, strictly gated on a clean git working tree.
+   - Once applied, the code is committed to version control and incurs zero compile-time overhead on subsequent builds.
+
+2. **Opt-in mode (Transparent dependency instrumentation):**
+   - The compile-time `RUSTC_WRAPPER` pipeline is retained in full as an explicit opt-in mode (e.g. `--with-dependencies` or `CARGO_INSTRUMENT_DEPENDENCIES=1`).
+   - Serves users who require telemetry within third-party dependencies where modifying source manifests is impossible or undesirable.
+
+#### Component Lifecycle & Technical Mapping
+
+- **What survives as-is for the opt-in path (all of it):**
+  - The complete Phase 1 and Phase 2 dependency pipeline: `RUSTC_WRAPPER` interception (`wrapper.rs`), `UnitId` compilation unit identity from `-C metadata` ([ADR-007](#adr-007---cargo-is-the-scheduler-c-metadata-is-the-identity)), private mirror directory isolation and atomic rename writes, `SessionPlan` single-pass resolution with SHA-256 manifest fingerprinting ([ADR-008](#adr-008---the-session-plan-is-resolved-once-and-fingerprinted)), S11 fail-open diagnostics, the Tier-2 C ABI (`otel-shim`) and provisional `--extern` injection investigation ([ADR-011](#adr-011---the-tier-2-c-abi-is-provisional)), and the entire G1–G7 regression suite.
+
+- **What needs rebuilding rather than porting for the new default path:**
+  - `ast.rs` eligibility rules: the criteria for identifying candidate functions (free functions, inherent methods, trait methods) and exclusions (`const fn`, `extern "C"`, nested functions, explicit annotations per [ADR-009](#adr-009---explicit-instrumentation-wins-at-whole-function-granularity)) remain conceptually identical, but must be rewritten against `rustc_lint`'s HIR (High-Level Intermediate Representation) rather than `syn`'s pre-expansion syntactic token tree.
+  - `transform.rs` byte-splicing: manual UTF-8 byte-offset slicing is replaced by `rustc`'s native diagnostic span suggestion machinery (`span_suggestion` with `Applicability::MachineApplicable`).
+
+- **What is dropped for the default path specifically:**
+  - Nothing is dropped project-wide, as the opt-in mode requires the full pipeline. However, the default first-party path completely bypasses `UnitId`, mirror directory creation, dep-info remapping, `SessionPlan` reachability BFS, and C-ABI trampolines / `otel-shim`.
+
+- **Maintenance cost:**
+  - **This roughly doubles the ongoing maintenance surface.** Rather than replacing one mechanism with another, the project commits to supporting two distinct compilation architectures: a stable toolchain wrapper manipulating token streams for dependencies, and a compiler-internal driver tracking `rustc_private` nightly APIs for first-party code. This is an explicit, accepted engineering cost.
+
+#### Consequences
+
+- ✅ **Developer trust and inspectability:** Default first-party telemetry generates explicit git diffs reviewable in code reviews before merging, removing the "black box" concern.
+- ✅ **Zero recurring build-time overhead:** First-party code is instrumented once; subsequent local builds and CI runs compile standard Rust code without wrapper latency.
+- ✅ **Preserved dependency coverage:** The project retains its distinctive capability to extract telemetry from third-party crates where source cannot be edited.
+- ❌ **Roughly doubled maintenance surface:** Supporting both `syn` AST byte-splicing via `RUSTC_WRAPPER` and `rustc_private` HIR lints requires dual domain expertise and duplicate test matrices.
+- ⚠️ **Nightly toolchain required for the lint driver:** Running `cargo instrument-rust --apply` requires `rustc_private` (available on nightly toolchains or with channel-unlock flags), although the resulting modified code compiles on stable Rust.
+
+#### Revisit if
+
+- Upstream Rust stabilizes an official, stable-channel compiler plugin or source-transformation API that unifies both use cases without requiring `rustc_private`.
+- The maintenance burden of tracking internal `rustc_private` compiler changes across Rust releases exceeds team capacity.
+- Community adoption overwhelmingly (>90%) concentrates on one mode, indicating that the secondary mode no longer justifies its ongoing maintenance cost.
 
 ---
 
