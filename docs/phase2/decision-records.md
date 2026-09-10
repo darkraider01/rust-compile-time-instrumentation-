@@ -228,7 +228,25 @@ A minimal `RUSTC_WRAPPER` was built that appends `--extern opentelemetry=<rlib>`
 - **✅ The pre-pass is not a double compile.** The main build emits no `Compiling opentelemetry` line and the rlib hash is unchanged (`bf349e284d4db059` on dev, `ebc2fd7a58a5e107` on release). Cargo's fingerprint matches and the artifact is reused, so the cost is scheduling, not recompilation. This matters because "the double perf cost" was one of the two objections raised in review.
 - **✅ `-p` resolves features graph-wide, not to bare defaults.** The pre-pass and the full build produce the identical hash, so the feature-mismatch hazard is much narrower than assumed - Cargo unifies features across the workspace before building the single package.
 
-**Not yet tested, and each could still sink it:** cross-compilation (`--target`), a graph containing two `opentelemetry` versions (the wrapper's ambiguity branch is currently a bail-out), a graph where the application does not depend on `opentelemetry` at all (the pre-pass would have nothing to build from the resolved graph), host/build-script units, and any interaction with the existing `-C metadata` unit identity from [ADR-007](#adr-007---cargo-is-the-scheduler-c-metadata-is-the-identity).
+#### Spike round 2 (2026-09-10) - the remaining cases
+
+- **✅ `opentelemetry` reachable only transitively.** An application that names `otel-shim` but never `opentelemetry` still works: `cargo build -p opentelemetry` reaches a transitive-only package, the pre-pass populates the rlib, injection succeeds and the binary runs. The feared case - the pre-pass having nothing to build - does not occur, because `otel-shim` puts `opentelemetry` in the resolved graph.
+- **✅ Cross-compilation is free.** Under an explicit `--target`, the deps directory moves to `target/<triple>/debug/deps` and the rlib hash changes, and discovery still lands because it reads `-L dependency=` out of the invocation Cargo built. That flag is inherently target-aware, so no special handling is required.
+- **❌ Two `opentelemetry` versions in one graph breaks discovery, nondeterministically.** With `0.30` and `0.32` both resolved, two rlibs exist. Which are present when the dependency compiles depends on build scheduling. In one run only the pre-passed `0.32` existed and injection picked correctly; after forcing `0.30` to build first, the wrapper saw both and bailed, and the build failed with `E0433`. **The same project can build one day and fail the next.** Filename globbing is not a sound discovery mechanism.
+- **Also:** `cargo build -p opentelemetry` is itself ambiguous in that graph - *"specification `opentelemetry` is ambiguous"* - so even the pre-pass needs a version-qualified `-p opentelemetry@0.32.0`.
+
+**The sound mechanism, if this is implemented:** do not glob. Run the pre-pass version-qualified with `--message-format=json` and capture the artifact path Cargo reports:
+
+```
+package_id : registry+...#opentelemetry@0.32.0
+filenames  : [".../target/debug/libopentelemetry.rlib", ...]
+```
+
+That path is authoritative and version-unambiguous. Store it in the `SessionPlan` alongside the existing gate, and have the wrapper inject exactly it. Discovery then never depends on what happens to be on disk at that moment, which is what makes the current approach nondeterministic.
+
+**A structural limit remains.** A dependency crate is compiled once and shared by every binary that links it. If two binaries in one workspace resolve different `opentelemetry` versions, the single shared compilation of that dependency can satisfy at most one of them - the requirement is unsatisfiable, not merely hard to discover. This is the same shape as the mixed-provider defect recorded as G7 in the [Phase 2 README](README.md#g7---mixed-provider-workspace-fails-to-link), and any implementation needs a per-target-root decision with a deliberate fail-open for the units it cannot satisfy.
+
+**Still untested:** host/build-script units, and interaction with the existing `-C metadata` unit identity from [ADR-007](#adr-007---cargo-is-the-scheduler-c-metadata-is-the-identity).
 
 #### Consequences
 
@@ -240,7 +258,8 @@ A minimal `RUSTC_WRAPPER` was built that appends `--extern opentelemetry=<rlib>`
 #### Revisit if
 
 - ~~`--extern` injection is shown to produce a single shared crate instance across the graph.~~ **Met, 2026-09-10.** It does. The remaining question is no longer identity but whether the pre-pass survives the untested cases listed above. If it does, Tier-2 is replaced and this ADR is superseded by the record of that decision.
-- The pre-pass fails on cross-compilation, multi-version graphs, or a graph with no `opentelemetry` of its own, in a way that has no clean workaround. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.3.
+- ~~The pre-pass fails on cross-compilation, or a graph with no `opentelemetry` of its own.~~ **Tested 2026-09-10: it does not.** Both work.
+- Multi-version graphs cannot be made deterministic via the JSON-artifact mechanism above, or the per-target-root satisfiability limit turns out to be common rather than exotic. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.3.
 - The calling-convention overhead is measured and turns out to be material at realistic span rates. That would raise the priority of the replacement track independently of the panic issue.
 
 ---

@@ -188,6 +188,39 @@ satisfies the check rather than working around it, so the test isolates the mirr
 writes into a directory that other `rustc` processes are concurrently populating. The
 unit's own dep-info file name is derivable from `-C extra-filename`, which is already in argv.
 
+### G7 - Mixed-provider workspace fails to link
+
+**Reproduced 2026-09-10.** `has_otel_shim_provider` is a single boolean for the whole build graph -
+`session.rs:512` is an `any()` over every target-reachable package. The property it needs to express
+is per-package: *will every binary that links this rlib have the shim?*
+
+Fixture: a workspace with `app_a` (depends on `otel-shim`), `app_b` (does not), and a shared
+`common` that both link. `common` receives Tier-2 trampolines because the graph-wide flag is true,
+and then `app_b` cannot resolve them:
+
+```
+error LNK2019: unresolved external symbol __otel_span_enter referenced in function common::shared_work
+error LNK2019: unresolved external symbol __otel_span_exit referenced in ... __OtelGuard as Drop::drop
+fatal error LNK1120: 2 unresolved externals
+error: could not compile `app_b` (bin "app_b")
+```
+
+The same fixture builds clean without the wrapper. **The tool turns a working build into a failing
+one**, which puts it in the same class as G4 and in direct conflict with S11 - every other failure
+path warns and compiles unmodified, this one hard-fails, and no preflight warning fires first.
+
+G4 does not catch this: G4 tests a graph with *no* provider anywhere, and passes. Here the graph
+does contain a provider, just not on every path to `common`.
+
+**Root cause is shared compilation, not detection.** `common` is compiled once and shared, so it
+cannot be instrumented per-consumer. The gate has to become "instrument this package only if *all*
+target roots reaching it provide the shim", which needs per-root reachability rather than the
+current union set. The same shape recurs in
+[ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional) for multi-version graphs:
+one shared compilation, several consumers with incompatible requirements.
+
+**Not yet fixed.** No regression test exists for it; the fixture above is the reproduction.
+
 ### P2.1 Closeout Defect Register (D1–D5)
 
 Following initial P2.1 delivery, a closeout review surfaced five secondary defects in the caching, normalization, manifest discovery, and fail-open defaults of `SessionPlan`:
@@ -295,8 +328,18 @@ them, and injection fails with `E0433`. A pre-pass (`cargo build -p opentelemetr
 target directory before the main build) resolves it on both `dev` and `release`, and Cargo reuses
 the artifact rather than rebuilding it, so the cost is scheduling rather than a second compile.
 
-Still untested: cross-compilation, graphs with two `opentelemetry` versions, graphs where the
-application does not depend on `opentelemetry` at all, and host/build-script units. Full results in
+**Round 2 (2026-09-10).** Cross-compilation works for free - discovery reads `-L dependency=`, which
+is already target-aware. A graph where the app reaches `opentelemetry` only through `otel-shim` also
+works, so the feared "pre-pass has nothing to build" case does not arise. Two `opentelemetry`
+versions in one graph does break it, and nondeterministically: which rlibs exist when the dependency
+compiles depends on scheduling, so the same project can build one run and fail the next with
+`E0433`. Filename globbing is unsound; the fix is to capture the authoritative path from a
+version-qualified pre-pass with `--message-format=json` and store it in the `SessionPlan`.
+
+A structural limit survives that fix: a dependency is compiled once and shared, so if two binaries
+resolve different `opentelemetry` versions, the single shared compilation can satisfy at most one -
+the same shape as [G7](#g7---mixed-provider-workspace-fails-to-link). Still untested:
+host/build-script units and `-C metadata` interaction. Full results in
 [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional).
 
 ### Coexistence with Explicit Instrumentation
