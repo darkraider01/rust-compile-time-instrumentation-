@@ -13,7 +13,8 @@ The format is unchanged: what was chosen, what it was chosen over, what evidence
 | [007](#adr-007---cargo-is-the-scheduler-c-metadata-is-the-identity) | Cargo is the scheduler; `-C metadata` is the unit identity | **Accepted** | P2.1 |
 | [008](#adr-008---the-session-plan-is-resolved-once-and-fingerprinted) | The session plan is resolved once and fingerprinted, not re-derived per unit | **Accepted** | P2.1 |
 | [009](#adr-009---explicit-instrumentation-wins-at-whole-function-granularity) | Explicit instrumentation wins at whole-function granularity | **Accepted** | P2.2 |
-| [010](#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry) | Hybrid parenting is delegated to `tracing-opentelemetry`'s context activation | **Accepted, conditional** | P2.2 |
+| [010](#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry) | Hybrid parenting is delegated to `tracing-opentelemetry`'s context activation | **Accepted** | P2.2 |
+| [011](#adr-011---the-tier-2-c-abi-is-provisional) | The Tier-2 C ABI is provisional, not the intended endpoint | **Accepted, provisional** | P2.2 → P2.3 |
 
 ---
 
@@ -52,6 +53,7 @@ The load-bearing argument for option 1 was that the tool needed build-graph awar
 - ✅ **Atomic rename removes the concurrent read/write window** without a lock, so parallelism stays Cargo's to control.
 - ❌ **A hard dependency on an unstable-ish rustc flag surface.** If Cargo ever stops passing `-C metadata`, unit identity degrades to the Phase 1 key and G1/G3 return.
 - ⚠️ **Mirror directory count grows with units, not packages.** A 105-unit graph produces 105 mirrors; disk cost is now linear in build width rather than graph size.
+- ⚠️ **The mechanism is stable and public, but its production track record is caching, not rewriting.** `RUSTC_WRAPPER` has been a documented Cargo feature since [cargo#3887](https://github.com/rust-lang/cargo/pull/3887) (2017) and carries `sccache` in production widely, so the concern is not stability. It is that every well-adopted user of this hook *caches* compilations; none *rewrites source* before handing off. Maintainer review (2026-09-10) reached for prior art here and the honest answer is that there is little for the rewriting half. Recorded as a known-thin area rather than a resolved one.
 
 #### Revisit if
 
@@ -144,7 +146,8 @@ A function may already carry `#[tracing::instrument]`, `#[instrument]`, a `#[pro
 
 ### ADR-010 - Hybrid parenting is delegated to `tracing-opentelemetry`
 
-**Status:** Accepted, conditional, P2.2. This is the decision with the largest unowned dependency.
+**Status:** Accepted, P2.2. Held conditionally when taken; upgraded to Accepted after maintainer
+review confirmed the upstream behaviour is deliberately maintained rather than incidental.
 
 #### Context
 
@@ -162,6 +165,7 @@ A caller annotated `#[tracing::instrument]` and an automatically instrumented de
 - **[Fact]** `test_sync_hybrid_parenting` and `test_async_trait_hybrid_parenting` assert `dep_span.parent_span_id == caller_span.span_id` end-to-end in subprocess fixtures, including across the `#[async_trait]` desugaring boundary.
 - **[Fact]** `otel_shim::active_span_count() == 0` after each fixture, so the parenting is achieved without leaking handles.
 - **⚠️ [Fact]** The activation default lives in `tracing-opentelemetry`, not in this project. Upstream [opentelemetry-rust-contrib#791](https://github.com/open-telemetry/opentelemetry-rust-contrib/issues/791) is still open in this area.
+- **Maintainer, Scott Gerring (`#otel-rust`), 2026-09-10:** *"the context activation interop between tracing-opentelemetry and the otel context works well now, as we (mainly a colleague of mine at datadog and a bit of my own work) spent a bunch of time fixing it up."* This is the material update: the default is not an incidental behaviour that might drift, it is a maintained interop path with named owners who invested in it.
 
 #### Decision
 
@@ -171,7 +175,7 @@ A caller annotated `#[tracing::instrument]` and an automatically instrumented de
 
 - ✅ **Hybrid parenting works with zero user configuration** on the default path.
 - ✅ **No new injection at the explicit/automatic boundary**, so ADR-009's guarantee is not weakened.
-- ❌ **A structural behaviour of this project is owned by an upstream default we do not control.** If it flips, hybrid traces silently split into two roots.
+- ❌ **A structural behaviour of this project is owned by an upstream default we do not control.** If it flips, hybrid traces silently split into two roots. Downgraded from High to Low likelihood on the maintainer statement above - the dependency is unchanged, the probability of it moving unannounced is not.
 - ⚠️ **The pinning test detects the change at our CI, not at the user's build.** A user on a newer `tracing-opentelemetry` than our lockfile gets no warning.
 
 #### Revisit if
@@ -179,6 +183,53 @@ A caller annotated `#[tracing::instrument]` and an automatically instrumented de
 - `test_tracing_opentelemetry_activates_context_by_default` fails on a dependency bump. That is the tripwire, and it should be treated as an architecture event, not a test fix.
 - contrib#791 lands and changes activation or propagation semantics.
 - A runtime assertion at `otel-shim` init proves cheap enough to move detection from our CI to the user's build.
+
+---
+
+### ADR-011 - The Tier-2 C ABI is provisional
+
+**Status:** Accepted, provisional, P2.2. Does not reverse [ADR-003](../research/17-decision-records.md#adr-003--extern-c-trampolines-for-dependency-coverage), but withdraws the assumption that it is the endpoint. Opened by maintainer review, 2026-09-10.
+
+#### Context
+
+[ADR-003](../research/17-decision-records.md#adr-003--extern-c-trampolines-for-dependency-coverage) chose `extern "C"` trampolines for dependency coverage on one premise: a dependency crate cannot name `opentelemetry`, because doing so would require editing its `Cargo.toml`, which the tool does not do. The C ABI was the way around a dependency edge we believed we could not create.
+
+Maintainer review put pressure on both halves of that - the cost of the C ABI, and whether the premise was ever true.
+
+#### Evidence
+
+- **Maintainer, Scott Gerring (`#otel-rust`), 2026-09-10:** *"ending up C FFI boundaries everywhere through the call stack is probably a non starter ... it breaks panic handling at least, and it will probably break a pile of optimisations too, in one part because it forces the C calling convention to be used."*
+- **[Fact, verified]** All nine exported symbols in `otel-shim/src/lib.rs` and both spliced declarations in `transform.rs` are plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71 a panic that reaches a plain `extern "C"` boundary **aborts the process**; it is not catchable by `catch_unwind` in the host application.
+- **[Fact, already hit once]** `otel-shim/src/lib.rs` carries a fix comment for exactly this class of bug: *"running it while `STACK` is still borrowed panics with 'RefCell already borrowed'."* A `RefCell` double-borrow inside `__otel_span_exit` is a failure mode this project has already found and repaired once. The abort path is therefore reachable in practice, not in theory.
+- **[Fact]** The blast radius is a process abort, which is strictly worse than the uninstrumented behaviour it replaces. An application that isolates panics per request - the common shape for a web server - loses the whole process instead of one request. This directly contradicts S11, under which every failure path warns and compiles or runs unmodified.
+- **Maintainer, same source:** *"i wonder if for the FFI you can manipulate the project model to add a dep as you are interceding with `RUSTC_WRAPPER` anyway."*
+
+The last point is the load-bearing one. ADR-003's premise was that the dependency edge could not be created. But the tool already owns the full `rustc` argv, and `--extern <name>=<path>` creates exactly that edge without Cargo's resolver and without touching any manifest. If that works, Tier-2 does not need a C ABI at all - dependency crates would emit the same native `opentelemetry` calls Tier-1 does, and the entire tier collapses into Tier-1.
+
+#### Decision
+
+**Treat the Tier-2 C ABI as a working mechanism with a known expiry, not as the architecture. Two tracks:**
+
+1. **Immediate mitigation (P2.2).** The abort path is a live defect and is fixed independently of what replaces the tier. Two options, not mutually exclusive:
+   - `extern "C-unwind"` on all eleven declarations, so a panic propagates instead of aborting. Restores the behaviour a normal Rust dependency would have had.
+   - `catch_unwind` inside each exported function, returning the no-op handle `0` on panic. Strictly more aligned with S11 - telemetry that fails should degrade, not propagate into user code that never asked for it.
+
+   The tension is real: `"C-unwind"` is correct, `catch_unwind` is fail-open, and S11 argues for the second. Recorded here rather than settled, because it is a policy call.
+
+2. **Replacement investigation (P2.3).** Determine whether `--extern` injection is viable. The open question is crate-instance identity: if the tool injects its own build of `opentelemetry` into a crate whose manifest does not declare it, and the final binary links `opentelemetry` through Cargo's own resolution, are those the same compiled instance? If they are two instances, `Context` from one is a distinct nominal type from `Context` in the other, and the graph fails to type-check or link. Viability turns entirely on whether the tool can pin the injected `--extern` to the exact rlib Cargo will use for the rest of the graph.
+
+#### Consequences
+
+- ✅ **R-1 and R-2 may become moot.** Both are limitations of the ABI's width - a hardcoded `"dependency"` scope, and discarded file/line/kind. Native calls carry all of it for free, so the P2.3 ABI-extension work should not start until the replacement question is settled.
+- ✅ **The Tier-1/Tier-2 split may collapse**, retiring what [ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls) called its *"largest unpriced consequence"*.
+- ❌ **The calling-convention cost is unmeasured.** The C ABI is forced at every instrumented dependency function. Two small lifecycle calls per span is plausibly noise against span creation itself, but that is an assumption, not a measurement, and it should be benchmarked rather than argued.
+- ⚠️ **`--extern` injection trades one unsanctioned mechanism for another.** It creates a dependency edge Cargo did not resolve, which is a stronger intervention than reading argv. If it works, its own failure modes need their own record.
+
+#### Revisit if
+
+- `--extern` injection is shown to produce a single shared crate instance across the graph. Then Tier-2 is replaced and this ADR is superseded by the record of that decision.
+- It is shown not to, for a reason that is structural rather than incidental. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.3.
+- The calling-convention overhead is measured and turns out to be material at realistic span rates. That would raise the priority of the replacement track independently of the panic issue.
 
 ---
 
