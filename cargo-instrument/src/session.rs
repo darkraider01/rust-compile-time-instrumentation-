@@ -39,6 +39,10 @@ pub struct SessionPlan {
     /// Whether any target root in the build graph has otel-shim reachable.
     /// D5 / S11: Defaults to false to fail open if metadata evaluation fails.
     pub has_otel_shim_provider: bool,
+    /// Set of package names that are reached by at least one target root
+    /// that does not link otel-shim (G7).
+    #[serde(default)]
+    pub shim_unsafe_packages: HashSet<String>,
     /// Set of package names that are compiled exclusively for the host
     /// (reached solely via build-dependencies or from proc-macro packages).
     pub host_only_packages: HashSet<String>,
@@ -86,6 +90,14 @@ impl SessionPlan {
             }
         }
         false
+    }
+
+    /// Returns true if the package is reached by at least one target root without otel-shim (G7).
+    ///
+    /// D2: normalizes both hyphenated and underscored package names.
+    pub fn is_shim_unsafe(&self, package_name: &str) -> bool {
+        self.shim_unsafe_packages
+            .contains(&package_name.replace('-', "_"))
     }
 
     /// Returns true if `otel-shim` is reachable in the target dependency graph.
@@ -346,6 +358,7 @@ impl SessionPlan {
 
         let mut pkg_id_to_name: HashMap<String, String> = HashMap::new();
         let mut proc_macro_ids: HashSet<String> = HashSet::new();
+        let mut bin_or_cdylib_ids: HashSet<String> = HashSet::new();
 
         for pkg in packages {
             if let (Some(id), Some(name)) = (pkg["id"].as_str(), pkg["name"].as_str()) {
@@ -359,6 +372,15 @@ impl SessionPlan {
                     });
                     if is_pm {
                         proc_macro_ids.insert(id.to_string());
+                    }
+                    let is_executable = targets.iter().any(|t| {
+                        t["kind"]
+                            .as_array()
+                            .map(|k| k.iter().any(|v| v == "bin" || v == "cdylib"))
+                            .unwrap_or(false)
+                    });
+                    if is_executable {
+                        bin_or_cdylib_ids.insert(id.to_string());
                     }
                 }
             }
@@ -404,6 +426,7 @@ impl SessionPlan {
                 let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
                 return Ok(Self {
                     has_otel_shim_provider: has_shim,
+                    shim_unsafe_packages: HashSet::new(),
                     host_only_packages: HashSet::new(),
                     host_only_manifest_dirs: HashSet::new(),
                     fingerprint,
@@ -440,12 +463,37 @@ impl SessionPlan {
             }
         }
 
-        // Determine target roots: workspace members that are not proc-macros
+        // Identify workspace members that are internal dependencies of other workspace members.
+        // A workspace member is an internal dependency if another member depends on it via a normal dependency edge.
+        let mut internal_member_dep_ids: HashSet<String> = HashSet::new();
+        for member_id in &workspace_members {
+            if let Some(deps) = node_deps.get(member_id) {
+                for (dep_id, kinds) in deps {
+                    let is_normal_dep = kinds.iter().any(|k| k.is_none());
+                    if is_normal_dep && workspace_members.contains(dep_id) {
+                        internal_member_dep_ids.insert(dep_id.clone());
+                    }
+                }
+            }
+        }
+
+        // Determine target roots: workspace members that produce standalone linked artifacts
+        // (bin, cdylib) or are top-level crates (in-degree 0 among workspace members), excluding proc-macros.
         let mut target_roots: Vec<String> = workspace_members
             .iter()
             .filter(|id| !proc_macro_ids.contains(*id))
+            .filter(|id| bin_or_cdylib_ids.contains(*id) || !internal_member_dep_ids.contains(*id))
             .cloned()
             .collect();
+
+        if target_roots.is_empty() {
+            // If all members were filtered out, fall back to all non-proc-macro workspace members
+            for id in &workspace_members {
+                if !proc_macro_ids.contains(id) {
+                    target_roots.push(id.clone());
+                }
+            }
+        }
 
         if target_roots.is_empty() {
             // If all members are proc-macros or empty, use any non-proc-macro package
@@ -456,31 +504,58 @@ impl SessionPlan {
             }
         }
 
-        // BFS to find all packages reachable from target roots via normal or dev dependencies
+        // Per-target-root reachability BFS (G7).
+        // A package is otel-shim-safe to instrument only if every target root whose reachable
+        // set contains that package also has otel-shim in its own reachable set.
         let mut target_reachable_ids: HashSet<String> = HashSet::new();
-        let mut queue = std::collections::VecDeque::new();
+        let mut shim_unsafe_packages: HashSet<String> = HashSet::new();
+        let mut has_otel_shim_provider = false;
 
-        for root in target_roots {
-            if target_reachable_ids.insert(root.clone()) {
-                queue.push_back(root);
+        for root in &target_roots {
+            let mut root_reachable_ids: HashSet<String> = HashSet::new();
+            let mut queue = std::collections::VecDeque::new();
+
+            if root_reachable_ids.insert(root.clone()) {
+                queue.push_back(root.clone());
             }
-        }
 
-        while let Some(current) = queue.pop_front() {
-            if let Some(deps) = node_deps.get(&current) {
-                for (dep_id, kinds) in deps {
-                    // An edge is a target edge if it is a normal dep (kind is None) or dev dep (kind is Some("dev"))
-                    let is_target_edge = kinds
-                        .iter()
-                        .any(|k| k.is_none() || k.as_deref() == Some("dev"));
-                    if is_target_edge
-                        && !proc_macro_ids.contains(dep_id)
-                        && target_reachable_ids.insert(dep_id.clone())
-                    {
-                        queue.push_back(dep_id.clone());
+            while let Some(current) = queue.pop_front() {
+                if let Some(deps) = node_deps.get(&current) {
+                    for (dep_id, kinds) in deps {
+                        // An edge is a target edge if it is a normal dep (kind is None) or dev dep (kind is Some("dev"))
+                        let is_target_edge = kinds
+                            .iter()
+                            .any(|k| k.is_none() || k.as_deref() == Some("dev"));
+                        if is_target_edge
+                            && !proc_macro_ids.contains(dep_id)
+                            && root_reachable_ids.insert(dep_id.clone())
+                        {
+                            queue.push_back(dep_id.clone());
+                        }
                     }
                 }
             }
+
+            let root_has_shim = root_reachable_ids.iter().any(|id| {
+                pkg_id_to_name
+                    .get(id)
+                    .map(|name| name == "otel-shim" || name == "otel_shim")
+                    .unwrap_or(false)
+            });
+
+            if root_has_shim {
+                has_otel_shim_provider = true;
+            } else {
+                // Any package reachable from a shim-less target root cannot safely receive
+                // Tier-2 trampolines because this root will fail to link them (G7 / S11).
+                for id in &root_reachable_ids {
+                    if let Some(name) = pkg_id_to_name.get(id) {
+                        shim_unsafe_packages.insert(name.replace('-', "_"));
+                    }
+                }
+            }
+
+            target_reachable_ids.extend(root_reachable_ids);
         }
 
         // Target-reachable package names (normalized to underscored form for consistent comparison)
@@ -508,18 +583,11 @@ impl SessionPlan {
             }
         }
 
-        // Check if otel-shim is reachable from target packages
-        let has_otel_shim_provider = target_reachable_ids.iter().any(|id| {
-            pkg_id_to_name
-                .get(id)
-                .map(|name| name == "otel-shim" || name == "otel_shim")
-                .unwrap_or(false)
-        });
-
         let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
 
         Ok(Self {
             has_otel_shim_provider,
+            shim_unsafe_packages,
             host_only_packages,
             host_only_manifest_dirs,
             fingerprint,
@@ -648,6 +716,161 @@ mod tests {
         assert!(
             !plan.is_fresh(root),
             "Plan must be rejected as stale when Cargo.toml is modified"
+        );
+    }
+
+    #[test]
+    fn test_g7_is_shim_unsafe_normalization() {
+        let mut plan = SessionPlan::default();
+        plan.shim_unsafe_packages.insert("shared_lib".to_string());
+
+        assert!(plan.is_shim_unsafe("shared_lib"));
+        assert!(plan.is_shim_unsafe("shared-lib"));
+        assert!(!plan.is_shim_unsafe("other_lib"));
+    }
+
+    #[test]
+    fn test_g7_mixed_provider_from_metadata_json() {
+        let metadata = serde_json::json!({
+            "packages": [
+                {
+                    "id": "app_a 0.1.0 (path+file:///app_a)",
+                    "name": "app-a",
+                    "manifest_path": "/app_a/Cargo.toml",
+                    "targets": [{"kind": ["bin"], "name": "app-a"}]
+                },
+                {
+                    "id": "app_b 0.1.0 (path+file:///app_b)",
+                    "name": "app-b",
+                    "manifest_path": "/app_b/Cargo.toml",
+                    "targets": [{"kind": ["bin"], "name": "app-b"}]
+                },
+                {
+                    "id": "common 0.1.0 (path+file:///common)",
+                    "name": "common",
+                    "manifest_path": "/common/Cargo.toml",
+                    "targets": [{"kind": ["lib"], "name": "common"}]
+                },
+                {
+                    "id": "otel-shim 0.1.0 (path+file:///otel-shim)",
+                    "name": "otel-shim",
+                    "manifest_path": "/otel-shim/Cargo.toml",
+                    "targets": [{"kind": ["lib"], "name": "otel-shim"}]
+                }
+            ],
+            "workspace_members": [
+                "app_a 0.1.0 (path+file:///app_a)",
+                "app_b 0.1.0 (path+file:///app_b)",
+                "common 0.1.0 (path+file:///common)"
+            ],
+            "workspace_root": "/",
+            "resolve": {
+                "nodes": [
+                    {
+                        "id": "app_a 0.1.0 (path+file:///app_a)",
+                        "deps": [
+                            {"pkg": "common 0.1.0 (path+file:///common)", "dep_kinds": [{"kind": null}]},
+                            {"pkg": "otel-shim 0.1.0 (path+file:///otel-shim)", "dep_kinds": [{"kind": null}]}
+                        ]
+                    },
+                    {
+                        "id": "app_b 0.1.0 (path+file:///app_b)",
+                        "deps": [
+                            {"pkg": "common 0.1.0 (path+file:///common)", "dep_kinds": [{"kind": null}]}
+                        ]
+                    },
+                    {
+                        "id": "common 0.1.0 (path+file:///common)",
+                        "deps": []
+                    },
+                    {
+                        "id": "otel-shim 0.1.0 (path+file:///otel-shim)",
+                        "deps": []
+                    }
+                ]
+            }
+        });
+
+        let plan = SessionPlan::from_metadata_json(&metadata).expect("parse metadata");
+        assert!(
+            plan.has_otel_shim_provider(),
+            "Workspace has at least one root linking otel-shim"
+        );
+        assert!(
+            plan.is_shim_unsafe("common"),
+            "Shared dependency 'common' must be shim-unsafe because app_b lacks otel-shim"
+        );
+        assert!(
+            plan.is_shim_unsafe("app-b"),
+            "app_b lacks otel-shim and should be shim-unsafe"
+        );
+        assert!(
+            !plan.is_shim_unsafe("app-a"),
+            "app_a links otel-shim and must not be marked shim-unsafe"
+        );
+    }
+
+    #[test]
+    fn test_g7_single_binary_with_shim_from_metadata_json() {
+        let metadata = serde_json::json!({
+            "packages": [
+                {
+                    "id": "app_a 0.1.0 (path+file:///app_a)",
+                    "name": "app-a",
+                    "manifest_path": "/app_a/Cargo.toml",
+                    "targets": [{"kind": ["bin"], "name": "app-a"}]
+                },
+                {
+                    "id": "common 0.1.0 (path+file:///common)",
+                    "name": "common",
+                    "manifest_path": "/common/Cargo.toml",
+                    "targets": [{"kind": ["lib"], "name": "common"}]
+                },
+                {
+                    "id": "otel-shim 0.1.0 (path+file:///otel-shim)",
+                    "name": "otel-shim",
+                    "manifest_path": "/otel-shim/Cargo.toml",
+                    "targets": [{"kind": ["lib"], "name": "otel-shim"}]
+                }
+            ],
+            "workspace_members": [
+                "app_a 0.1.0 (path+file:///app_a)",
+                "common 0.1.0 (path+file:///common)"
+            ],
+            "workspace_root": "/",
+            "resolve": {
+                "nodes": [
+                    {
+                        "id": "app_a 0.1.0 (path+file:///app_a)",
+                        "deps": [
+                            {"pkg": "common 0.1.0 (path+file:///common)", "dep_kinds": [{"kind": null}]},
+                            {"pkg": "otel-shim 0.1.0 (path+file:///otel-shim)", "dep_kinds": [{"kind": null}]}
+                        ]
+                    },
+                    {
+                        "id": "common 0.1.0 (path+file:///common)",
+                        "deps": []
+                    },
+                    {
+                        "id": "otel-shim 0.1.0 (path+file:///otel-shim)",
+                        "deps": []
+                    }
+                ]
+            }
+        });
+
+        let plan = SessionPlan::from_metadata_json(&metadata).expect("parse metadata");
+        assert!(
+            plan.has_otel_shim_provider(),
+            "Workspace has target root with otel-shim"
+        );
+        assert!(
+            !plan.is_shim_unsafe("common"),
+            "In single-binary workspace, common is reached only by app_a and must be shim-safe"
+        );
+        assert!(
+            !plan.is_shim_unsafe("app-a"),
+            "app_a links otel-shim and is shim-safe"
         );
     }
 }

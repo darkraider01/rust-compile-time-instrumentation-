@@ -952,3 +952,189 @@ fn test_d5_metadata_failure_safe_default() {
         "Default plan must have has_otel_shim_provider = false per S11 fail-open"
     );
 }
+
+// ----------------------------------------------------------------------------
+// G7 — Mixed-provider workspace fails to link
+// ----------------------------------------------------------------------------
+
+/// **Defect (G7):** `SessionPlan::build_from_metadata` previously computed `has_otel_shim_provider`
+/// as a single boolean for the entire build graph. In a mixed workspace where `app_a` depends on
+/// `otel-shim` but `app_b` does not, while both share a `common` dependency: `common` was instrumented
+/// with Tier-2 trampolines because `app_a` provided the shim, causing `app_b` to fail at link time:
+/// `LNK2019: unresolved external symbol __otel_span_enter`.
+///
+/// **Fix:** Per-target-root reachability BFS ensures `common` is marked `shim_unsafe` because
+/// `app_b` (a target root reaching `common`) does not link `otel-shim`. The wrapper skips
+/// instrumenting `common` per S11 fail-open, and both binaries link and run successfully.
+#[test]
+#[ignore = "G7 regression: asserts mixed-provider workspace builds and runs without link errors"]
+fn test_g7_mixed_provider_workspace_fails_open_for_common_dep() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+
+    // Workspace root
+    write_file(
+        &root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app_a\", \"app_b\", \"common\"]\nresolver = \"2\"\n",
+    );
+
+    // Shared common library
+    write_file(
+        &root.join("common").join("Cargo.toml"),
+        "[package]\nname = \"common\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write_file(
+        &root.join("common").join("src").join("lib.rs"),
+        "pub fn shared_work(x: i32) -> i32 {\n    x + 10\n}\n",
+    );
+
+    // app_a: links otel-shim and common
+    write_file(
+        &root.join("app_a").join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"app_a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\ncommon = {{ path = \"../common\" }}\n\
+             otel-shim = {{ path = \"{}\" }}\n",
+            otel_shim_dep_path()
+        ),
+    );
+    write_file(
+        &root.join("app_a").join("src").join("main.rs"),
+        "fn main() {\n    otel_shim::init();\n    println!(\"app_a: {}\", common::shared_work(1));\n}\n",
+    );
+
+    // app_b: links common, but does NOT link otel-shim
+    write_file(
+        &root.join("app_b").join("Cargo.toml"),
+        "[package]\nname = \"app_b\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [dependencies]\ncommon = { path = \"../common\" }\n",
+    );
+    write_file(
+        &root.join("app_b").join("src").join("main.rs"),
+        "fn main() {\n    println!(\"app_b: {}\", common::shared_work(2));\n}\n",
+    );
+
+    let target_dir = root.join("target").join("instrumented");
+    let output = run_cargo(root, &target_dir, &["build"], true);
+    assert!(
+        output.status.success(),
+        "build of mixed-provider workspace under wrapper must succeed without link errors.\n{}",
+        describe(&output)
+    );
+
+    // Verify common was not instrumented with Tier-2 trampolines
+    let common_mirrors = mirror_dirs_for(&target_dir, "common");
+    let has_trampoline = common_mirrors.iter().any(|d| {
+        let dir = mirror_root(&target_dir).join(d);
+        contains_trampoline_symbols(&dir)
+    });
+    assert!(
+        !has_trampoline,
+        "common must NOT receive trampolines in a mixed-provider workspace per G7 fail-open"
+    );
+
+    // Run app_a and app_b binaries directly to assert both execute cleanly
+    let bin_suffix = std::env::consts::EXE_SUFFIX;
+    let app_a_bin = target_dir.join("debug").join(format!("app_a{bin_suffix}"));
+    let app_b_bin = target_dir.join("debug").join(format!("app_b{bin_suffix}"));
+
+    let out_a = Command::new(&app_a_bin).output().expect("execute app_a");
+    assert!(
+        out_a.status.success(),
+        "app_a must execute with exit code 0"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out_a.stdout).trim(),
+        "app_a: 11",
+        "app_a output must match expected computation"
+    );
+
+    let out_b = Command::new(&app_b_bin).output().expect("execute app_b");
+    assert!(
+        out_b.status.success(),
+        "app_b must execute with exit code 0"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out_b.stdout).trim(),
+        "app_b: 12",
+        "app_b output must match expected computation"
+    );
+}
+
+/// **Fixture:** Verifies that the single-binary-with-shim common case does not regress.
+/// When only `app_a` (which links `otel-shim`) reaches `common`, `common` MUST be instrumented
+/// with Tier-2 trampolines, and the binary must link and run successfully.
+#[test]
+#[ignore = "G7 regression: asserts single-binary workspace with otel-shim instruments common dependency"]
+fn test_g7_single_binary_with_shim_instruments_common_dep() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+
+    // Workspace root with app_a and common
+    write_file(
+        &root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app_a\", \"common\"]\nresolver = \"2\"\n",
+    );
+
+    // Shared common library
+    write_file(
+        &root.join("common").join("Cargo.toml"),
+        "[package]\nname = \"common\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write_file(
+        &root.join("common").join("src").join("lib.rs"),
+        "pub fn shared_work(x: i32) -> i32 {\n    x + 10\n}\n",
+    );
+
+    // app_a: links otel-shim and common
+    write_file(
+        &root.join("app_a").join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"app_a\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [dependencies]\ncommon = {{ path = \"../common\" }}\n\
+             otel-shim = {{ path = \"{}\" }}\n",
+            otel_shim_dep_path()
+        ),
+    );
+    write_file(
+        &root.join("app_a").join("src").join("main.rs"),
+        "fn main() {\n    otel_shim::init();\n    println!(\"app_a: {}\", common::shared_work(1));\n}\n",
+    );
+
+    let target_dir = root.join("target").join("instrumented");
+    let output = run_cargo(root, &target_dir, &["build"], true);
+    assert!(
+        output.status.success(),
+        "build of single-binary workspace under wrapper must succeed.\n{}",
+        describe(&output)
+    );
+
+    // Verify common WAS instrumented with Tier-2 trampolines
+    let common_mirrors = mirror_dirs_for(&target_dir, "common");
+    assert!(
+        !common_mirrors.is_empty(),
+        "common must have a mirror directory in single-binary workspace"
+    );
+    let has_trampoline = common_mirrors.iter().any(|d| {
+        let dir = mirror_root(&target_dir).join(d);
+        contains_trampoline_symbols(&dir)
+    });
+    assert!(
+        has_trampoline,
+        "common MUST receive trampolines in a single-binary workspace with otel-shim"
+    );
+
+    // Run app_a binary
+    let bin_suffix = std::env::consts::EXE_SUFFIX;
+    let app_a_bin = target_dir.join("debug").join(format!("app_a{bin_suffix}"));
+    let out_a = Command::new(&app_a_bin).output().expect("execute app_a");
+    assert!(
+        out_a.status.success(),
+        "app_a must execute with exit code 0"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out_a.stdout).trim(),
+        "app_a: 11",
+        "app_a output must match expected computation"
+    );
+}
