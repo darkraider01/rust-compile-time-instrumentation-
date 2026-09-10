@@ -328,6 +328,46 @@ He also highlighted the inherent tradeoff of this approach: *"you can't rewrite 
 - **Maintenance cost:**
   - **This roughly doubles the ongoing maintenance surface.** Rather than replacing one mechanism with another, the project commits to supporting two distinct compilation architectures: a stable toolchain wrapper manipulating token streams for dependencies, and a compiler-internal driver tracking `rustc_private` nightly APIs for first-party code. This is an explicit, accepted engineering cost.
 
+#### Spike result (2026-09-10) - the lint-apply path is reachable, including `#[async_trait]`
+
+ADR-012 was taken on Scott's recommendation and `cargo-pup` as prior art, but rested on an untested
+assumption: that a `rustc_lint` suggestion can express "wrap this function body", and that it can do
+so on real source rather than macro-expanded code. Clippy lints universally bail on
+`span.from_expansion()`, and `#[async_trait]` rewrites `async fn` into
+`fn(..) -> Pin<Box<dyn Future>> { Box::pin(async move { .. }) }` - so the risk was that the default
+path structurally could not instrument async_trait methods, which P2.2 spent real effort supporting
+(`test_async_trait_hybrid_parenting`).
+
+A minimal `rustc_driver` was built (`spikes/adr012-lint-span-probe.rs`, fixture at
+`spikes/adr012-lint-span-fixture.rs`) that walks every HIR fn body and reports whether its span is
+usable for a source-level suggestion:
+
+| Function shape | `fn_span.from_expansion` | `body_span.from_expansion` | snippet |
+| --- | --- | --- | --- |
+| plain `fn` | false | false | `{ a + 1 }` |
+| plain `async fn` | false | false | `{ a + 2 }` |
+| inherent method | false | false | `{ a + 3 }` |
+| **`#[async_trait]` method** | **false** | **false** | **`{ a + 4 }`** |
+| `macro_rules!`-generated fn | true | true | *(expansion)* |
+
+- **✅ `#[async_trait]` is reachable.** Proc-macro token pass-through preserves call-site spans, so
+  the method body still points at real source text despite the surrounding `Box::pin(async move ..)`
+  being generated. The main risk in this ADR is cleared.
+- **✅ The wrap is expressible.** `SourceMap::span_to_snippet(body_span)` returns the original body
+  text, so a `span_suggestion(body_span, .., replacement, MachineApplicable)` can carry a prologue
+  plus the re-emitted original. The probe prints the exact replacement text it would emit for all
+  four reachable shapes.
+- **❌ `macro_rules!`-generated functions are out of reach**, correctly flagged as expansion. This is
+  a real coverage limit but not a regression: the `syn` pipeline cannot instrument them either, since
+  it parses pre-expansion source and never sees the generated item.
+- **Two implementation details found:** async desugaring produces a `<closure>` HIR body with
+  `from_expansion = true` that a real lint must skip or it will double-target the same function; and
+  impl items are visited twice under the `All` nested filter, so the pass needs deduplication.
+
+**Not proven:** the probe constructs the replacement text and confirms the span is targetable, but
+does not emit an actual `span_suggestion` and round-trip it through `cargo fix` application. That
+last step is the remaining unverified link in the chain.
+
 #### Consequences
 
 - ✅ **Developer trust and inspectability:** Default first-party telemetry generates explicit git diffs reviewable in code reviews before merging, removing the "black box" concern.
@@ -338,6 +378,8 @@ He also highlighted the inherent tradeoff of this approach: *"you can't rewrite 
 
 #### Revisit if
 
+- ~~The lint-apply path cannot reach `#[async_trait]` bodies, forcing a fallback mechanism on the default path.~~ **Tested 2026-09-10: it can.** Spans survive the proc-macro rewrite.
+- An actual `span_suggestion` + `cargo fix` round-trip fails where the probe suggests it should work. That is the one link in the chain still unproven.
 - Upstream Rust stabilizes an official, stable-channel compiler plugin or source-transformation API that unifies both use cases without requiring `rustc_private`.
 - The maintenance burden of tracking internal `rustc_private` compiler changes across Rust releases exceeds team capacity.
 - Community adoption overwhelmingly (>90%) concentrates on one mode, indicating that the secondary mode no longer justifies its ongoing maintenance cost.
