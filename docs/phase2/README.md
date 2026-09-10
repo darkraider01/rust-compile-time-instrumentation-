@@ -219,7 +219,7 @@ current union set. The same shape recurs in
 [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional) for multi-version graphs:
 one shared compilation, several consumers with incompatible requirements.
 
-**Not yet fixed.** No regression test exists for it; the fixture above is the reproduction.
+**Fixed.** Replaced the single merged graph reachability BFS with a per-target-root BFS in `SessionPlan::from_metadata_json`. A shared dependency is only instrumented with Tier-2 trampolines if every target root reaching it links `otel-shim`. Packages reachable from any root that does not link `otel-shim` are recorded in `shim_unsafe_packages`. The wrapper inspects `is_shim_unsafe(crate_name)` and skips Tier-2 trampoline injection per S11 fail-open, emitting a diagnostic warning and compiling unmodified. Covered by `test_g7_mixed_provider_workspace_fails_open_for_common_dep` and `test_g7_single_binary_with_shim_instruments_common_dep`.
 
 ### P2.1 Closeout Defect Register (D1–D5)
 
@@ -408,6 +408,8 @@ the corresponding fix lands.
 | `test_d3_cli_session_plan_avoids_wrong_manifest_heuristic` | D3 | workspace with decoy sibling manifest | CLI precomputes plan from execution dir and passes via `CARGO_INSTRUMENT_SESSION`; correct manifest policy used |
 | `test_d3_cli_session_plan_respects_manifest_path_flag` | D3 | `--manifest-path` to external crate with decoy cwd | CLI parses `--manifest-path` and computes plan for target workspace rather than caller cwd |
 | `test_d5_metadata_failure_safe_default` | D5 | workspace where `cargo metadata` fails | Default plan sets `has_otel_shim_provider: false`; fails open without injecting trampolines |
+| `test_g7_mixed_provider_workspace_fails_open_for_common_dep` | G7 | mixed workspace: `app_a` (shim), `app_b` (no shim), shared `common` | `common` not instrumented per S11 fail-open; both binaries build and run with exit 0 |
+| `test_g7_single_binary_with_shim_instruments_common_dep` | G7 | single-binary workspace: `app_a` (shim), shared `common` | `common` receives Tier-2 trampolines; `app_a` builds and runs with exit 0 |
 
 ### Design notes
 
@@ -436,7 +438,7 @@ the corresponding fix lands.
 cargo test --test graph_topology_tests -- --ignored --nocapture
 ```
 
-Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 landed and closeout complete: **9 passed; 0 failed.**
+Baseline on `409b774`: **0 passed; 4 failed.** With P2.1 and G7 landed: **11 passed; 0 failed.**
 
 ---
 

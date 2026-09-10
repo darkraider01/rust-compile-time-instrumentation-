@@ -227,10 +227,17 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                         }
                                     } else {
                                         // Tier 2: Non-application crate
-                                        // G4 link provider gate: verify otel-shim is reachable in the build graph
+                                        // G4 / G7 link provider gate: verify otel-shim is reachable in the build graph
+                                        // and that no target root reaching this crate lacks otel-shim.
                                         if !session_plan.has_otel_shim_provider() {
                                             eprintln!(
                                                     "warning: cargo-instrument: no otel-shim provider found in build graph for '{crate_name}'. \
+                                                    Skipping instrumentation per S11 fail-open."
+                                                );
+                                            None
+                                        } else if session_plan.is_shim_unsafe(crate_name) {
+                                            eprintln!(
+                                                    "warning: cargo-instrument: package '{crate_name}' is reached by a target root without otel-shim. \
                                                     Skipping instrumentation per S11 fail-open."
                                                 );
                                             None
