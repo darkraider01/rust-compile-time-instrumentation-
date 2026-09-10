@@ -735,13 +735,13 @@ impl Emitter for NativeOtelEmitter {
 
 /// Tier-2 OpenTelemetry trampoline emitter for dependency crates (Milestone P1.7).
 ///
-/// Splices calls to `extern "C"` trampoline functions (`__otel_span_enter`, `__otel_span_exit`,
+/// Splices calls to `extern "C-unwind"` trampoline functions (`__otel_span_enter`, `__otel_span_exit`,
 /// and conditionally `__otel_span_set_error`) without introducing any Cargo dependencies into
 /// the target crate's `Cargo.toml`.
 ///
 /// Features:
 /// - M1: Block-scoped minimal symbol declarations per call site (2 symbols for non-Result, 3 for Result).
-/// - Edition-aware: Emits `unsafe extern "C"` in 2024 edition, `extern "C"` in earlier editions.
+/// - Edition-aware: Emits `unsafe extern "C-unwind"` in 2024 edition, `extern "C-unwind"` in earlier editions.
 /// - G3: Emits `#[allow(unsafe_code)]` when `unsafe_policy == UnsafePolicy::Denied` to recover ecosystem coverage.
 /// - RAII guard: Implements `Drop` to guarantee LIFO `__otel_span_exit` on normal return or unwind.
 /// - Result handling: Wraps function body in a closure to inspect status without modifying return values,
@@ -774,9 +774,9 @@ impl Emitter for TrampolineEmitter {
         let nl = line_ending;
         let is_2024 = self.edition.as_deref() == Some("2024");
         let extern_kw = if is_2024 {
-            "unsafe extern \"C\""
+            "unsafe extern \"C-unwind\""
         } else {
-            "extern \"C\""
+            "extern \"C-unwind\""
         };
 
         let allow_unsafe = if self.unsafe_policy == crate::candidate::UnsafePolicy::Denied {
