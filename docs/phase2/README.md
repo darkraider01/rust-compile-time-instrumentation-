@@ -8,7 +8,7 @@
 **Status:** In progress (P2.1 Steps 1–7 + Closeout D1–D5 complete; P2.2 coexistence complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
 **Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
-**Phase 2 test suite status:** 9 graph-topology regression tests + 1 105-unit scale test + 5 hybrid coexistence tests added, all passing (167 tests total across the workspace)
+**Phase 2 test suite status:** 11 graph-topology regression tests + 1 105-unit scale test + 5 hybrid coexistence tests added, all passing (176 tests total across the workspace)
 **Architecture decisions:** [ADR-007 … ADR-011](decision-records.md), continuing the frozen Phase 0 numbering
 
 ---
@@ -213,13 +213,20 @@ G4 does not catch this: G4 tests a graph with *no* provider anywhere, and passes
 does contain a provider, just not on every path to `common`.
 
 **Root cause is shared compilation, not detection.** `common` is compiled once and shared, so it
-cannot be instrumented per-consumer. The gate has to become "instrument this package only if *all*
-target roots reaching it provide the shim", which needs per-root reachability rather than the
-current union set. The same shape recurs in
+cannot be instrumented per-consumer. The gate is "instrument this package only if *all*
+target roots reaching it provide the shim", which uses per-root reachability rather than the
+former union set. The same shape recurs in
 [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional) for multi-version graphs:
 one shared compilation, several consumers with incompatible requirements.
 
-**Fixed.** Replaced the single merged graph reachability BFS with a per-target-root BFS in `SessionPlan::from_metadata_json`. A shared dependency is only instrumented with Tier-2 trampolines if every target root reaching it links `otel-shim`. Packages reachable from any root that does not link `otel-shim` are recorded in `shim_unsafe_packages`. The wrapper inspects `is_shim_unsafe(crate_name)` and skips Tier-2 trampoline injection per S11 fail-open, emitting a diagnostic warning and compiling unmodified. Covered by `test_g7_mixed_provider_workspace_fails_open_for_common_dep` and `test_g7_single_binary_with_shim_instruments_common_dep`.
+**Fixed in commit [`1bd0091`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/1bd0091) (`fix(session): per-target-root otel-shim reachability for mixed-provider workspaces (G7)`).**
+`SessionPlan` now runs a separate reachability BFS per target root (not one merged BFS across the whole graph), and any package reachable from a root that lacks `otel-shim` goes into a new `shim_unsafe_packages` set on `SessionPlan`, checked via `is_shim_unsafe()` in `wrapper.rs` alongside the existing `has_otel_shim_provider()` gate. If a package is marked unsafe, Tier-2 trampoline injection is skipped per S11 fail-open with a diagnostic warning, allowing unmodified compilation and clean linking.
+
+A key implementation detail that mattered: `target_roots` itself had to be redefined too. A naive "run the existing BFS per member" would treat `common` as its own root and always mark it unsafe, breaking the working single-binary case. The actual fix defines a root as a workspace member producing a `bin`/`cdylib`, or one with no other workspace member depending on it (in-degree 0 in the workspace normal-dependency graph) — not just "every non-proc-macro member."
+
+Covered by two regression tests in [`cargo-instrument/tests/graph_topology_tests.rs`](../../cargo-instrument/tests/graph_topology_tests.rs):
+- `test_g7_mixed_provider_workspace_fails_open_for_common_dep` (the reproduction fixture — asserts the build succeeds, `common` receives no trampolines, and both binaries link and run);
+- `test_g7_single_binary_with_shim_instruments_common_dep` (confirms the existing single-binary case doesn't regress — `common` receives Tier-2 trampolines, and `app_a` links and runs cleanly).
 
 ### P2.1 Closeout Defect Register (D1–D5)
 

@@ -106,7 +106,7 @@ Planned evaluation:
 
 ### Current Focus: Phase 2 - Production Hardening
 
-Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestones P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) and P2.2 (Macro Expansion Resilience & Coexistence) are **COMPLETE**, with 9 graph-topology regression tests covering defects G1–G4 and closeout defects D1–D5, a 105-unit parallel scale fixture, a 5-test hybrid coexistence suite, and 167 tests total across the workspace. Next milestone: P2.3 (Async Dependency Trampolines). Maintainer review on 2026-09-10 reopened the Tier-2 C ABI itself ([ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)): R-3 records that a panic inside the shim aborts the host process rather than unwinding, and R-4 records that `--extern` injection may remove the need for a C ABI entirely - which would make the planned R-1/R-2 ABI extensions moot. P2.3 resolves R-4 before starting them.
+Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestones P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation) and P2.2 (Macro Expansion Resilience & Coexistence) are **COMPLETE**, with 11 graph-topology regression tests covering defects G1–G4, G7, and closeout defects D1–D5, a 105-unit parallel scale fixture, a 5-test hybrid coexistence suite, and 176 tests total across the workspace. Next milestone: P2.3 (Async Dependency Trampolines). Maintainer review on 2026-09-10 reopened the Tier-2 C ABI itself ([ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)): R-3 records that a panic inside the shim aborts the host process rather than unwinding, and R-4 records that `--extern` injection may remove the need for a C ABI entirely - which would make the planned R-1/R-2 ABI extensions moot. P2.3 resolves R-4 before starting them.
 
 ## Documentation
 
@@ -185,7 +185,7 @@ $env:CARGO_INSTRUMENT_REGISTRY="1"; cargo test --workspace --test e2e_registry_t
 # Bash:
 CARGO_INSTRUMENT_REGISTRY=1 cargo test --workspace --test e2e_registry_tests -- --ignored --nocapture
 
-# Run Phase 2 graph topology regression suite (G1-G4, D1-D5)
+# Run Phase 2 graph topology regression suite (G1-G4, G7, D1-D5)
 cargo test --test graph_topology_tests -- --ignored --nocapture
 
 # Run Phase 2 hybrid coexistence suite (explicit + automatic instrumentation, P2.2)
