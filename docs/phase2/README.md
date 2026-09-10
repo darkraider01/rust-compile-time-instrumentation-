@@ -1,4 +1,4 @@
-← [Project overview](../../README.md) | [Phase 0 Research](../research/README.md) | [Phase 1 Implementation](../phase1/README.md) | [Phase 2 ADRs (007–010)](decision-records.md)
+← [Project overview](../../README.md) | [Phase 0 Research](../research/README.md) | [Phase 1 Implementation](../phase1/README.md) | [Phase 2 ADRs (007–011)](decision-records.md)
 
 ---
 
@@ -9,7 +9,7 @@
 **Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
 **Phase 2 test suite status:** 9 graph-topology regression tests + 1 105-unit scale test + 5 hybrid coexistence tests added, all passing (167 tests total across the workspace)
-**Architecture decisions:** [ADR-007 … ADR-010](decision-records.md), continuing the frozen Phase 0 numbering
+**Architecture decisions:** [ADR-007 … ADR-011](decision-records.md), continuing the frozen Phase 0 numbering
 
 ---
 
@@ -247,7 +247,14 @@ $16 + 16 = 32$ to $18 + 14 = 32$. Phase 1 documents record the pre-fix split as 
 
 ### Architecture Risks for Later Integration (P2.3 Scope)
 
-Two risks in the Tier-2 C ABI are recorded here to be batched into the P2.3 ABI extension:
+Four risks in the Tier-2 C ABI. R-1 and R-2 are limitations of the ABI's width and were originally
+scheduled as a P2.3 ABI extension. R-3 and R-4 came out of maintainer review on 2026-09-10 and
+question whether the ABI should exist at all - see
+[ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional). **R-1 and R-2 are now
+blocked on R-4:** if `--extern` injection replaces the tier, native calls carry scope, file, line
+and kind for free and both risks disappear rather than being fixed.
+
+R-3 is independent of that outcome and is a live defect either way.
 
 #### R-1: Dependency spans share hardcoded instrumentation scope
 
@@ -256,6 +263,33 @@ Two risks in the Tier-2 C ABI are recorded here to be batched into the P2.3 ABI 
 #### R-2: File, line, and kind transmitted across ABI and discarded
 
 `__otel_span_enter(name, name_len, _file, _file_len, _line, _kind)` in `otel-shim/src/lib.rs:87-137` leaves file, line, and kind underscore-prefixed and unused, hardcoding `SpanKind::Internal`. Semantic convention attributes (`code.function.name`, `code.file.path`, `code.line.number` per §16.14) will be wired into the span builder during P2.3.
+
+#### R-3: A panic inside the shim aborts the host process
+
+All nine exported symbols in `otel-shim/src/lib.rs` and both declarations spliced by `transform.rs`
+are plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71, a panic reaching a plain
+`extern "C"` boundary aborts the process and cannot be caught by `catch_unwind` in the host
+application. This is reachable in practice, not in theory: the shim already carries a fix for a
+`RefCell` double-borrow panic in `__otel_span_exit` (`otel-shim/src/lib.rs:150`), so the class of
+bug that reaches this path has occurred once already.
+
+The blast radius is worse than the uninstrumented behaviour it replaces - an application that
+isolates panics per request loses the whole process instead of one request - which puts it in direct
+conflict with S11. Mitigation options (`extern "C-unwind"` vs `catch_unwind` inside each export) are
+weighed in [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional); the choice is a
+policy call and is deliberately left open there.
+
+#### R-4: The C ABI may not be necessary at all
+
+ADR-003 chose the C ABI because a dependency crate cannot name `opentelemetry` without an edit to
+its `Cargo.toml`. Maintainer review challenged that premise: the tool already owns the full `rustc`
+argv, and `--extern <name>=<path>` creates the dependency edge directly, with no manifest and no
+Cargo resolution. If that holds, dependency crates emit the same native calls Tier-1 does and the
+tier collapses.
+
+The blocking unknown is crate-instance identity - whether an injected `opentelemetry` is the same
+compiled instance as the one Cargo resolves for the rest of the graph, or a second one whose
+`Context` is a distinct nominal type. P2.3 resolves this before any ABI-extension work starts.
 
 ### Coexistence with Explicit Instrumentation
 
