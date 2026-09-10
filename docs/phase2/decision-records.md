@@ -210,11 +210,10 @@ The last point is the load-bearing one. ADR-003's premise was that the dependenc
 
 **Treat the Tier-2 C ABI as a working mechanism with a known expiry, not as the architecture. Two tracks:**
 
-1. **Immediate mitigation (P2.2).** The abort path is a live defect and is fixed independently of what replaces the tier. Two options, not mutually exclusive:
-   - `extern "C-unwind"` on all nine declarations - seven exports plus the two spliced forms - so a panic propagates instead of aborting. Restores the behaviour a normal Rust dependency would have had.
-   - `catch_unwind` inside each exported function, returning the no-op handle `0` on panic. Strictly more aligned with S11 - telemetry that fails should degrade, not propagate into user code that never asked for it.
-
-   The tension is real: `"C-unwind"` is correct, `catch_unwind` is fail-open, and S11 argues for the second. Recorded here rather than settled, because it is a policy call.
+1. **Immediate mitigation (P2.2) - Landed.** Both layers implemented together:
+   - `catch_unwind` inside each of the seven exported functions in `otel-shim/src/lib.rs`, swallowing panics and returning handle `0` (for `u64` handles/tokens) or `()` (for unit). Aligned with S11 (telemetry failure must degrade, not propagate into user code) and critically prevents double-panic aborts when `__OtelGuard::drop()` runs during an existing unwind.
+   - `extern "C-unwind"` on all nine declarations (seven exports in `otel-shim/src/lib.rs` plus the two spliced forms in `transform.rs`), providing the ABI backstop for any unwinding across the boundary.
+   - **Stated limit:** `panic = "abort"` makes both layers inert. If a user's compilation profile specifies `panic = "abort"`, unwinding never runs and the abort occurs regardless.
 
 2. **Replacement investigation (P2.3).** Spiked 2026-09-10; results below. `--extern` injection is viable. The blocker is not the one this ADR originally named.
 

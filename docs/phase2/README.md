@@ -300,17 +300,29 @@ R-3 is independent of that outcome and is a live defect either way.
 #### R-3: A panic inside the shim aborts the host process
 
 All seven exported symbols in `otel-shim/src/lib.rs` and both declarations spliced by `transform.rs`
-are plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71, a panic reaching a plain
+were plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71, a panic reaching a plain
 `extern "C"` boundary aborts the process and cannot be caught by `catch_unwind` in the host
-application. This is reachable in practice, not in theory: the shim already carries a fix for a
+application. This was reachable in practice, not in theory: the shim already carries a fix for a
 `RefCell` double-borrow panic in `__otel_span_exit` (`otel-shim/src/lib.rs:150`), so the class of
-bug that reaches this path has occurred once already.
+bug that reaches this path had occurred once already.
 
 The blast radius is worse than the uninstrumented behaviour it replaces - an application that
 isolates panics per request loses the whole process instead of one request - which puts it in direct
-conflict with S11. Mitigation options (`extern "C-unwind"` vs `catch_unwind` inside each export) are
-weighed in [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional); the choice is a
-policy call and is deliberately left open there.
+conflict with S11.
+
+**Mitigation landed (P2.2):** Implemented both layers described in
+[ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional):
+1. **Layer 1 (Fail-open panic containment):** `catch_unwind` with narrow `AssertUnwindSafe` inside each of
+   the seven exported functions in `otel-shim/src/lib.rs`. On panic, it swallows the error and returns the
+   S9 no-op value (`0` for `u64` handles/tokens, unit for the rest). Telemetry failure never propagates into
+   user code. Crucially, this prevents a double-panic abort when `__OtelGuard::drop()` calls `__otel_span_exit`
+   while unwinding from an application panic.
+2. **Layer 2 (ABI backstop):** Changed `extern "C"` to `extern "C-unwind"` across all nine declarations
+   (the seven exports in `otel-shim` and both spliced blocks emitted by `transform.rs`). Any panic escaping
+   across the boundary unwinds safely instead of triggering an immediate process abort.
+
+**Stated limit:** `panic = "abort"` makes both layers inert. If a user's compilation profile specifies
+`panic = "abort"`, unwinding never runs and the abort occurs regardless.
 
 #### R-4: The C ABI may not be necessary at all
 

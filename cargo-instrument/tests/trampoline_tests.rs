@@ -36,7 +36,7 @@ fn test_trampoline_sync_ordinary_fn_shape() {
     .expect("transformation should succeed");
 
     // Must declare 2 symbols only (M1 minimization)
-    assert!(transformed.contains("extern \"C\" {"));
+    assert!(transformed.contains("extern \"C-unwind\" {"));
     assert!(transformed.contains("fn __otel_span_enter("));
     assert!(transformed.contains("fn __otel_span_exit(handle: u64);"));
     assert!(!transformed.contains("fn __otel_span_set_error"));
@@ -108,13 +108,13 @@ fn test_trampoline_edition_2021_vs_2024() {
     let emitter_2021 =
         TrampolineEmitter::new("dep", Some("2021".to_string()), UnsafePolicy::Allowed);
     let prefix_2021 = emitter_2021.emit_body_prefix(&candidate, "\n");
-    assert!(prefix_2021.contains("extern \"C\" {"));
-    assert!(!prefix_2021.contains("unsafe extern \"C\" {"));
+    assert!(prefix_2021.contains("extern \"C-unwind\" {"));
+    assert!(!prefix_2021.contains("unsafe extern \"C-unwind\" {"));
 
     let emitter_2024 =
         TrampolineEmitter::new("dep", Some("2024".to_string()), UnsafePolicy::Allowed);
     let prefix_2024 = emitter_2024.emit_body_prefix(&candidate, "\n");
-    assert!(prefix_2024.contains("unsafe extern \"C\" {"));
+    assert!(prefix_2024.contains("unsafe extern \"C-unwind\" {"));
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn test_trampoline_denied_unsafe_policy_allows() {
     let suffix = emitter.emit_body_suffix(&candidate, "\n");
 
     // G3: #[allow(unsafe_code)] must be emitted at all unsafe boundaries
-    assert!(prefix.contains("#[allow(unsafe_code)]\n    extern \"C\" {"));
+    assert!(prefix.contains("#[allow(unsafe_code)]\n    extern \"C-unwind\" {"));
     assert!(prefix.contains("#[allow(unsafe_code)]\n                unsafe {"));
     assert!(prefix.contains("#[allow(unsafe_code)]\n    let __otel_guard = __OtelGuard(unsafe {"));
     assert!(suffix.contains("#[allow(unsafe_code)]\n        unsafe {"));
@@ -543,6 +543,149 @@ pub async fn app_caller() {
 
     // Verify target-dir isolation
     assert!(target_dir.exists(), "target/instrumented must exist");
+}
+
+#[test]
+fn test_r3_panic_during_unwind_and_c_unwind_survival() {
+    let temp_dir = tempfile::tempdir().expect("create tempdir");
+    let ws_root = temp_dir.path();
+
+    let current_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = current_manifest
+        .parent()
+        .expect("cargo-instrument parent is repo root");
+    let otel_shim_path = repo_root.join("otel-shim");
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    // 1. Workspace Cargo.toml
+    let ws_cargo_toml = ws_root.join("Cargo.toml");
+    fs::write(
+        &ws_cargo_toml,
+        r#"[workspace]
+members = [
+    "app",
+    "panicking_dep",
+]
+resolver = "2"
+"#,
+    )
+    .expect("write workspace Cargo.toml");
+
+    // 2. Dependency declaring a panicking function
+    let dep_dir = ws_root.join("panicking_dep");
+    let dep_src = dep_dir.join("src");
+    fs::create_dir_all(&dep_src).expect("create dep src");
+    fs::write(
+        dep_dir.join("Cargo.toml"),
+        r#"[package]
+name = "panicking_dep"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#,
+    )
+    .expect("write dep Cargo.toml");
+
+    fs::write(
+        dep_src.join("lib.rs"),
+        r#"pub fn trigger_panic(should_panic: bool) -> u32 {
+    if should_panic {
+        panic!("intentional panic inside instrumented dependency function");
+    }
+    42
+}
+"#,
+    )
+    .expect("write dep lib.rs");
+
+    // 3. Application crate referencing otel-shim and panicking_dep
+    let app_dir = ws_root.join("app");
+    let app_src = app_dir.join("src");
+    fs::create_dir_all(&app_src).expect("create app src");
+
+    let otel_shim_path_escaped = otel_shim_path.to_string_lossy().replace('\\', "/");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+panicking_dep = {{ path = "../panicking_dep" }}
+otel-shim = {{ path = "{otel_shim_path_escaped}" }}
+"#
+        ),
+    )
+    .expect("write app Cargo.toml");
+
+    fs::write(
+        app_src.join("main.rs"),
+        r#"use std::panic::catch_unwind;
+
+fn main() {
+    otel_shim::init();
+
+    // 1. Test normal execution through instrumented dependency
+    assert_eq!(panicking_dep::trigger_panic(false), 42);
+    assert_eq!(otel_shim::active_span_count(), 0);
+
+    // 2. Test R-3 Layer 1 & Layer 2:
+    // Instrumented dependency panics. The spliced __OtelGuard::drop() runs during unwind,
+    // calling __otel_span_exit.
+    // Thanks to Layer 1 (catch_unwind inside __otel_span_exit) and Layer 2 (extern "C-unwind"),
+    // the panic unwinds cleanly to the host without a double-panic abort or process abort.
+    let panic_result = catch_unwind(|| {
+        panicking_dep::trigger_panic(true);
+    });
+    assert!(panic_result.is_err(), "host application must catch panic from instrumented dependency");
+    assert_eq!(otel_shim::active_span_count(), 0, "stack cleaned up after unwind");
+
+    // 3. Test Layer 2 direct C-unwind export:
+    // An unhandled panic across extern "C-unwind" must not abort the process.
+    extern "C-unwind" {
+        fn __otel_test_panic_unwind();
+    }
+    let direct_panic = catch_unwind(|| unsafe {
+        __otel_test_panic_unwind();
+    });
+    assert!(direct_panic.is_err(), "host application must catch __otel_test_panic_unwind");
+    assert_eq!(otel_shim::active_span_count(), 0);
+
+    println!("R3_PANIC_CONTAINMENT_VERIFIED_SUCCESS");
+}
+"#,
+    )
+    .expect("write app main.rs");
+
+    // 4. Build and run with cargo-instrument wrapper
+    let target_dir = ws_root.join("target").join("instrumented");
+    let output = Command::new("cargo")
+        .args([
+            "run",
+            "--manifest-path",
+            app_dir.join("Cargo.toml").to_str().unwrap(),
+            "--target-dir",
+            target_dir.to_str().unwrap(),
+        ])
+        .env("RUSTC_WRAPPER", cargo_instrument_bin)
+        .env("INSTRUMENT_DEBUG", "0")
+        .output()
+        .expect("execute cargo run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "cargo run failed!\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("R3_PANIC_CONTAINMENT_VERIFIED_SUCCESS"),
+        "did not see expected success marker!\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+    );
 }
 
 // ----------------------------------------------------------------------------

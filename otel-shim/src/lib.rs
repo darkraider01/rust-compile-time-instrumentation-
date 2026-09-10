@@ -1,8 +1,8 @@
-//! Runtime trampoline shim providing `extern "C"` OpenTelemetry symbols
+//! Runtime trampoline shim providing `extern "C-unwind"` OpenTelemetry symbols
 //! for compile-time instrumented dependency crates (Milestone P1.7).
 //!
 //! Conforms strictly to normative Phase 0 specifications (§16.3, ADR-002, ADR-003):
-//! - All symbols use the C ABI (`extern "C"`), passing static pointers/primitives.
+//! - All symbols use the C-unwind ABI (`extern "C-unwind"`), passing static pointers/primitives.
 //! - Handle `0` is the null span / no-op (S9).
 //! - Thread-local LIFO stack enforces strict single-thread context attachment and detachment (S5).
 //! - Calling [`init`] in application code satisfies ADR-003 / E-10, preventing `rustc` extern-crate pruning.
@@ -37,6 +37,13 @@ thread_local! {
     /// there; without this flag that recursion panics on `STACK` and, once the borrow is
     /// released, deadlocks on the processor's exporter `Mutex` instead.
     static IN_SHIM: Cell<bool> = const { Cell::new(false) };
+
+    #[cfg(test)]
+    static TEST_PANIC_ENTER: Cell<bool> = const { Cell::new(false) };
+    #[cfg(test)]
+    static TEST_PANIC_EXIT: Cell<bool> = const { Cell::new(false) };
+    #[cfg(test)]
+    static TEST_PANIC_SET_ERROR: Cell<bool> = const { Cell::new(false) };
 }
 
 /// RAII flag for [`IN_SHIM`], cleared even if the guarded region unwinds.
@@ -84,7 +91,7 @@ pub fn active_span_count() -> usize {
 /// - `file` must be a non-null, valid pointer to a UTF-8 encoded byte sequence of length `file_len`.
 /// - The caller contract guarantees `name` and `file` refer to immutable string literals with `'static` lifetime spliced by the compiler wrapper.
 #[no_mangle]
-pub unsafe extern "C" fn __otel_span_enter(
+pub unsafe extern "C-unwind" fn __otel_span_enter(
     name: *const u8,
     name_len: usize,
     _file: *const u8,
@@ -92,48 +99,60 @@ pub unsafe extern "C" fn __otel_span_enter(
     _line: u32,
     _kind: u8,
 ) -> u64 {
-    if name.is_null() || name_len == 0 {
-        return 0; // S9: Handle 0 is null/no-op
-    }
+    // Soundness: AssertUnwindSafe is sound because name and file pointers are guaranteed by caller contract
+    // to refer to static/immutable byte slices that are only read for UTF-8 decoding. Thread-locals
+    // (STACK, IN_SHIM) cleanly drop their guards and borrows upon unwinding, ensuring that swallowing
+    // any panic and returning handle 0 (S9 no-op) leaves the thread in a safe, unpoisoned state.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if TEST_PANIC_ENTER.with(|f| f.get()) {
+            panic!("injected panic in __otel_span_enter");
+        }
 
-    // C1: the SDK suppresses telemetry inside its own export machinery (the
-    // `BatchSpanProcessor` export thread enters `enter_telemetry_suppressed_scope`).
-    // Honour that signal explicitly instead of relying on `SdkTracer` returning a
-    // non-recording span.
-    if Context::is_current_telemetry_suppressed() {
-        return 0; // S9
-    }
+        if name.is_null() || name_len == 0 {
+            return 0; // S9: Handle 0 is null/no-op
+        }
 
-    // C1: an exporter built on an instrumented dependency re-enters here from the
-    // export path. Fail open rather than recurse.
-    let Some(_reentrancy) = ReentrancyGuard::acquire() else {
-        return 0; // S9
-    };
+        // C1: the SDK suppresses telemetry inside its own export machinery (the
+        // `BatchSpanProcessor` export thread enters `enter_telemetry_suppressed_scope`).
+        // Honour that signal explicitly instead of relying on `SdkTracer` returning a
+        // non-recording span.
+        if Context::is_current_telemetry_suppressed() {
+            return 0; // S9
+        }
 
-    let name_bytes = slice::from_raw_parts(name, name_len);
-    let name_str = match str::from_utf8(name_bytes) {
-        Ok(s) => s,
-        Err(_) => return 0,
-    };
+        // C1: an exporter built on an instrumented dependency re-enters here from the
+        // export path. Fail open rather than recurse.
+        let Some(_reentrancy) = ReentrancyGuard::acquire() else {
+            return 0; // S9
+        };
 
-    let tracer = opentelemetry::global::tracer("dependency");
-    let span = opentelemetry::trace::Tracer::span_builder(&tracer, name_str)
-        .with_kind(opentelemetry::trace::SpanKind::Internal)
-        .start(&tracer);
+        let name_bytes = slice::from_raw_parts(name, name_len);
+        let name_str = match str::from_utf8(name_bytes) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
 
-    let cx = <Context as opentelemetry::trace::TraceContextExt>::current_with_span(span);
-    let guard = cx.clone().attach();
+        let tracer = opentelemetry::global::tracer("dependency");
+        let span = opentelemetry::trace::Tracer::span_builder(&tracer, name_str)
+            .with_kind(opentelemetry::trace::SpanKind::Internal)
+            .start(&tracer);
 
-    let mut handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    if handle == 0 {
-        handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    }
+        let cx = <Context as opentelemetry::trace::TraceContextExt>::current_with_span(span);
+        let guard = cx.clone().attach();
 
-    STACK.with(|s| {
-        s.borrow_mut().push((handle, cx, guard));
-    });
+        let mut handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        if handle == 0 {
+            handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        }
 
-    handle
+        STACK.with(|s| {
+            s.borrow_mut().push((handle, cx, guard));
+        });
+
+        handle
+    }))
+    .unwrap_or(0)
 }
 
 /// Detach and complete an OpenTelemetry span previously started by [`__otel_span_enter`].
@@ -143,29 +162,41 @@ pub unsafe extern "C" fn __otel_span_enter(
 /// `handle` must be either 0 (no-op) or a valid handle previously returned by `__otel_span_enter`
 /// on the current thread.
 #[no_mangle]
-pub unsafe extern "C" fn __otel_span_exit(handle: u64) {
-    if handle == 0 {
-        return; // S9
-    }
-
-    // C1: re-entry from inside the shim's own OpenTelemetry work is a no-op.
-    let Some(_reentrancy) = ReentrancyGuard::acquire() else {
-        return; // S9
-    };
-
-    // C2: pop inside the borrow, drop outside it. The popped tuple's `Drop` ends the
-    // span and runs export, which is user-reachable code; running it while `STACK` is
-    // still borrowed panics with "RefCell already borrowed".
-    let popped = STACK.with(|s| {
-        let mut st = s.borrow_mut();
-        // LIFO enforcement: pop if and only if handle matches the top of the stack
-        if st.last().map(|(h, _, _)| *h) == Some(handle) {
-            st.pop()
-        } else {
-            None
+pub unsafe extern "C-unwind" fn __otel_span_exit(handle: u64) {
+    // Soundness: AssertUnwindSafe is sound because handle is a Copy primitive. ReentrancyGuard
+    // resets IN_SHIM on drop even during an unwind. Popping the span tuple separates the STACK
+    // RefCell borrow from span drop/export, so any panic during drop releases all borrows. Swallowing
+    // the panic ensures telemetry failure never propagates into application code or causes a
+    // double-panic abort when invoked from __OtelGuard::drop() during unwinding.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if TEST_PANIC_EXIT.with(|f| f.get()) {
+            panic!("injected panic in __otel_span_exit");
         }
-    });
-    drop(popped);
+
+        if handle == 0 {
+            return; // S9
+        }
+
+        // C1: re-entry from inside the shim's own OpenTelemetry work is a no-op.
+        let Some(_reentrancy) = ReentrancyGuard::acquire() else {
+            return; // S9
+        };
+
+        // C2: pop inside the borrow, drop outside it. The popped tuple's `Drop` ends the
+        // span and runs export, which is user-reachable code; running it while `STACK` is
+        // still borrowed panics with "RefCell already borrowed".
+        let popped = STACK.with(|s| {
+            let mut st = s.borrow_mut();
+            // LIFO enforcement: pop if and only if handle matches the top of the stack
+            if st.last().map(|(h, _, _)| *h) == Some(handle) {
+                st.pop()
+            } else {
+                None
+            }
+        });
+        drop(popped);
+    }));
 }
 
 /// Record an error status on an OpenTelemetry span identified by `handle`.
@@ -178,23 +209,33 @@ pub unsafe extern "C" fn __otel_span_exit(handle: u64) {
 /// `handle` must be either 0 (no-op) or a valid handle previously returned by `__otel_span_enter`
 /// on the current thread.
 #[no_mangle]
-pub unsafe extern "C" fn __otel_span_set_error(handle: u64) {
-    if handle == 0 {
-        return; // S9
-    }
-
-    // C1: same stack, same re-entrancy hazard.
-    let Some(_reentrancy) = ReentrancyGuard::acquire() else {
-        return; // S9
-    };
-
-    STACK.with(|s| {
-        let st = s.borrow();
-        if let Some((_, cx, _)) = st.iter().rev().find(|(h, _, _)| *h == handle) {
-            opentelemetry::trace::TraceContextExt::span(cx)
-                .set_status(opentelemetry::trace::Status::error(""));
+pub unsafe extern "C-unwind" fn __otel_span_set_error(handle: u64) {
+    // Soundness: AssertUnwindSafe is sound because handle is a Copy primitive. ReentrancyGuard
+    // resets IN_SHIM on drop, and STACK is only borrowed immutably. Swallowing any panic guarantees
+    // fail-open behavior without thread-local state poisoning.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if TEST_PANIC_SET_ERROR.with(|f| f.get()) {
+            panic!("injected panic in __otel_span_set_error");
         }
-    });
+
+        if handle == 0 {
+            return; // S9
+        }
+
+        // C1: same stack, same re-entrancy hazard.
+        let Some(_reentrancy) = ReentrancyGuard::acquire() else {
+            return; // S9
+        };
+
+        STACK.with(|s| {
+            let st = s.borrow();
+            if let Some((_, cx, _)) = st.iter().rev().find(|(h, _, _)| *h == handle) {
+                opentelemetry::trace::TraceContextExt::span(cx)
+                    .set_status(opentelemetry::trace::Status::error(""));
+            }
+        });
+    }));
 }
 
 // ----------------------------------------------------------------------------
@@ -207,7 +248,7 @@ pub unsafe extern "C" fn __otel_span_set_error(handle: u64) {
 ///
 /// `name` and `file` must be valid UTF-8 string pointers or null.
 #[no_mangle]
-pub unsafe extern "C" fn __otel_span_start(
+pub unsafe extern "C-unwind" fn __otel_span_start(
     _name: *const u8,
     _name_len: usize,
     _file: *const u8,
@@ -215,7 +256,11 @@ pub unsafe extern "C" fn __otel_span_start(
     _line: u32,
     _kind: u8,
 ) -> u64 {
-    0 // Handle 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+    // Soundness: AssertUnwindSafe is sound because pointers are unused/immutable and no state is mutated.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        0 // Handle 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+    }))
+    .unwrap_or(0)
 }
 
 /// End an async OpenTelemetry span.
@@ -224,8 +269,11 @@ pub unsafe extern "C" fn __otel_span_start(
 ///
 /// `handle` must be either 0 or a valid handle returned by `__otel_span_start`.
 #[no_mangle]
-pub unsafe extern "C" fn __otel_span_end(_handle: u64) {
-    // Handle 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+pub unsafe extern "C-unwind" fn __otel_span_end(_handle: u64) {
+    // Soundness: AssertUnwindSafe is sound because handle is a Copy primitive and no state is mutated.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Handle 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+    }));
 }
 
 /// Attach an async span context for the duration of a `poll()`.
@@ -234,8 +282,12 @@ pub unsafe extern "C" fn __otel_span_end(_handle: u64) {
 ///
 /// `handle` must be either 0 or a valid handle returned by `__otel_span_start`.
 #[no_mangle]
-pub unsafe extern "C" fn __otel_ctx_attach(_handle: u64) -> u64 {
-    0 // Token 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+pub unsafe extern "C-unwind" fn __otel_ctx_attach(_handle: u64) -> u64 {
+    // Soundness: AssertUnwindSafe is sound because handle is a Copy primitive and no state is mutated.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        0 // Token 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+    }))
+    .unwrap_or(0)
 }
 
 /// Detach an async span context when yielding `Poll::Pending`.
@@ -244,8 +296,22 @@ pub unsafe extern "C" fn __otel_ctx_attach(_handle: u64) -> u64 {
 ///
 /// `token` must be either 0 or a token returned by `__otel_ctx_attach`.
 #[no_mangle]
-pub unsafe extern "C" fn __otel_ctx_detach(_token: u64) {
-    // Token 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+pub unsafe extern "C-unwind" fn __otel_ctx_detach(_token: u64) {
+    // Soundness: AssertUnwindSafe is sound because token is a Copy primitive and no state is mutated.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // Token 0 no-op stub: Tier-2 async deferred to Phase 2 (FE-13)
+    }));
+}
+
+/// Test-only C-unwind export that panics unconditionally across the ABI boundary.
+///
+/// Used to verify Layer 2 runtime behaviour: an unhandled panic across `extern "C-unwind"`
+/// can be caught by `std::panic::catch_unwind` in the host, whereas a plain `extern "C"`
+/// boundary would have aborted the process.
+#[doc(hidden)]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __otel_test_panic_unwind() {
+    panic!("unconditional panic across extern C-unwind boundary for testing");
 }
 
 #[cfg(test)]
@@ -718,5 +784,81 @@ mod tests {
         );
 
         let _ = provider.shutdown();
+    }
+
+    /// R-3 / Layer 1: Panics inside shim exports are swallowed and return no-op values (S9 / S11).
+    #[test]
+    fn test_layer1_swallows_panics_in_shim_exports() {
+        assert_eq!(active_span_count(), 0);
+        let name = b"panic_test_span";
+        let file = b"src/lib.rs";
+
+        // 1. __otel_span_enter panicking: must swallow and return handle 0
+        TEST_PANIC_ENTER.with(|f| f.set(true));
+        let handle = unsafe {
+            __otel_span_enter(name.as_ptr(), name.len(), file.as_ptr(), file.len(), 10, 0)
+        };
+        TEST_PANIC_ENTER.with(|f| f.set(false));
+        assert_eq!(
+            handle, 0,
+            "__otel_span_enter must return 0 on internal panic"
+        );
+        assert_eq!(
+            active_span_count(),
+            0,
+            "stack must remain empty after failed enter"
+        );
+
+        // 2. Normal enter to populate stack
+        let valid_handle = unsafe {
+            __otel_span_enter(name.as_ptr(), name.len(), file.as_ptr(), file.len(), 11, 0)
+        };
+        assert_ne!(valid_handle, 0);
+        assert_eq!(active_span_count(), 1);
+
+        // 3. __otel_span_set_error panicking: must swallow and not unwind
+        TEST_PANIC_SET_ERROR.with(|f| f.set(true));
+        unsafe {
+            __otel_span_set_error(valid_handle);
+        }
+        TEST_PANIC_SET_ERROR.with(|f| f.set(false));
+        assert_eq!(active_span_count(), 1, "stack intact after set_error panic");
+
+        // 4. __otel_span_exit panicking: must swallow and not unwind
+        TEST_PANIC_EXIT.with(|f| f.set(true));
+        unsafe {
+            __otel_span_exit(valid_handle);
+        }
+        TEST_PANIC_EXIT.with(|f| f.set(false));
+
+        // Normal exit to clean up
+        unsafe {
+            __otel_span_exit(valid_handle);
+        }
+        assert_eq!(active_span_count(), 0, "stack cleanly empty after cleanup");
+    }
+
+    /// R-3 / Layer 2: A panic escaping across `extern "C-unwind"` is caught by `catch_unwind`
+    /// without aborting the host process.
+    #[test]
+    fn test_c_unwind_panic_survival() {
+        extern "C-unwind" {
+            fn __otel_test_panic_unwind();
+        }
+
+        assert_eq!(active_span_count(), 0);
+        let panic_result = std::panic::catch_unwind(|| unsafe {
+            __otel_test_panic_unwind();
+        });
+
+        assert!(
+            panic_result.is_err(),
+            "host catch_unwind must successfully catch panic across extern C-unwind boundary"
+        );
+        assert_eq!(
+            active_span_count(),
+            0,
+            "active_span_count must remain 0 and consistent after panic"
+        );
     }
 }
