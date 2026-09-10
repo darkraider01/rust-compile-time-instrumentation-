@@ -199,7 +199,7 @@ Maintainer review put pressure on both halves of that - the cost of the C ABI, a
 #### Evidence
 
 - **Maintainer, Scott Gerring (`#otel-rust`), 2026-09-10:** *"ending up C FFI boundaries everywhere through the call stack is probably a non starter ... it breaks panic handling at least, and it will probably break a pile of optimisations too, in one part because it forces the C calling convention to be used."*
-- **[Fact, verified]** All nine exported symbols in `otel-shim/src/lib.rs` and both spliced declarations in `transform.rs` are plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71 a panic that reaches a plain `extern "C"` boundary **aborts the process**; it is not catchable by `catch_unwind` in the host application.
+- **[Fact, verified]** All seven exported symbols in `otel-shim/src/lib.rs` and both spliced declarations in `transform.rs` are plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71 a panic that reaches a plain `extern "C"` boundary **aborts the process**; it is not catchable by `catch_unwind` in the host application.
 - **[Fact, already hit once]** `otel-shim/src/lib.rs` carries a fix comment for exactly this class of bug: *"running it while `STACK` is still borrowed panics with 'RefCell already borrowed'."* A `RefCell` double-borrow inside `__otel_span_exit` is a failure mode this project has already found and repaired once. The abort path is therefore reachable in practice, not in theory.
 - **[Fact]** The blast radius is a process abort, which is strictly worse than the uninstrumented behaviour it replaces. An application that isolates panics per request - the common shape for a web server - loses the whole process instead of one request. This directly contradicts S11, under which every failure path warns and compiles or runs unmodified.
 - **Maintainer, same source:** *"i wonder if for the FFI you can manipulate the project model to add a dep as you are interceding with `RUSTC_WRAPPER` anyway."*
@@ -211,7 +211,7 @@ The last point is the load-bearing one. ADR-003's premise was that the dependenc
 **Treat the Tier-2 C ABI as a working mechanism with a known expiry, not as the architecture. Two tracks:**
 
 1. **Immediate mitigation (P2.2).** The abort path is a live defect and is fixed independently of what replaces the tier. Two options, not mutually exclusive:
-   - `extern "C-unwind"` on all eleven declarations, so a panic propagates instead of aborting. Restores the behaviour a normal Rust dependency would have had.
+   - `extern "C-unwind"` on all nine declarations - seven exports plus the two spliced forms - so a panic propagates instead of aborting. Restores the behaviour a normal Rust dependency would have had.
    - `catch_unwind` inside each exported function, returning the no-op handle `0` on panic. Strictly more aligned with S11 - telemetry that fails should degrade, not propagate into user code that never asked for it.
 
    The tension is real: `"C-unwind"` is correct, `catch_unwind` is fail-open, and S11 argues for the second. Recorded here rather than settled, because it is a policy call.
