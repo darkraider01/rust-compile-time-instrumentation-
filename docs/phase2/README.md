@@ -6,7 +6,8 @@
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
 **Status:** In progress (P2.1 Steps 1–7 + Closeout D1–D5 complete; P2.2 coexistence complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
-**Toolchain:** Stable Rust for the workspace (CI tracks latest `stable`; verified locally on 1.97.1); the isolated P2.3 driver additionally requires nightly plus `rustc-dev`.
+**Toolchain:** Stable Rust for the workspace (CI tracks latest `stable`; verified locally on 1.97.1). P2.3 generation alone uses the pinned toolchain in [`tools/p23-toolchain.txt`](../../tools/p23-toolchain.txt) plus `rustc-dev`, `rust-src`, and `llvm-tools-preview` (required for compiler-private linking on Windows); generated application source and the existing dependency wrapper pipeline remain stable-Rust consumers.
+**P2.3 driver policy:** The current pin is `nightly-2026-09-09`. Repository-development invocation via `cargo instrument-rust --apply` is supported; installed/distributed driver discovery remains a deliberate follow-up.
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
 **Phase 2 test suite status:** 11 graph-topology regression tests + 1 105-unit scale test + 5 hybrid coexistence tests added, all passing (176 tests total across the workspace)
 **Architecture decisions:** [ADR-007 … ADR-013](decision-records.md), continuing the frozen Phase 0 numbering
