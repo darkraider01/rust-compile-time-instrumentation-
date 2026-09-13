@@ -40,6 +40,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "census",
+ "instrument-semantics",
  "opentelemetry",
  "opentelemetry_sdk",
  "proc-macro2",
@@ -209,6 +210,10 @@ dependencies = [
  "libc",
  "r-efi 6.0.0",
 ]
+
+[[package]]
+name = "instrument-semantics"
+version = "0.1.0"
 
 [[package]]
 name = "itoa"

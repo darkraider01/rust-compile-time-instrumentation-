@@ -1,3 +1,4 @@
 [workspace]
-members = ["cargo-instrument", "otel-shim"]
+members = ["cargo-instrument", "instrument-semantics", "otel-shim"]
+exclude = ["tools/cargo-instrument-rust-driver"]
 resolver = "2"
