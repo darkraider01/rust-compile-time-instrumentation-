@@ -5,7 +5,7 @@
 # Phase 2 - Production Hardening
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
-**Status:** In progress (P2.1 Steps 1–7 + Closeout D1–D5 complete; P2.2 coexistence complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
+**Status:** In progress (P2.1, P2.2 complete; P2.3 semantic instrumentation complete; P2.4 next focus; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
 **Toolchain:** Stable Rust for the workspace (CI tracks latest `stable`; verified locally on 1.97.1). P2.3 generation alone uses the pinned toolchain in [`tools/p23-toolchain.txt`](../../tools/p23-toolchain.txt) plus `rustc-dev`, `rust-src`, and `llvm-tools-preview` (required for compiler-private linking on Windows); generated application source and the existing dependency wrapper pipeline remain stable-Rust consumers.
 **P2.3 driver policy:** The current pin is `nightly-2026-09-09`. Repository-development invocation via `cargo instrument-rust --apply` is supported; installed/distributed driver discovery remains a deliberate follow-up.
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
@@ -516,16 +516,17 @@ Steps 2-3 alone close G1 and G3.
 - **Free functions:** Synchronous and native `async fn`.
 - **Inherent methods:** Synchronous and native `async fn`.
 - **Plain trait implementation methods:** Synchronous and native `async fn` (`impl Trait for Type`).
-- **`#[async_trait]` trait implementation methods:** Preserves user call-site source snippet; instruments with per-poll `FutureExt::with_context(async move { .. }, cx).await` lifecycle, preserving `Send`, surviving real suspension/wake boundaries (`Poll::Pending` → wake → `Poll::Ready`), and recording `Status::error("")` on `Err`.
-- **Result status semantics:** Resolves standard `core::result::Result` (including aliases like `std::io::Result`) via diagnostic-item identity without false positives on custom types named `Result`. Captures error status as `Status::error("")` (zero-leak description) and preserves return value unchanged.
+- **Verified `#[async_trait]` trait implementation methods:** Positive identification via macro expansion provenance distinguishes genuine `async_trait` methods from handwritten synchronous functions returning boxed futures (`Pin<Box<dyn Future>>`), which remain synchronous and are never misclassified as async. Future output extraction semantically verifies actual `core::future::Future` trait identity rather than matching arbitrary `Output = T` associated types. Instruments with per-poll `FutureExt::with_context(async move { .. }, cx).await` lifecycle, preserving `Send`, surviving real suspension/wake boundaries (`Poll::Pending` → wake → `Poll::Ready`), and recording `Status::error("")` on `Err`.
+- **Result status semantics:** Resolves standard `core::result::Result` (including aliases like `std::io::Result`) via diagnostic-item identity without false positives on custom types named `Result` or unrelated types with associated `Output = Result<...>`. Captures error status as `Status::error("")` (zero-leak description) and preserves return value unchanged.
 - **Sync reference Result fallback:** Sync functions returning non-static or mutable references fall back to prefix-only instrumentation (`returns_result: true, can_capture_result_status: false`) to avoid closure lifetime escapes.
 - **Parenting hierarchy:** Instrumenting ordinary/inherent caller span A calling `async_trait` method span B or same-named method preserves trace ID and establishes direct child-to-parent span linkage.
+- **Direct self-recursion exclusion:** Calls to the same method on `self` are excluded from instrumentation. Calls on distinct receivers (e.g. `other.handle(other, n - 1)`) remain eligible and are not excluded merely because they resolve to the same trait item.
 
 #### Intentional Exclusions & Boundaries
 Not all Rust function forms are automatically instrumented. The semantic boundary is explicit:
 1. **Default trait method bodies:** Deliberately excluded (`FunctionShape::DefaultTraitMethod` → `Ineligibility::DefaultTraitMethodExcluded`). Trait definitions have no concrete implementor context (`Self: ?Sized`), can back multiple monomorphizations across crates, and cannot soundly bind a single tracer scope/name.
 2. **Nested local functions:** Deliberately excluded (`FunctionShape::NestedLocalFunction` → `Ineligibility::NestedLocalFunctionExcluded`) to prevent overlapping text replacement ranges. Outer functions remain instrumented.
-3. **Direct self-recursion:** Deliberately excluded (`is_directly_recursive` → `Ineligibility::DirectSelfRecursionExcluded`), evaluated using exact `DefId` and `trait_item_of` comparison for both free functions, inherent methods, and trait impl methods (`self.recursive(..)`). Excludes unbounded recursive span explosion without false-positive exclusion of free functions calling same-named methods.
+3. **Direct self-recursion:** Deliberately excluded (`is_directly_recursive` → `Ineligibility::DirectSelfRecursionExcluded`), evaluated using receiver identity (`self`) alongside exact `DefId` and trait item resolution. Calls on distinct receivers (e.g. `other.handle(other, n - 1)`) remain eligible and are not excluded merely because they resolve to the same trait item.
 4. **Explicit instrumentation precedence:** Explicit user instrumentation is absolute (`has_explicit_instrumentation` → `Ineligibility::ExplicitlyInstrumented`). Functions annotated with `#[tracing::instrument]`, `#[instrument_span]`, `#[propagate_context]`, or containing explicit OpenTelemetry span creation never receive duplicate P2.3 instrumentation.
 5. **Macro expansion bodies:** Synthesized macro expansion spans (`span.from_expansion() || body_span.from_expansion()`) are never edited; only user-owned original source text is rewritten.
 6. **Const functions, closures, and foreign ABIs:** `const fn`, `FnKind::Closure`, and non-Rust ABIs (`extern "C"`) are excluded.
@@ -542,6 +543,8 @@ Not all Rust function forms are automatically instrumented. The semantic boundar
 | 3 | Result/error span status & direct recursion exclusion parity | ✅ Complete (`c5a8ac5`) |
 | 4 | Trait impl methods, `#[async_trait]` support & real suspension proof | ✅ Complete |
 | 5 | `cargo fix` round-trip verification, second-apply idempotence & full regression suite | ✅ Complete |
+
+*Note on Suspension Evidence:* The `YieldOnce` test proves context-safe behavior across a real suspension/resume boundary (`Poll::Pending` → wake → `Poll::Ready`) under the current `FutureExt::with_context` lifecycle, with correct parent/child relationships. It does not claim arbitrary worker-thread migration, spawned-task propagation, or arbitrary executor propagation; those remain the focus of P2.4.
 
 *Note on UX/Distribution:* Development invocation via `cargo instrument-rust --apply` is fully functional and tested. General driver discovery/packaging and standalone `--show` preview UX remain deliberate operational follow-ups separate from semantic completion.
 
@@ -585,7 +588,7 @@ P2.2 Macro Expansion Resilience & Coexistence ✅
   │
   ├────────────────────────────────────────────────────────┐
   ▼                                                        ▼
-P2.3 First-Party Lint-Apply (Default Path) ◀── current    P2.4 Opt-In Dependency Pipeline & Async
+P2.3 First-Party Lint-Apply (Semantic Complete) ✅        P2.4 Opt-In Dependency Pipeline & Async ◀── next focus
   │                                                        │
   └───────────────────────────┬────────────────────────────┘
                               ▼
@@ -595,8 +598,7 @@ P2.3 First-Party Lint-Apply (Default Path) ◀── current    P2.4 Opt-In Depe
 P2.1 is a hard prerequisite: it established unique unit identity and mirror isolation, without which multi-unit builds collided.
 P2.2 proved coexistence with explicit instrumentation and demonstrated hybrid parenting across `#[async_trait]` boundaries.
 P2.2 directly enabled the ADR-012 feasibility spike: confirming that `#[async_trait]` method bodies preserve call-site spans, clearing P2.3 to build the new default first-party lint-apply path without fear of coverage regression.
-P2.3 is the active milestone: building the `cargo instrument-rust` lint driver, providing zero-overhead, reviewable instrumentation for first-party crates.
-P2.4 follows on the opt-in track: resolving R-4 (`--extern` injection vs C ABI) and implementing async dependency trampolines.
+P2.3 semantic instrumentation is complete: the `cargo instrument-rust` lint driver delivers verified, zero-overhead, reviewable instrumentation for first-party crates. Next focus shifts to P2.4 on the opt-in track: resolving R-4 (`--extern` injection vs C ABI) and implementing async dependency trampolines (`tokio::spawn` context propagation per ADR-001, Stream/Sink poll boundaries, and cancelled-vs-completed span lifecycle).
 P2.5 brings both paths together for large-scale graph benchmarking and cross-platform verification.
 
 | Phase-1 deferral | Lands in | Rationale |
