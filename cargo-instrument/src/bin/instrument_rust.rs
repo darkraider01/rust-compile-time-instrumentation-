@@ -10,6 +10,8 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+const PINNED_P23_TOOLCHAIN: &str = include_str!("../../../tools/p23-toolchain.txt");
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -27,15 +29,16 @@ fn run() -> Result<(), String> {
     let metadata = cargo_metadata(options.offline)?;
     let roots = selected_source_roots(&metadata, &options.packages)?;
     let package_names = selected_workspace_package_names(&metadata, &options.packages)?;
-    let driver = build_driver(options.offline)?;
-    let sysroot = nightly_sysroot()?;
+    let toolchain = p23_toolchain();
+    let driver = build_driver(options.offline, &toolchain)?;
+    let sysroot = nightly_sysroot(&toolchain)?;
     let driver_path = driver_library_path(&sysroot)?;
 
     let mut command = Command::new("cargo");
     // Cargo checks for VCS below each package root. A virtual workspace may
     // keep its repository one level above those roots; our explicit clean-tree
     // gate above is the authoritative safety check for this command.
-    command.args(["fix", "--allow-no-vcs"]);
+    command.args(["fix", "--allow-no-vcs", "--broken-code"]);
     if options.packages.is_empty() {
         command.arg("--workspace");
     } else {
@@ -54,6 +57,9 @@ fn run() -> Result<(), String> {
         )
         .env("CARGO_INSTRUMENT_RUST_PACKAGES", package_names.join(";"))
         .env("CARGO_INSTRUMENT_RUST_SYSROOT", sysroot)
+        // The driver force-warns its unique P2.3 lint while this suppresses
+        // every unrelated compiler warning/suggestion for this one fix run.
+        .env("RUSTFLAGS", "--cap-lints=allow")
         .env("PATH", driver_path);
     // Deliberately leave RUSTC_WRAPPER alone: Cargo installs its rustfix proxy.
     run_status(&mut command, "cargo fix")
@@ -76,6 +82,11 @@ impl Options {
             println!("{}", usage());
             std::process::exit(0);
         }
+        let first = if first == "instrument-rust" {
+            arguments.next().ok_or_else(usage)?
+        } else {
+            first
+        };
         if first != "--apply" {
             return Err(usage());
         }
@@ -193,13 +204,14 @@ fn selected_workspace_package_names(
     Ok(names)
 }
 
-fn build_driver(offline: bool) -> Result<PathBuf, String> {
+fn build_driver(offline: bool, toolchain: &str) -> Result<PathBuf, String> {
     if let Some(driver) = env::var_os("CARGO_INSTRUMENT_RUST_DRIVER") {
         return Ok(PathBuf::from(driver));
     }
     let manifest = driver_manifest_path()?;
     let mut command = Command::new("cargo");
-    command.args(["+nightly", "build", "--manifest-path"]);
+    command.arg(format!("+{toolchain}"));
+    command.args(["build", "--manifest-path"]);
     command.arg(&manifest);
     if offline {
         command.arg("--offline");
@@ -226,16 +238,21 @@ fn build_driver(offline: bool) -> Result<PathBuf, String> {
     Ok(driver)
 }
 
-fn nightly_sysroot() -> Result<OsString, String> {
+fn nightly_sysroot(toolchain: &str) -> Result<OsString, String> {
     let output = Command::new("rustc")
-        .args(["+nightly", "--print", "sysroot"])
+        .args([format!("+{toolchain}"), "--print".into(), "sysroot".into()])
         .output()
         .map_err(|error| format!("could not locate nightly rustc: {error}"))?;
     if !output.status.success() {
-        return Err("rustc +nightly --print sysroot failed".into());
+        return Err(format!("rustc +{toolchain} --print sysroot failed"));
     }
     let value = String::from_utf8(output.stdout).map_err(|error| error.to_string())?;
     Ok(OsString::from(value.trim()))
+}
+
+fn p23_toolchain() -> String {
+    env::var("CARGO_INSTRUMENT_RUST_TOOLCHAIN")
+        .unwrap_or_else(|_| PINNED_P23_TOOLCHAIN.trim().to_owned())
 }
 
 fn driver_library_path(sysroot: &OsString) -> Result<OsString, String> {
@@ -261,5 +278,26 @@ fn run_status(command: &mut Command, description: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{description} failed with {status}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Options;
+
+    #[test]
+    fn accepts_direct_binary_invocation() {
+        assert!(Options::parse(["--apply".into()].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn accepts_cargo_forwarded_subcommand_name() {
+        let options = Options::parse(
+            ["instrument-rust", "--apply", "--offline"]
+                .map(str::to_owned)
+                .into_iter(),
+        )
+        .unwrap();
+        assert!(options.offline);
     }
 }
