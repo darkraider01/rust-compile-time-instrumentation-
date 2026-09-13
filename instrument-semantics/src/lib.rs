@@ -17,6 +17,8 @@ pub struct FunctionFacts {
     pub crate_name: String,
     pub shape: FunctionShape,
     pub is_async: bool,
+    pub returns_result: bool,
+    pub is_directly_recursive: bool,
     pub first_party: bool,
     pub already_instrumented: bool,
     pub has_explicit_instrumentation: bool,
@@ -29,6 +31,7 @@ pub enum Ineligibility {
     AlreadyInstrumented,
     ExplicitlyInstrumented,
     NestedLocalFunctionExcluded,
+    DirectSelfRecursionExcluded,
     UnsupportedFunctionShape,
     MissingOpenTelemetryDependency,
 }
@@ -44,6 +47,7 @@ pub struct InstrumentationPlan {
     pub marker: &'static str,
     pub span: SpanSemantics,
     pub lifecycle: ExecutionLifecycle,
+    pub returns_result: bool,
 }
 
 /// The execution model selected by shared policy, not by an individual frontend.
@@ -69,6 +73,9 @@ impl EligibilityPolicy {
         if facts.shape == FunctionShape::NestedLocalFunction {
             return Err(Ineligibility::NestedLocalFunctionExcluded);
         }
+        if facts.is_directly_recursive {
+            return Err(Ineligibility::DirectSelfRecursionExcluded);
+        }
         if !facts.has_opentelemetry {
             return Err(Ineligibility::MissingOpenTelemetryDependency);
         }
@@ -90,6 +97,7 @@ impl EligibilityPolicy {
             } else {
                 ExecutionLifecycle::SyncScopedContext
             },
+            returns_result: facts.returns_result,
         })
     }
 }
@@ -104,6 +112,8 @@ mod tests {
             crate_name: "demo".into(),
             shape: FunctionShape::FreeFunction,
             is_async: false,
+            returns_result: false,
+            is_directly_recursive: false,
             first_party: true,
             already_instrumented: false,
             has_explicit_instrumentation: false,
@@ -117,6 +127,7 @@ mod tests {
         assert_eq!(plan.marker, P23_MARKER);
         assert_eq!(plan.span.span_name, "work");
         assert_eq!(plan.lifecycle, ExecutionLifecycle::SyncScopedContext);
+        assert!(!plan.returns_result);
     }
 
     #[test]
@@ -158,6 +169,24 @@ mod tests {
             EligibilityPolicy::plan(&facts),
             Err(Ineligibility::NestedLocalFunctionExcluded)
         );
+    }
+
+    #[test]
+    fn direct_self_recursion_is_intentionally_excluded() {
+        let mut facts = facts();
+        facts.is_directly_recursive = true;
+        assert_eq!(
+            EligibilityPolicy::plan(&facts),
+            Err(Ineligibility::DirectSelfRecursionExcluded)
+        );
+    }
+
+    #[test]
+    fn returns_result_is_propagated_into_plan() {
+        let mut facts = facts();
+        facts.returns_result = true;
+        let plan = EligibilityPolicy::plan(&facts).unwrap();
+        assert!(plan.returns_result);
     }
 
     #[test]

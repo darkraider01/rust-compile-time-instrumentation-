@@ -26,7 +26,7 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     assert_ne!(edited, original, "cargo fix output:\n{first:?}");
     assert_eq!(
         edited.matches(MARKER).count(),
-        7,
+        21,
         "edited source:\n{edited}"
     );
     assert!(
@@ -73,6 +73,72 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
         ),
         "assert_async_future_is_send() should be instrumented once:\n{edited}"
     );
+
+    // Direct self-recursion is intentionally excluded per §12.3 parity to avoid recursive span explosion
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"factorial\")"),
+        "directly self-recursive factorial() should not receive a P2.3 marker:\n{edited}"
+    );
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"recursive_method\")"),
+        "directly self-recursive recursive_method() should not receive a P2.3 marker:\n{edited}"
+    );
+    // Precision proof: non-recursive function calling a same-named method on another type is NOT excluded
+    assert!(
+        edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"work\")"),
+        "work() must be instrumented (no false-positive recursion exclusion):\n{edited}"
+    );
+
+    // Result span-status instrumentation shape checks
+    let sync_ok_body = edited
+        .split("pub fn sync_ok")
+        .nth(1)
+        .and_then(|s| s.split("fn sync_step").next())
+        .expect("sync_ok body");
+    assert!(sync_ok_body.contains("let __cargo_instrument_rust_res: Result<_, _> = (|| {"));
+    assert!(sync_ok_body.contains("if __cargo_instrument_rust_res.is_err() {"));
+    assert!(sync_ok_body.contains("set_status(opentelemetry::trace::Status::error(\"\"))"));
+
+    let async_ok_body = edited
+        .split("pub async fn async_ok")
+        .nth(1)
+        .and_then(|s| s.split("async fn async_step").next())
+        .expect("async_ok body");
+    assert!(async_ok_body.contains("let __cargo_instrument_rust_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {"));
+    assert!(async_ok_body.contains("if __cargo_instrument_rust_res.is_err() {"));
+    assert!(async_ok_body.contains("set_status(opentelemetry::trace::Status::error(\"\"))"));
+
+    // Negative test: custom type named Result must NOT receive Result closure wrapping
+    let custom_result_body = edited
+        .split("pub fn custom_type_named_result")
+        .nth(1)
+        .and_then(|s| s.split('}').next())
+        .expect("custom_type_named_result body");
+    assert!(
+        !custom_result_body.contains("__cargo_instrument_rust_res"),
+        "custom type named Result must not receive Result wrapping:\n{custom_result_body}"
+    );
+
+    // Reference return fallback: sync functions returning references fall back to prefix-only instrumentation
+    let borrowed_body = edited
+        .split("pub fn sync_returns_borrowed")
+        .nth(1)
+        .and_then(|s| s.split("pub fn sync_returns_mut_borrowed").next())
+        .expect("sync_returns_borrowed body");
+    assert!(
+        !borrowed_body.contains("__cargo_instrument_rust_res"),
+        "reference-returning sync function must fall back to prefix-only:\n{borrowed_body}"
+    );
+    let mut_borrowed_body = edited
+        .split("pub fn sync_returns_mut_borrowed")
+        .nth(1)
+        .and_then(|s| s.split("pub fn factorial").next())
+        .expect("sync_returns_mut_borrowed body");
+    assert!(
+        !mut_borrowed_body.contains("__cargo_instrument_rust_res"),
+        "mut-reference-returning sync function must fall back to prefix-only:\n{mut_borrowed_body}"
+    );
+
     let asynchronous = edited
         .split("pub async fn asynchronous")
         .nth(1)
@@ -103,6 +169,7 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
         "source outside the selected package root was edited"
     );
     fixture.stable_check();
+    fixture.stable_test();
 
     // The production command refuses to edit over uncommitted user changes.
     let dirty_retry = fixture.run_apply();
@@ -132,7 +199,7 @@ impl Fixture {
         );
         write(
             &temp.path().join(".cargo/config.toml"),
-            "[build]\nrustflags = [\"--cfg\", \"p23_fixture_cfg\", \"--force-warn=unused-parens\"]\n",
+            "[build]\nrustflags = [\"--cfg\", \"p23_fixture_cfg\", \"--force-warn=unused-parens\"]\nrustdocflags = [\"--cfg\", \"p23_fixture_cfg\"]\n",
         );
         write(&temp.path().join(".gitignore"), "/target\n");
         write(
@@ -157,11 +224,267 @@ impl Fixture {
         );
         write(
             &temp.path().join("app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nnested-dependency = { path = \"vendor/nested_dep\" }\nopentelemetry = \"0.32.0\"\ntracing = { version = \"0.1\", features = [\"attributes\"] }\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nnested-dependency = { path = \"vendor/nested_dep\" }\nopentelemetry = \"0.32.0\"\ntracing = { version = \"0.1\", features = [\"attributes\"] }\n\n[dev-dependencies]\nopentelemetry_sdk = { version = \"0.32.0\", features = [\"testing\"] }\n",
         );
         write(
             &temp.path().join("app/src/lib.rs"),
-            "#[cfg(not(p23_fixture_cfg))]\ncompile_error!(\"the fixture Cargo rustflags must remain active\");\n\n#[path = \"../../shared/generated.rs\"]\npub mod generated;\n\npub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) + nested_dependency::nested(0) }\n\npub fn unrelated_fixable_warning() -> i32 { (42) }\n\npub const fn constant() -> i32 { 7 }\n\npub extern \"C\" fn exported() -> i32 { 9 }\n\n#[tracing::instrument]\npub fn traced() -> i32 { 10 }\n\n#[tracing::instrument]\npub async fn traced_async() -> i32 {\n    std::future::ready(()).await;\n    20\n}\n\npub fn ordinary_neighbor(value: i32) -> i32 {\n    value + 5\n}\n\npub fn outer_with_nested() -> i32 {\n    fn inner_local(value: i32) -> i32 {\n        value + 1\n    }\n    async fn inner_local_async() {\n        std::future::ready(()).await;\n    }\n    let _ = inner_local_async();\n    inner_local(41)\n}\n\npub struct Service;\n\nimpl Service {\n    pub fn method(&self, value: i32) -> i32 { value * 2 }\n\n    pub async fn asynchronous(&self, value: i32) -> i32 {\n        std::future::ready(()).await;\n        value + 3\n    }\n}\n\npub fn assert_async_future_is_send() {\n    fn require_send<T: Send>(_: T) {}\n    require_send(Service.asynchronous(1));\n}\n",
+            r#"#![allow(dead_code)]
+#[cfg(not(p23_fixture_cfg))]
+compile_error!("the fixture Cargo rustflags must remain active");
+
+#[path = "../../shared/generated.rs"]
+pub mod generated;
+
+pub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) + nested_dependency::nested(0) }
+
+pub fn unrelated_fixable_warning() -> i32 { (42) }
+
+pub const fn constant() -> i32 { 7 }
+
+pub extern "C" fn exported() -> i32 { 9 }
+
+#[tracing::instrument]
+pub fn traced() -> i32 { 10 }
+
+#[tracing::instrument]
+pub async fn traced_async() -> i32 {
+    std::future::ready(()).await;
+    20
+}
+
+pub fn ordinary_neighbor(value: i32) -> i32 {
+    value + 5
+}
+
+pub fn outer_with_nested() -> i32 {
+    fn inner_local(value: i32) -> i32 {
+        value + 1
+    }
+    async fn inner_local_async() {
+        std::future::ready(()).await;
+    }
+    let _ = inner_local_async();
+    inner_local(41)
+}
+
+pub struct Service;
+
+impl Service {
+    pub fn method(&self, value: i32) -> i32 { value * 2 }
+
+    pub async fn asynchronous(&self, value: i32) -> i32 {
+        std::future::ready(()).await;
+        value + 3
+    }
+}
+
+pub fn assert_async_future_is_send() {
+    fn require_send<T: Send>(_: T) {}
+    require_send(Service.asynchronous(1));
+}
+
+// Goal A: Result/error span-status semantics
+pub fn sync_ok() -> Result<i32, &'static str> {
+    let value = sync_step(21)?;
+    Ok(value * 2)
+}
+
+fn sync_step(value: i32) -> Result<i32, &'static str> {
+    Ok(value)
+}
+
+pub fn sync_err() -> Result<i32, &'static str> {
+    let _ = sync_step_err()?;
+    Ok(0)
+}
+
+fn sync_step_err() -> Result<i32, &'static str> {
+    Err("sync failure")
+}
+
+// Opaque error type implementing NEITHER Debug NOR Display.
+// Compiling and recording an error status on this proves that telemetry never
+// formats or leaks the error value.
+pub struct OpaqueError;
+
+pub fn sync_err_opaque() -> Result<i32, OpaqueError> {
+    Err(OpaqueError)
+}
+
+pub async fn async_ok() -> Result<i32, &'static str> {
+    std::future::ready(()).await;
+    let value = async_step(50).await?;
+    Ok(value * 2)
+}
+
+async fn async_step(value: i32) -> Result<i32, &'static str> {
+    std::future::ready(()).await;
+    Ok(value)
+}
+
+pub async fn async_err() -> Result<i32, &'static str> {
+    std::future::ready(()).await;
+    let _ = async_step_err().await?;
+    Ok(0)
+}
+
+async fn async_step_err() -> Result<i32, &'static str> {
+    std::future::ready(()).await;
+    Err("async failure")
+}
+
+// Negative fixture: custom type named Result must NOT be treated as standard Result
+pub mod custom {
+    pub struct Result {
+        pub code: i32,
+    }
+
+    pub fn custom_type_named_result() -> Result {
+        Result { code: 42 }
+    }
+}
+pub use custom::custom_type_named_result;
+
+// Sync reference return fallback (§16.10 / C1 closure escape safety)
+pub fn sync_returns_borrowed<'a>(input: &'a i32) -> std::result::Result<&'a i32, &'static str> {
+    std::result::Result::Ok(input)
+}
+
+pub fn sync_returns_mut_borrowed<'a>(input: &'a mut i32) -> std::result::Result<&'a mut i32, &'static str> {
+    *input += 1;
+    std::result::Result::Ok(input)
+}
+
+// Goal B: direct self-recursion is intentionally excluded
+pub fn factorial(n: u32) -> u32 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial(n - 1)
+    }
+}
+
+pub struct Counter {
+    pub value: u32,
+}
+
+impl Counter {
+    pub fn recursive_method(&self, n: u32) -> u32 {
+        if n == 0 {
+            self.value
+        } else {
+            self.recursive_method(n - 1)
+        }
+    }
+}
+
+// Precision check: a non-recursive function calling a same-named method on another type is NOT excluded
+pub struct Worker;
+
+impl Worker {
+    pub fn work(&self) -> u32 {
+        99
+    }
+}
+
+pub fn work(worker: &Worker) -> u32 {
+    worker.work()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+    fn run_future<F: std::future::Future>(fut: F) -> F::Output {
+        use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        use std::pin::pin;
+        fn noop_clone(_: *const ()) -> RawWaker { RawWaker::new(std::ptr::null(), &VTABLE) }
+        fn noop(_: *const ()) {}
+        static VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
+        let raw = RawWaker::new(std::ptr::null(), &VTABLE);
+        let waker = unsafe { Waker::from_raw(raw) };
+        let mut cx = Context::from_waker(&waker);
+        let mut pinned = pin!(fut);
+        loop {
+            if let Poll::Ready(res) = pinned.as_mut().poll(&mut cx) {
+                return res;
+            }
+        }
+    }
+
+    fn assert_send<T: Send>(_: &T) {}
+
+    #[test]
+    fn test_runtime_telemetry_and_result_status() {
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let _ = opentelemetry::global::set_tracer_provider(provider);
+
+        // 1. Sync Ok returns unchanged value
+        assert_eq!(sync_ok(), Ok(42));
+
+        // 2. Sync Err returns unchanged value
+        assert_eq!(sync_err(), Err("sync failure"));
+
+        // 3. Sync Err with opaque error (no Debug/Display) returns unchanged value
+        assert!(sync_err_opaque().is_err());
+
+        // 4. Async Ok returns unchanged value and Future is Send
+        let fut_ok = async_ok();
+        assert_send(&fut_ok);
+        assert_eq!(run_future(fut_ok), Ok(100));
+
+        // 5. Async Err returns unchanged value and Future is Send
+        let fut_err = async_err();
+        assert_send(&fut_err);
+        assert_eq!(run_future(fut_err), Err("async failure"));
+
+        // 6. Custom type named Result
+        let custom = custom_type_named_result();
+        assert_eq!(custom.code, 42);
+
+        // 7. Direct self-recursion executes correctly without telemetry explosion
+        assert_eq!(factorial(5), 120);
+        let counter = Counter { value: 7 };
+        assert_eq!(counter.recursive_method(3), 7);
+
+        // 8. Non-recursive call to helper with same method name
+        assert_eq!(work(&Worker), 99);
+
+        // Retrieve and assert finished span statuses
+        let spans = exporter.get_finished_spans().expect("get finished spans");
+
+        let find_span = |name: &str| {
+            spans.iter().find(|s| s.name == name).unwrap_or_else(|| panic!("missing span: {name}"))
+        };
+
+        let s_sync_ok = find_span("sync_ok");
+        assert_eq!(s_sync_ok.status, opentelemetry::trace::Status::Unset, "sync_ok status must be Unset");
+
+        let s_sync_err = find_span("sync_err");
+        assert_eq!(s_sync_err.status, opentelemetry::trace::Status::error(""), "sync_err status must be Error with empty description");
+
+        let s_opaque = find_span("sync_err_opaque");
+        assert_eq!(s_opaque.status, opentelemetry::trace::Status::error(""), "opaque error must have Error status with empty description");
+
+        let s_async_ok = find_span("async_ok");
+        assert_eq!(s_async_ok.status, opentelemetry::trace::Status::Unset, "async_ok status must be Unset");
+
+        let s_async_err = find_span("async_err");
+        assert_eq!(s_async_err.status, opentelemetry::trace::Status::error(""), "async_err status must be Error with empty description");
+
+        let s_custom = find_span("custom_type_named_result");
+        assert_eq!(s_custom.status, opentelemetry::trace::Status::Unset, "custom Result must not have Error status");
+
+        // Excluded direct recursion functions must not produce spans
+        assert!(!spans.iter().any(|s| s.name == "factorial"), "factorial must not produce any span");
+        assert!(!spans.iter().any(|s| s.name == "recursive_method"), "recursive_method must not produce any span");
+    }
+}
+"#,
         );
         let fixture = Self { temp };
         fixture.run_git(&["init"]);
@@ -220,6 +543,15 @@ impl Fixture {
             .output()
             .unwrap();
         assert!(output.status.success(), "stable check failed:\n{output:?}");
+    }
+
+    fn stable_test(&self) {
+        let output = Command::new("cargo")
+            .args(["+stable", "test", "--package", "app", "--offline"])
+            .current_dir(self.root())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "stable test failed:\n{output:?}");
     }
 
     fn commit(&self, message: &str) {
