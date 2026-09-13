@@ -21,7 +21,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
 | **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across the automated suite) |
-| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), bounded first-party lint-apply vertical slice (P2.3), async dependency trampolines & opt-in pipeline (P2.4), large graphs & cross-platform validation (P2.5). Decisions recorded as [ADR-007 … ADR-013](docs/phase2/decision-records.md) |
+| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), first-party lint-apply driver (P2.3 semantic instrumentation complete), async dependency trampolines & opt-in pipeline (P2.4 next focus), large graphs & cross-platform validation (P2.5 planned). Decisions recorded as [ADR-007 … ADR-013](docs/phase2/decision-records.md) |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
