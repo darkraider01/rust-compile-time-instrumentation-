@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use serde::Serialize;
 use serde_json::Value;
 
 const PINNED_P23_TOOLCHAIN: &str = include_str!("../../../tools/p23-toolchain.txt");
@@ -27,18 +28,17 @@ fn run() -> Result<(), String> {
     require_clean_git_tree()?;
 
     let metadata = cargo_metadata(options.offline)?;
-    let roots = selected_source_roots(&metadata, &options.packages)?;
-    let package_names = selected_workspace_package_names(&metadata, &options.packages)?;
+    let selected_packages = selected_workspace_packages(&metadata, &options.packages)?;
     let toolchain = p23_toolchain();
     let driver = build_driver(options.offline, &toolchain)?;
     let sysroot = nightly_sysroot(&toolchain)?;
     let driver_path = driver_library_path(&sysroot)?;
 
-    let mut command = Command::new("cargo");
+    let mut command = Command::new(cargo_executable());
     // Cargo checks for VCS below each package root. A virtual workspace may
     // keep its repository one level above those roots; our explicit clean-tree
     // gate above is the authoritative safety check for this command.
-    command.args(["fix", "--allow-no-vcs", "--broken-code"]);
+    command.args(["fix", "--allow-no-vcs"]);
     if options.packages.is_empty() {
         command.arg("--workspace");
     } else {
@@ -52,14 +52,11 @@ fn run() -> Result<(), String> {
     command
         .env("RUSTC", driver)
         .env(
-            "CARGO_INSTRUMENT_RUST_ROOTS",
-            env::join_paths(roots).map_err(|error| error.to_string())?,
+            "CARGO_INSTRUMENT_RUST_SELECTED_PACKAGES",
+            serde_json::to_string(&selected_packages)
+                .map_err(|error| format!("could not encode selected packages: {error}"))?,
         )
-        .env("CARGO_INSTRUMENT_RUST_PACKAGES", package_names.join(";"))
         .env("CARGO_INSTRUMENT_RUST_SYSROOT", sysroot)
-        // The driver force-warns its unique P2.3 lint while this suppresses
-        // every unrelated compiler warning/suggestion for this one fix run.
-        .env("RUSTFLAGS", "--cap-lints=allow")
         .env("PATH", driver_path);
     // Deliberately leave RUSTC_WRAPPER alone: Cargo installs its rustfix proxy.
     run_status(&mut command, "cargo fix")
@@ -124,8 +121,16 @@ fn require_clean_git_tree() -> Result<(), String> {
     Ok(())
 }
 
+fn cargo_executable() -> OsString {
+    cargo_executable_from(env::var_os("CARGO"))
+}
+
+fn cargo_executable_from(invoking_cargo: Option<OsString>) -> OsString {
+    invoking_cargo.unwrap_or_else(|| OsString::from("cargo"))
+}
+
 fn cargo_metadata(offline: bool) -> Result<Value, String> {
-    let mut command = Command::new("cargo");
+    let mut command = Command::new(cargo_executable());
     command.args(["metadata", "--format-version", "1", "--no-deps"]);
     if offline {
         command.arg("--offline");
@@ -134,20 +139,33 @@ fn cargo_metadata(offline: bool) -> Result<Value, String> {
         .output()
         .map_err(|error| format!("could not run cargo metadata: {error}"))?;
     if !output.status.success() {
-        return Err(format!("cargo metadata failed with {}", output.status));
+        return Err(format!(
+            "cargo metadata failed with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
     }
     serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("invalid cargo metadata output: {error}"))
 }
 
-fn selected_source_roots(metadata: &Value, requested: &[String]) -> Result<Vec<PathBuf>, String> {
+#[derive(Serialize)]
+struct SelectedPackage {
+    name: String,
+    source_root: PathBuf,
+}
+
+fn selected_workspace_packages(
+    metadata: &Value,
+    requested: &[String],
+) -> Result<Vec<SelectedPackage>, String> {
     let workspace_members = metadata["workspace_members"]
         .as_array()
         .ok_or_else(|| "cargo metadata did not report workspace members".to_string())?;
     let packages = metadata["packages"]
         .as_array()
         .ok_or_else(|| "cargo metadata did not report packages".to_string())?;
-    let mut roots = Vec::new();
+    let mut selected_packages = Vec::new();
     for package in packages {
         let id = package["id"].as_str().unwrap_or_default();
         let name = package["name"].as_str().unwrap_or_default();
@@ -155,11 +173,6 @@ fn selected_source_roots(metadata: &Value, requested: &[String]) -> Result<Vec<P
             .iter()
             .any(|member| member.as_str() == Some(id));
         let selected = requested.is_empty() || requested.iter().any(|requested| requested == name);
-        if selected && !is_workspace_member {
-            return Err(format!(
-                "`{name}` is not a workspace package; P2.3 edits only first-party source"
-            ));
-        }
         if selected && is_workspace_member {
             let manifest = package["manifest_path"]
                 .as_str()
@@ -167,41 +180,26 @@ fn selected_source_roots(metadata: &Value, requested: &[String]) -> Result<Vec<P
             let root = Path::new(manifest)
                 .parent()
                 .ok_or_else(|| format!("package `{name}` has no manifest parent"))?;
-            roots.push(root.to_path_buf());
+            selected_packages.push(SelectedPackage {
+                name: name.to_owned(),
+                source_root: root.to_path_buf(),
+            });
         }
     }
-    if roots.is_empty() {
+    if selected_packages.is_empty() {
         return Err("no selected workspace packages matched --package".into());
     }
-    Ok(roots)
-}
-
-fn selected_workspace_package_names(
-    metadata: &Value,
-    requested: &[String],
-) -> Result<Vec<String>, String> {
-    let workspace_members = metadata["workspace_members"]
-        .as_array()
-        .ok_or_else(|| "cargo metadata did not report workspace members".to_string())?;
-    let packages = metadata["packages"]
-        .as_array()
-        .ok_or_else(|| "cargo metadata did not report packages".to_string())?;
-    let names: Vec<String> = packages
-        .iter()
-        .filter(|package| {
-            let id = package["id"].as_str().unwrap_or_default();
-            let name = package["name"].as_str().unwrap_or_default();
-            workspace_members
-                .iter()
-                .any(|member| member.as_str() == Some(id))
-                && (requested.is_empty() || requested.iter().any(|requested| requested == name))
-        })
-        .filter_map(|package| package["name"].as_str().map(str::to_owned))
-        .collect();
-    if names.is_empty() {
-        return Err("no selected workspace packages matched --package".into());
+    for package in requested {
+        if !selected_packages
+            .iter()
+            .any(|selected| &selected.name == package)
+        {
+            return Err(format!(
+                "`{package}` is not a workspace package; P2.3 edits only first-party source"
+            ));
+        }
     }
-    Ok(names)
+    Ok(selected_packages)
 }
 
 fn build_driver(offline: bool, toolchain: &str) -> Result<PathBuf, String> {
@@ -209,14 +207,16 @@ fn build_driver(offline: bool, toolchain: &str) -> Result<PathBuf, String> {
         return Ok(PathBuf::from(driver));
     }
     let manifest = driver_manifest_path()?;
-    let mut command = Command::new("cargo");
-    command.arg(format!("+{toolchain}"));
+    let mut command = Command::new(cargo_executable());
     command.args(["build", "--manifest-path"]);
     command.arg(&manifest);
     if offline {
         command.arg("--offline");
     }
-    command.env_remove("RUSTC").env_remove("RUSTC_WRAPPER");
+    command
+        .env("RUSTUP_TOOLCHAIN", toolchain)
+        .env_remove("RUSTC")
+        .env_remove("RUSTC_WRAPPER");
     run_status(&mut command, "nightly driver build")?;
     let executable = if cfg!(windows) {
         "cargo-instrument-rust-driver.exe"
@@ -283,7 +283,9 @@ fn run_status(command: &mut Command, description: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::Options;
+    use std::ffi::OsString;
+
+    use super::{cargo_executable_from, Options};
 
     #[test]
     fn accepts_direct_binary_invocation() {
@@ -299,5 +301,14 @@ mod tests {
         )
         .unwrap();
         assert!(options.offline);
+    }
+
+    #[test]
+    fn prefers_cargos_invoking_executable() {
+        assert_eq!(
+            cargo_executable_from(Some(OsString::from("custom-cargo"))),
+            OsString::from("custom-cargo")
+        );
+        assert_eq!(cargo_executable_from(None), OsString::from("cargo"));
     }
 }
