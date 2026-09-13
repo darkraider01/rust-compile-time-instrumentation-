@@ -4,6 +4,7 @@ extern crate rustc_driver;
 extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_interface;
+extern crate rustc_lint;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -18,15 +19,39 @@ use instrument_semantics::{
 use rustc_errors::Applicability;
 use rustc_hir::intravisit::{self, FnKind, Visitor};
 use rustc_hir::{BodyId, Constness, FnDecl, ItemKind};
+use rustc_lint::Lint;
 use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
+use serde::Deserialize;
+
+// A non-tool lint name is intentionally used here. rustc validates tool-lint
+// namespaces before a driver can register them; ordinary registered lint names
+// are resolved after this driver's `register_lints` callback runs.
+pub static INSTRUMENT: &Lint = &Lint {
+    name: "cargo_instrument_instrument",
+    default_level: rustc_lint::Warn,
+    desc: "a first-party P2.3 instrumentation edit is available",
+    edition_lint_opts: None,
+    report_in_external_macro: false,
+    future_incompatible: None,
+    is_externally_loaded: false,
+    feature_gate: None,
+    crate_level_only: false,
+    ignore_deny_warnings: true,
+    ..Lint::default_fields_for_macro()
+};
 
 #[derive(Clone)]
 struct DriverConfig {
-    roots: Vec<PathBuf>,
-    selected_packages: Vec<String>,
+    selected_packages: Vec<SelectedPackage>,
     crate_name: String,
     has_opentelemetry: bool,
+}
+
+#[derive(Clone, Deserialize)]
+struct SelectedPackage {
+    name: String,
+    source_root: PathBuf,
 }
 
 struct P23Visitor<'tcx> {
@@ -92,13 +117,11 @@ impl<'tcx> P23Visitor<'tcx> {
         let Some(file_name) = source_map.span_to_filename(body_span).into_local_path() else {
             return;
         };
-        let selected_package = env::var("CARGO_PKG_NAME").ok().is_some_and(|name| {
-            self.config
-                .selected_packages
-                .iter()
-                .any(|package| package == &name)
-        });
-        if !is_owned_source(&file_name, &self.config.roots) && !selected_package {
+        let Some(package) = selected_package_for_current_compilation(&self.config.selected_packages)
+        else {
+            return;
+        };
+        if !is_owned_source(&file_name, package) {
             return;
         }
         let Ok(original) = source_map.span_to_snippet(body_span) else {
@@ -116,29 +139,47 @@ impl<'tcx> P23Visitor<'tcx> {
         let Ok(plan) = EligibilityPolicy::plan(&facts) else {
             return;
         };
-        // This is deliberately an error, rather than an ordinary warning lint:
-        // `cargo fix --broken-code` receives only our suggestions while Cargo's
-        // unrelated lint suggestions are capped to `allow` by the CLI.
-        let mut diagnostic = self
-            .tcx
-            .dcx()
-            .struct_span_err(body_span, "p2.3 first-party instrumentation is available");
-        diagnostic.span_suggestion(
+        let hir_id = self.tcx.local_def_id_to_hir_id(def_id);
+        self.tcx.emit_node_span_lint(
+            INSTRUMENT,
+            hir_id,
             body_span,
-            "insert an idempotent OpenTelemetry instrumentation block",
-            instrument_body(&original, &plan),
-            Applicability::MachineApplicable,
+            rustc_errors::DiagDecorator(|diagnostic: &mut rustc_errors::Diag<'_, ()>| {
+            diagnostic.primary_message("p2.3 first-party instrumentation is available");
+            diagnostic.span_suggestion(
+                body_span,
+                "insert an idempotent OpenTelemetry instrumentation block",
+                instrument_body(&original, &plan),
+                Applicability::MachineApplicable,
+            );
+            }),
         );
-        diagnostic.emit();
     }
 }
 
-fn is_owned_source(source: &Path, roots: &[PathBuf]) -> bool {
-    source
+fn selected_package_for_current_compilation(
+    selected_packages: &[SelectedPackage],
+) -> Option<&SelectedPackage> {
+    let name = env::var("CARGO_PKG_NAME").ok()?;
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR")?);
+    selected_packages.iter().find(|package| {
+        package.name == name
+            && same_file::is_same_file(&manifest_dir, &package.source_root).unwrap_or(false)
+    })
+}
+
+fn is_owned_source(source: &Path, package: &SelectedPackage) -> bool {
+    let Ok(canonical_source) = source.canonicalize() else {
+        return false;
+    };
+    let Ok(canonical_root) = package.source_root.canonicalize() else {
+        return false;
+    };
+    canonical_source
         .extension()
         .is_some_and(|extension| extension == "rs")
         && source.file_name().is_none_or(|name| name != "build.rs")
-        && roots.iter().any(|root| source.starts_with(root))
+        && canonical_source.starts_with(canonical_root)
 }
 
 fn instrument_body(original: &str, plan: &InstrumentationPlan) -> String {
@@ -167,12 +208,22 @@ struct P23Callbacks {
 }
 
 impl rustc_driver::Callbacks for P23Callbacks {
+    fn config(&mut self, config: &mut rustc_interface::Config) {
+        let previous = config.register_lints.take();
+        config.register_lints = Some(Box::new(move |session, lint_store| {
+            if let Some(previous) = &previous {
+                previous(session, lint_store);
+            }
+            lint_store.register_lints(&[&INSTRUMENT]);
+        }));
+    }
+
     fn after_analysis(
         &mut self,
         _compiler: &rustc_interface::interface::Compiler,
         tcx: TyCtxt<'_>,
     ) -> rustc_driver::Compilation {
-        if !self.config.roots.is_empty() && self.config.has_opentelemetry {
+        if !self.config.selected_packages.is_empty() && self.config.has_opentelemetry {
             tcx.hir_visit_all_item_likes_in_crate(&mut P23Visitor {
                 tcx,
                 config: self.config.clone(),
@@ -197,17 +248,36 @@ fn main() {
             args.push(sysroot);
         }
     }
+    replace_lint_cap(&mut args);
+    // These are driver arguments, not Cargo rustflags. Ordinary diagnostics
+    // are capped while this registered lint is force-warned for rustfix.
+    args.push("--cap-lints=allow".into());
+    args.push("--force-warn=cargo_instrument_instrument".into());
     let config = DriverConfig {
-        roots: env::var_os("CARGO_INSTRUMENT_RUST_ROOTS")
-            .map(|roots| env::split_paths(&roots).collect())
-            .unwrap_or_default(),
-        selected_packages: env::var("CARGO_INSTRUMENT_RUST_PACKAGES")
-            .map(|packages| packages.split(';').map(str::to_owned).collect())
+        selected_packages: env::var("CARGO_INSTRUMENT_RUST_SELECTED_PACKAGES")
+            .ok()
+            .and_then(|packages| serde_json::from_str(&packages).ok())
             .unwrap_or_default(),
         crate_name: crate_name(&args).unwrap_or_else(|| "unknown".into()),
         has_opentelemetry: has_opentelemetry_extern(&args),
     };
     rustc_driver::run_compiler(&args, &mut P23Callbacks { config });
+}
+
+fn replace_lint_cap(args: &mut Vec<String>) {
+    let mut filtered = Vec::with_capacity(args.len() + 1);
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] == "--cap-lints" {
+            index += 2;
+        } else if args[index].starts_with("--cap-lints=") {
+            index += 1;
+        } else {
+            filtered.push(args[index].clone());
+            index += 1;
+        }
+    }
+    *args = filtered;
 }
 
 fn has_opentelemetry_extern(args: &[String]) -> bool {
@@ -239,7 +309,7 @@ fn crate_name(args: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::has_opentelemetry_extern;
+    use super::{has_opentelemetry_extern, replace_lint_cap};
 
     fn args(arguments: &[&str]) -> Vec<String> {
         arguments.iter().map(ToString::to_string).collect()
@@ -258,5 +328,18 @@ mod tests {
         assert!(!has_opentelemetry_extern(&args(&[
             "C:/contains-opentelemetry-but-is-not-an-extern"
         ])));
+    }
+
+    #[test]
+    fn replaces_existing_lint_caps_with_the_drivers_cap() {
+        let mut arguments = args(&[
+            "rustc",
+            "--cap-lints",
+            "warn",
+            "--cap-lints=deny",
+            "fixture.rs",
+        ]);
+        replace_lint_cap(&mut arguments);
+        assert_eq!(arguments, args(&["rustc", "fixture.rs"]));
     }
 }
