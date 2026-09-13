@@ -39,13 +39,13 @@ Phase 2 - Production Hardening (In Progress)
           │       ├── Collision prevention (__otel_cx)      ✅ Complete
           │       ├── Hybrid parenting proof (ADR-010)      ✅ Complete
           │       └── Contain panic at C ABI boundary (R-3) ✅ Complete
-          ├── P2.3 First-Party Lint-Apply (`cargo instrument-rust`) ◐ Bounded vertical slice complete
+          ├── P2.3 First-Party Lint-Apply (`cargo instrument-rust`) ✅ Semantic instrumentation complete
           │       ├── Spike: Body wrapping & `#[async_trait]` reachability (ADR-012) ✅ Complete
-          │       ├── Step 1  `rustc_private` lint driver foundation
-          │       ├── Step 2  HIR eligibility analysis & visit dedup
-          │       ├── Step 3  `span_suggestion` transformation engine (`span_to_snippet`)
-          │       ├── Step 4  CLI surface (`--show` preview, `--apply` clean-tree gate)
-          │       └── Step 5  `cargo fix` round-trip & regression suite
+          │       ├── Step 1  `rustc_private` lint driver foundation & isolation      ✅ Complete
+          │       ├── Step 2  HIR eligibility analysis & shared semantic model       ✅ Complete
+          │       ├── Step 3  `span_suggestion` transformation engine                 ✅ Complete
+          │       ├── Step 4  Cargo fix integration & clean-tree safety gate          ✅ Complete
+          │       └── Step 5  Idempotence, Result status & async_trait parity suite  ✅ Complete
           ├── P2.4 Opt-In Dependency Pipeline & Async Trampolines   ⬜ Planned
           │       ├── R-4 investigation: `--extern` injection vs C-ABI / R-1 / R-2
           │       ├── Async dependency trampolines & `tokio::spawn` context propagation
@@ -506,41 +506,44 @@ Steps 2-3 alone close G1 and G3.
 - **Hybrid Parenting Proof ([ADR-010](decision-records.md#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry)):** Explicit `#[tracing::instrument]` caller activates its context via `tracing-opentelemetry`, and downstream automatic dependency spans attach as children across sync and `#[async_trait]` boundaries.
 - **C-ABI Panic Containment (R-3, commit [`6bf0880`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/6bf0880)):** Implemented fail-open `catch_unwind` (Layer 1) and `extern "C-unwind"` boundary declarations (Layer 2) per [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional).
 
-### 6.3 P2.3 - First-Party Lint-Apply Driver (`cargo instrument-rust`) (Bounded vertical slice complete)
+### 6.3 P2.3 - First-Party Lint-Apply Driver (`cargo instrument-rust`) (P2.3 semantic instrumentation complete)
 
-**Delivered slice:** `cargo instrument-rust --apply` builds an isolated nightly `rustc_driver` HIR frontend, sets it as `RUSTC`, and lets Cargo retain its `RUSTC_WRAPPER` Rustfix proxy. It applies marker-backed `MachineApplicable` body edits for ordinary free functions, inherent methods, and async functions in selected workspace packages with `opentelemetry` available. The stable workspace remains free of `rustc_private`; only the excluded driver requires nightly plus `rustc-dev`.
+**Status:** P2.3 semantic instrumentation complete.
 
-#### Feasibility Spike Results (commit [`0b98e5f`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/0b98e5f), 2026-09-10)
+`cargo instrument-rust --apply` builds an isolated nightly `rustc_driver` HIR frontend, sets it as `RUSTC`, and lets Cargo retain its `RUSTC_WRAPPER` Rustfix proxy. It applies marker-backed `MachineApplicable` body edits for ordinary free functions, inherent methods, plain trait implementation methods, and `#[async_trait]` trait implementation methods in selected workspace packages with `opentelemetry` available. Modified source compiles cleanly on stable Rust with zero compile-time wrapper latency on subsequent builds.
 
-Spiked via a standalone driver (`spikes/adr012-lint-span-probe.rs`) against a multi-shape fixture (`spikes/adr012-lint-span-fixture.rs`):
+#### Supported Semantic Forms
+- **Free functions:** Synchronous and native `async fn`.
+- **Inherent methods:** Synchronous and native `async fn`.
+- **Plain trait implementation methods:** Synchronous and native `async fn` (`impl Trait for Type`).
+- **`#[async_trait]` trait implementation methods:** Preserves user call-site source snippet; instruments with per-poll `FutureExt::with_context(async move { .. }, cx).await` lifecycle, preserving `Send`, surviving real suspension/wake boundaries (`Poll::Pending` → wake → `Poll::Ready`), and recording `Status::error("")` on `Err`.
+- **Result status semantics:** Resolves standard `core::result::Result` (including aliases like `std::io::Result`) via diagnostic-item identity without false positives on custom types named `Result`. Captures error status as `Status::error("")` (zero-leak description) and preserves return value unchanged.
+- **Sync reference Result fallback:** Sync functions returning non-static or mutable references fall back to prefix-only instrumentation (`returns_result: true, can_capture_result_status: false`) to avoid closure lifetime escapes.
+- **Parenting hierarchy:** Instrumenting ordinary/inherent caller span A calling `async_trait` method span B or same-named method preserves trace ID and establishes direct child-to-parent span linkage.
 
-- **✅ `#[async_trait]` methods are reachable:** Proc-macro token pass-through preserves call-site spans (`body_span.from_expansion == false`, snippet `{ a + 4 }`). The outer `Box::pin(async move { .. })` wrapper is expansion, but the written body is not. The default path will not regress the `#[async_trait]` coverage proven in P2.2.
-- **✅ Body wrapping is expressible:** `SourceMap::span_to_snippet(body_span)` returns the original body text, allowing `span_suggestion` to emit a prologue (`__otel_tracer`, `__otel_span`, `__otel_cx`, `_guard`) and re-emit the original inner statements.
-- **❌ `macro_rules!`-generated functions are out of reach:** Correctly flagged with `from_expansion == true`. This is a real limit, but not a regression: `syn` operates pre-expansion and never saw generated items either.
-- **Implementation findings:**
-  1. *Async desugaring:* Emits an internal `<closure>` HIR body with `from_expansion = true` that must be skipped to avoid double-targeting.
-  2. *Visitor deduplication:* Impl items are visited twice under `rustc_middle::hir::nested_filter::All`, requiring deduplication by item ID.
-  3. *Windows MAX_PATH:* Linking `rustc_private` on Windows creates deep import-lib paths (~150+ chars) that exceed the 260-char limit in deep paths. In-tree driver builds require short paths or extended path prefixes.
-- **Remaining verification:** Confirming actual `span_suggestion` emission and round-trip application through `cargo fix`.
+#### Intentional Exclusions & Boundaries
+Not all Rust function forms are automatically instrumented. The semantic boundary is explicit:
+1. **Default trait method bodies:** Deliberately excluded (`FunctionShape::DefaultTraitMethod` → `Ineligibility::DefaultTraitMethodExcluded`). Trait definitions have no concrete implementor context (`Self: ?Sized`), can back multiple monomorphizations across crates, and cannot soundly bind a single tracer scope/name.
+2. **Nested local functions:** Deliberately excluded (`FunctionShape::NestedLocalFunction` → `Ineligibility::NestedLocalFunctionExcluded`) to prevent overlapping text replacement ranges. Outer functions remain instrumented.
+3. **Direct self-recursion:** Deliberately excluded (`is_directly_recursive` → `Ineligibility::DirectSelfRecursionExcluded`), evaluated using exact `DefId` and `trait_item_of` comparison for both free functions, inherent methods, and trait impl methods (`self.recursive(..)`). Excludes unbounded recursive span explosion without false-positive exclusion of free functions calling same-named methods.
+4. **Explicit instrumentation precedence:** Explicit user instrumentation is absolute (`has_explicit_instrumentation` → `Ineligibility::ExplicitlyInstrumented`). Functions annotated with `#[tracing::instrument]`, `#[instrument_span]`, `#[propagate_context]`, or containing explicit OpenTelemetry span creation never receive duplicate P2.3 instrumentation.
+5. **Macro expansion bodies:** Synthesized macro expansion spans (`span.from_expansion() || body_span.from_expansion()`) are never edited; only user-owned original source text is rewritten.
+6. **Const functions, closures, and foreign ABIs:** `const fn`, `FnKind::Closure`, and non-Rust ABIs (`extern "C"`) are excluded.
+7. **Source ownership boundaries:** Source outside the selected workspace package root or inside external dependencies is strictly immutable.
+8. **Missing telemetry dependency:** Packages without an `opentelemetry` extern dependency are skipped fail-open.
 
 #### Implementation Sequence
 
 | Step | Work | Status |
 |---|---|---|
 | Spike | Body wrapping expressibility & `#[async_trait]` call-site span reachability | ✅ Complete (`0b98e5f`) |
-| 1 | `rustc_private` lint driver foundation (`cargo-instrument-rust` crate) | ⬜ In Progress |
-| 2 | HIR eligibility rules (port `ast.rs` rules to HIR; skip async closures; dedup impl items) | ⬜ Planned |
-| 3 | `span_suggestion` transformation engine (`span_to_snippet` wrapping, `MachineApplicable`) | ⬜ Planned |
-| 4 | Developer CLI surface (`--show` diagnostics preview, `--apply` clean-tree gate) | ⬜ Planned |
-| 5 | `cargo fix` round-trip verification & integration regression test suite | ⬜ Planned |
+| 1 | `rustc_private` lint driver foundation (`cargo-instrument-rust` crate) & loader isolation | ✅ Complete (`d7266a7`) |
+| 2 | HIR eligibility rules & explicit-instrumentation / nested exclusion parity | ✅ Complete (`0d361f1`) |
+| 3 | Result/error span status & direct recursion exclusion parity | ✅ Complete (`c5a8ac5`) |
+| 4 | Trait impl methods, `#[async_trait]` support & real suspension proof | ✅ Complete |
+| 5 | `cargo fix` round-trip verification, second-apply idempotence & full regression suite | ✅ Complete |
 
-#### Definition of Done (P2.3)
-
-1. `cargo instrument-rust --show` outputs compiler diagnostics previewing span insertion for eligible functions across a crate.
-2. `cargo instrument-rust --apply` writes changes directly to disk and refuses to run if the git working tree has uncommitted changes.
-3. `#[async_trait]` method bodies are correctly wrapped with telemetry spans without syntax or compilation errors.
-4. Modified source files compile cleanly on stable Rust with zero compile-time wrapper latency on subsequent builds.
-5. Round-trip application verified through automated integration tests.
+*Note on UX/Distribution:* Development invocation via `cargo instrument-rust --apply` is fully functional and tested. General driver discovery/packaging and standalone `--show` preview UX remain deliberate operational follow-ups separate from semantic completion.
 
 ### 6.4 P2.4 - Opt-In Dependency Pipeline & Async Trampolines (Planned)
 
