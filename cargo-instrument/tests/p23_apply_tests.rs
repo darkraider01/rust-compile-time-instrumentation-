@@ -16,6 +16,8 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     let fixture = Fixture::new();
     let original = fs::read_to_string(fixture.app_source()).unwrap();
     let dependency_before = fs::read_to_string(fixture.dependency_source()).unwrap();
+    let nested_dependency_before = fs::read_to_string(fixture.nested_dependency_source()).unwrap();
+    let outside_source_before = fs::read_to_string(fixture.outside_source()).unwrap();
 
     let first = fixture.run_apply();
     assert!(first.status.success(), "first apply failed:\n{first:?}");
@@ -52,6 +54,16 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
         fs::read_to_string(fixture.dependency_source()).unwrap(),
         dependency_before
     );
+    assert_eq!(
+        fs::read_to_string(fixture.nested_dependency_source()).unwrap(),
+        nested_dependency_before,
+        "an unselected path dependency below the selected package root was edited"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.outside_source()).unwrap(),
+        outside_source_before,
+        "source outside the selected package root was edited"
+    );
     fixture.stable_check();
 
     // The production command refuses to edit over uncommitted user changes.
@@ -78,7 +90,11 @@ impl Fixture {
         let temp = tempfile::tempdir().unwrap();
         write(
             &temp.path().join("Cargo.toml"),
-            "[workspace]\nmembers = [\"app\"]\nresolver = \"2\"\n",
+            "[workspace]\nmembers = [\"app\"]\nexclude = [\"external-dependency\", \"app/vendor/nested_dep\"]\nresolver = \"2\"\n",
+        );
+        write(
+            &temp.path().join(".cargo/config.toml"),
+            "[build]\nrustflags = [\"--cfg\", \"p23_fixture_cfg\"]\n",
         );
         write(&temp.path().join(".gitignore"), "/target\n");
         write(
@@ -90,12 +106,24 @@ impl Fixture {
             "pub fn plus_one(value: i32) -> i32 { value + 1 }\n",
         );
         write(
+            &temp.path().join("app/vendor/nested_dep/Cargo.toml"),
+            "[package]\nname = \"nested-dependency\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nopentelemetry = \"0.32.0\"\n",
+        );
+        write(
+            &temp.path().join("app/vendor/nested_dep/src/lib.rs"),
+            "pub fn nested(value: i32) -> i32 { value * 10 }\n",
+        );
+        write(
+            &temp.path().join("shared/generated.rs"),
+            "pub fn generated_outside_package() -> i32 { 11 }\n",
+        );
+        write(
             &temp.path().join("app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nopentelemetry = \"0.32.0\"\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nnested-dependency = { path = \"vendor/nested_dep\" }\nopentelemetry = \"0.32.0\"\n",
         );
         write(
             &temp.path().join("app/src/lib.rs"),
-            "pub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) }\n\npub fn unrelated_fixable_warning() -> i32 { (42) }\n\npub const fn constant() -> i32 { 7 }\n\npub extern \"C\" fn exported() -> i32 { 9 }\n\npub struct Service;\n\nimpl Service {\n    pub fn method(&self, value: i32) -> i32 { value * 2 }\n\n    pub async fn asynchronous(&self, value: i32) -> i32 {\n        std::future::ready(()).await;\n        value + 3\n    }\n}\n\npub fn assert_async_future_is_send() {\n    fn require_send<T: Send>(_: T) {}\n    require_send(Service.asynchronous(1));\n}\n",
+            "#[cfg(not(p23_fixture_cfg))]\ncompile_error!(\"the fixture Cargo rustflags must remain active\");\n\n#[path = \"../../shared/generated.rs\"]\npub mod generated;\n\npub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) + nested_dependency::nested(0) }\n\npub fn unrelated_fixable_warning() -> i32 { (42) }\n\npub const fn constant() -> i32 { 7 }\n\npub extern \"C\" fn exported() -> i32 { 9 }\n\npub struct Service;\n\nimpl Service {\n    pub fn method(&self, value: i32) -> i32 { value * 2 }\n\n    pub async fn asynchronous(&self, value: i32) -> i32 {\n        std::future::ready(()).await;\n        value + 3\n    }\n}\n\npub fn assert_async_future_is_send() {\n    fn require_send<T: Send>(_: T) {}\n    require_send(Service.asynchronous(1));\n}\n",
         );
         let fixture = Self { temp };
         fixture.run_git(&["init"]);
@@ -116,13 +144,27 @@ impl Fixture {
         self.root().join("external-dependency/src/lib.rs")
     }
 
+    fn nested_dependency_source(&self) -> std::path::PathBuf {
+        self.root().join("app/vendor/nested_dep/src/lib.rs")
+    }
+
+    fn outside_source(&self) -> std::path::PathBuf {
+        self.root().join("shared/generated.rs")
+    }
+
     fn run_apply(&self) -> std::process::Output {
         let binary = Path::new(env!("CARGO_BIN_EXE_cargo-instrument-rust"));
         let mut paths = vec![binary.parent().unwrap().to_path_buf()];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let mut command = Command::new("cargo");
         command
-            .args(["instrument-rust", "--apply", "--offline"])
+            .args([
+                "instrument-rust",
+                "--apply",
+                "--package",
+                "app",
+                "--offline",
+            ])
             .current_dir(self.root())
             .env("PATH", std::env::join_paths(paths).unwrap());
         // Local developer images may expose the pinned compiler under the
