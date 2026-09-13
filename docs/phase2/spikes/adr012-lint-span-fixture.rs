@@ -1,3 +1,7 @@
+// HISTORICAL SPIKE FIXTURE — NOT PRODUCTION TEST COVERAGE.
+//
+// Input for `adr012-lint-span-probe.rs`; retained as ADR-012 evidence only.
+
 pub fn plain_sync(a: i32) -> i32 {
     a + 1
 }

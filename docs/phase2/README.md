@@ -1,4 +1,4 @@
-← [Project overview](../../README.md) | [Phase 0 Research](../research/README.md) | [Phase 1 Implementation](../phase1/README.md) | [Phase 2 ADRs (007–012)](decision-records.md)
+← [Project overview](../../README.md) | [Phase 0 Research](../research/README.md) | [Phase 1 Implementation](../phase1/README.md) | [Phase 2 ADRs (007–013)](decision-records.md)
 
 ---
 
@@ -9,7 +9,7 @@
 **Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
 **Phase 2 test suite status:** 11 graph-topology regression tests + 1 105-unit scale test + 5 hybrid coexistence tests added, all passing (176 tests total across the workspace)
-**Architecture decisions:** [ADR-007 … ADR-012](decision-records.md), continuing the frozen Phase 0 numbering
+**Architecture decisions:** [ADR-007 … ADR-013](decision-records.md), continuing the frozen Phase 0 numbering
 
 ---
 

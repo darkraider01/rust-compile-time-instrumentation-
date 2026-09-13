@@ -16,6 +16,7 @@ The format is unchanged: what was chosen, what it was chosen over, what evidence
 | [010](#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry) | Hybrid parenting is delegated to `tracing-opentelemetry`'s context activation | **Accepted** | P2.2 |
 | [011](#adr-011---the-tier-2-c-abi-is-provisional) | The Tier-2 C ABI is provisional, not the intended endpoint | **Accepted, provisional** | P2.2 → P2.4 |
 | [012](#adr-012---hybrid-first-partydependency-instrumentation-architecture) | Hybrid first-party/dependency instrumentation architecture | **Accepted** | P2.2 → P2.3 |
+| [013](#adr-013---p23p24-architecture-freeze-and-cargo-fix-integration) | P2.3/P2.4 architecture freeze and Cargo-fix integration | **Accepted** | P2.3 → P2.4 |
 
 ---
 
@@ -364,9 +365,10 @@ usable for a source-level suggestion:
   `from_expansion = true` that a real lint must skip or it will double-target the same function; and
   impl items are visited twice under the `All` nested filter, so the pass needs deduplication.
 
-**Not proven:** the probe constructs the replacement text and confirms the span is targetable, but
-does not emit an actual `span_suggestion` and round-trip it through `cargo fix` application. That
-last step is the remaining unverified link in the chain.
+**Originally unproven:** the committed probe constructs replacement text but does not emit an
+actual `span_suggestion` or round-trip it through `cargo fix`. That gap was subsequently closed by
+the reproducible temporary-driver experiment recorded in ADR-013; it is not production code, but
+it proves the compiler/Cargo integration contract on Windows.
 
 #### Consequences
 
@@ -379,10 +381,122 @@ last step is the remaining unverified link in the chain.
 #### Revisit if
 
 - ~~The lint-apply path cannot reach `#[async_trait]` bodies, forcing a fallback mechanism on the default path.~~ **Tested 2026-09-10: it can.** Spans survive the proc-macro rewrite.
-- An actual `span_suggestion` + `cargo fix` round-trip fails where the probe suggests it should work. That is the one link in the chain still unproven.
+- A required P2.3 fixture cannot be transformed, applied, and rebuilt under the ADR-013 Cargo-fix arrangement.
 - Upstream Rust stabilizes an official, stable-channel compiler plugin or source-transformation API that unifies both use cases without requiring `rustc_private`.
 - The maintenance burden of tracking internal `rustc_private` compiler changes across Rust releases exceeds team capacity.
 - Community adoption overwhelmingly (>90%) concentrates on one mode, indicating that the secondary mode no longer justifies its ongoing maintenance cost.
+
+---
+
+<a id="adr-013---p23p24-architecture-freeze-and-cargo-fix-integration"></a>
+### ADR-013 - P2.3/P2.4 architecture freeze and Cargo-fix integration
+
+**Status:** Accepted, P2.3 → P2.4. Freezes the implementation boundaries established by ADR-012. A frozen decision may be reopened only under the evidence rule below.
+
+#### Decision
+
+Adopt the following hybrid architecture.
+
+```text
+First-party crate (P2.3)
+  cargo instrument-rust
+  → rustc_driver / HIR frontend
+  → FunctionFacts
+  → shared EligibilityPolicy + SpanSemantics
+  → InstrumentationPlan
+  → MachineApplicable compiler diagnostics
+  → Cargo/Rustfix source edits
+  → committed ordinary Rust source
+  → subsequent stable-Rust builds
+
+Unowned dependency (P2.4 opt-in)
+  Cargo
+  → RUSTC_WRAPPER
+  → classification / SessionPlan
+  → syn frontend
+  → FunctionFacts
+  → shared EligibilityPolicy + SpanSemantics
+  → InstrumentationPlan
+  → isolated mirror + byte splice
+  → rustc
+```
+
+The first-party path is an apply-once source transformation, not a permanent build wrapper. Its driver may require a pinned nightly toolchain plus `rustc-dev`; generated source must compile on normal stable Rust.
+
+The dependency path remains explicit opt-in because dependency source is generally unowned and cannot be persistently rewritten. The existing synchronous C-ABI and `otel-shim` are retained as the proven dependency runtime mechanism.
+
+#### Cargo-fix integration invariant
+
+**The P2.3 driver must not occupy `RUSTC_WRAPPER` during `cargo fix`.** Cargo/Rustfix owns that variable for its diagnostics proxy. The supported arrangement is conceptually:
+
+```text
+cargo fix
+  → Cargo-owned RUSTC_WRAPPER diagnostics proxy
+  → RUSTC = cargo-instrument-rust compiler driver
+  → rustc_driver / HIR lint
+  → MachineApplicable diagnostic
+  → Rustfix edit
+```
+
+The CLI may use another orchestration mechanism with the same ownership property, but it must preserve Cargo's proxy rather than replace it.
+
+#### Executable evidence
+
+A temporary Windows experiment, intentionally outside this repository, used a minimal registered `rustc_lint` late pass. It:
+
+1. discovered user-written HIR bodies for a normal function, `async fn`, and inherent method;
+2. emitted real lint diagnostics with a warning code, primary source span, replacement text, and `Applicability::MachineApplicable`;
+3. compared those JSON fields with the built-in `unused_parens` lint; no incompatible diagnostic property was found;
+4. showed that configuring the driver as `RUSTC_WRAPPER` fails because Cargo replaces it with its own proxy;
+5. configured the driver as `RUSTC`, allowing Cargo's proxy to invoke it; `cargo fix` applied three edits; and
+6. rebuilt the edited temporary crate successfully with stable Rust.
+
+This closes HIR/lint-apply feasibility as an architectural question. It does **not** make P2.3 production-ready: idempotence, eligibility parity, clean-tree safety, formatting, and the full fixture matrix remain implementation gates.
+
+#### Shared-semantics boundary
+
+Neither frontend may independently define instrumentation semantics.
+
+```text
+HIR frontend ─┐
+              ├→ FunctionFacts → EligibilityPolicy → SpanSemantics → InstrumentationPlan
+syn frontend ─┘
+```
+
+The names may evolve, but the separation is fixed. Shared policy owns eligibility, span naming, error/`Result` behavior, explicit-instrumentation precedence, lifecycle semantics, source attributes, and tool ownership/idempotence. HIR owns compiler spans, expansion provenance, DefIds, resolved calls/types, and diagnostics. `syn` owns parsing, byte offsets, recursive source discovery, and mirror edits. Wrapper/session code owns Cargo graph policy, dependency ownership, mirroring, and runtime/linker selection.
+
+#### Idempotence and migration
+
+Persistent edits must be tool-idempotent:
+
+```text
+cargo instrument-rust --apply  → edits eligible source
+cargo instrument-rust --apply  → zero additional edits
+```
+
+The implementation must use an unambiguous ownership marker or equivalent semantic identity; whitespace or generic handwritten-OpenTelemetry detection is insufficient.
+
+The existing first-party wrapper/native path remains a compatibility and reference implementation until the P2.3 fixture matrix demonstrates parity. Only then may first-party wrapper behavior be deliberately narrowed or deprecated. The intended steady state is first-party HIR apply-once plus dependency wrapper/mirror.
+
+#### Intentionally deferred to P2.4
+
+- Whether native `--extern opentelemetry=...` injection is valuable for a restricted dependency subset.
+- Whether the C ABI remains permanent or becomes fallback-only.
+- Async dependency runtime representation, poll-time context attachment, cancellation, and task migration.
+- Stream/Sink instrumentation and `tokio::spawn` propagation.
+- Tracer caching.
+- Final registry/dependency opt-in CLI UX.
+
+#### Architecture-change rule
+
+Do not redesign this architecture for implementation convenience. Reopen a frozen decision only when executable evidence shows one of the following:
+
+1. a required workflow is impossible or unsound;
+2. a correctness defect falsifies a frozen assumption;
+3. new compiler/Cargo behavior makes the integration unmaintainable; or
+4. measurements show an unacceptable correctness or performance cost.
+
+The reproduction or measurement must be recorded, the ADR updated with the falsified assumption, and only then may production architecture change.
 
 ---
 

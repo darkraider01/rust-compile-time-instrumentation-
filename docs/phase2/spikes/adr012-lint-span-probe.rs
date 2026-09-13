@@ -1,3 +1,10 @@
+// HISTORICAL SPIKE — NOT PRODUCTION TOOLING.
+//
+// ADR-012 feasibility evidence for HIR body-span reachability. This standalone
+// probe is not built by the workspace and must not be used as the P2.3 driver.
+// Production architecture and the Cargo-fix integration contract are frozen in
+// ADR-013 (`docs/phase2/decision-records.md`).
+//
 // Minimal rustc driver that inspects every fn body and reports whether its span
 // is usable for a source-level suggestion.
 #![feature(rustc_private)]
