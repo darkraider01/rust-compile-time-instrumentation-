@@ -11,8 +11,8 @@ const MARKER: &str = "/* __cargo_instrument_rust:p23 */";
 /// This is process-level because Cargo must own its rustfix `RUSTC_WRAPPER`
 /// proxy while the custom compiler occupies `RUSTC`.
 #[test]
-#[ignore = "requires nightly rustc-dev and the cached OpenTelemetry dependency"]
-fn apply_round_trip_edits_only_owned_source_and_rebuilds_on_stable() {
+#[ignore = "requires the pinned P2.3 nightly toolchain and rustc-dev"]
+fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     let fixture = Fixture::new();
     let original = fs::read_to_string(fixture.app_source()).unwrap();
     let dependency_before = fs::read_to_string(fixture.dependency_source()).unwrap();
@@ -24,8 +24,29 @@ fn apply_round_trip_edits_only_owned_source_and_rebuilds_on_stable() {
     assert_ne!(edited, original, "cargo fix output:\n{first:?}");
     assert_eq!(
         edited.matches(MARKER).count(),
-        3,
+        5,
         "edited source:\n{edited}"
+    );
+    assert!(
+        edited.contains("(42)"),
+        "unrelated Rustfix edit leaked:\n{edited}"
+    );
+    assert!(edited.contains("pub const fn constant() -> i32 { 7 }"));
+    assert!(edited.contains("pub extern \"C\" fn exported() -> i32 { 9 }"));
+    let asynchronous = edited
+        .split("pub async fn asynchronous")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("\n}\n}\n\npub fn assert_async_future_is_send")
+                .next()
+        })
+        .expect("instrumented async method body");
+    assert!(asynchronous.contains("FutureExt::with_context(async move"));
+    assert!(asynchronous.contains("std::future::ready(()).await"));
+    assert!(
+        !asynchronous.contains("_cargo_instrument_rust_guard"),
+        "an async context guard must not cross await:\n{asynchronous}"
     );
     assert_eq!(
         fs::read_to_string(fixture.dependency_source()).unwrap(),
@@ -74,7 +95,7 @@ impl Fixture {
         );
         write(
             &temp.path().join("app/src/lib.rs"),
-            "pub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) }\n\npub struct Service;\n\nimpl Service {\n    pub fn method(&self, value: i32) -> i32 { value * 2 }\n\n    pub async fn asynchronous(&self, value: i32) -> i32 { value + 3 }\n}\n",
+            "pub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) }\n\npub fn unrelated_fixable_warning() -> i32 { (42) }\n\npub const fn constant() -> i32 { 7 }\n\npub extern \"C\" fn exported() -> i32 { 9 }\n\npub struct Service;\n\nimpl Service {\n    pub fn method(&self, value: i32) -> i32 { value * 2 }\n\n    pub async fn asynchronous(&self, value: i32) -> i32 {\n        std::future::ready(()).await;\n        value + 3\n    }\n}\n\npub fn assert_async_future_is_send() {\n    fn require_send<T: Send>(_: T) {}\n    require_send(Service.asynchronous(1));\n}\n",
         );
         let fixture = Self { temp };
         fixture.run_git(&["init"]);
@@ -96,11 +117,20 @@ impl Fixture {
     }
 
     fn run_apply(&self) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_cargo-instrument-rust"))
-            .args(["--apply", "--offline"])
+        let binary = Path::new(env!("CARGO_BIN_EXE_cargo-instrument-rust"));
+        let mut paths = vec![binary.parent().unwrap().to_path_buf()];
+        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+        let mut command = Command::new("cargo");
+        command
+            .args(["instrument-rust", "--apply", "--offline"])
             .current_dir(self.root())
-            .output()
-            .unwrap()
+            .env("PATH", std::env::join_paths(paths).unwrap());
+        // Local developer images may expose the pinned compiler under the
+        // rolling `nightly` alias. CI deliberately leaves this unset.
+        if let Ok(toolchain) = std::env::var("P23_TEST_TOOLCHAIN") {
+            command.env("CARGO_INSTRUMENT_RUST_TOOLCHAIN", toolchain);
+        }
+        command.output().unwrap()
     }
 
     fn stable_check(&self) {
