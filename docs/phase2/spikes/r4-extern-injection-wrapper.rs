@@ -1,3 +1,9 @@
+// HISTORICAL SPIKE — NOT PRODUCTION TOOLING.
+//
+// ADR-011/P2.4 evidence for `--extern` artifact-ordering investigation. This
+// standalone wrapper is not built by the workspace and does not establish a
+// supported dependency-instrumentation implementation.
+//
 // Discovers the rlib at the moment dep_lib compiles, as the real tool would have to.
 use std::env;
 use std::fs;
