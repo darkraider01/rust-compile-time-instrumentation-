@@ -1,0 +1,10 @@
+[package]
+name = "cargo-instrument-rust-driver"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+instrument-semantics = { path = "../../instrument-semantics" }
+
+[workspace]
