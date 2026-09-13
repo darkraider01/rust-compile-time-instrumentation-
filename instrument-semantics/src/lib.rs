@@ -8,6 +8,7 @@ pub const P23_MARKER: &str = "/* __cargo_instrument_rust:p23 */";
 pub enum FunctionShape {
     FreeFunction,
     InherentMethod,
+    NestedLocalFunction,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -18,6 +19,7 @@ pub struct FunctionFacts {
     pub is_async: bool,
     pub first_party: bool,
     pub already_instrumented: bool,
+    pub has_explicit_instrumentation: bool,
     pub has_opentelemetry: bool,
 }
 
@@ -25,6 +27,8 @@ pub struct FunctionFacts {
 pub enum Ineligibility {
     NotFirstParty,
     AlreadyInstrumented,
+    ExplicitlyInstrumented,
+    NestedLocalFunctionExcluded,
     UnsupportedFunctionShape,
     MissingOpenTelemetryDependency,
 }
@@ -58,6 +62,12 @@ impl EligibilityPolicy {
         }
         if facts.already_instrumented {
             return Err(Ineligibility::AlreadyInstrumented);
+        }
+        if facts.has_explicit_instrumentation {
+            return Err(Ineligibility::ExplicitlyInstrumented);
+        }
+        if facts.shape == FunctionShape::NestedLocalFunction {
+            return Err(Ineligibility::NestedLocalFunctionExcluded);
         }
         if !facts.has_opentelemetry {
             return Err(Ineligibility::MissingOpenTelemetryDependency);
@@ -96,6 +106,7 @@ mod tests {
             is_async: false,
             first_party: true,
             already_instrumented: false,
+            has_explicit_instrumentation: false,
             has_opentelemetry: true,
         }
     }
@@ -115,6 +126,37 @@ mod tests {
         assert_eq!(
             EligibilityPolicy::plan(&facts),
             Err(Ineligibility::AlreadyInstrumented)
+        );
+    }
+
+    #[test]
+    fn explicit_instrumentation_makes_an_edit_ineligible() {
+        let mut facts = facts();
+        facts.has_explicit_instrumentation = true;
+        assert_eq!(
+            EligibilityPolicy::plan(&facts),
+            Err(Ineligibility::ExplicitlyInstrumented)
+        );
+    }
+
+    #[test]
+    fn nested_local_function_is_intentionally_excluded() {
+        let mut facts = facts();
+        facts.shape = FunctionShape::NestedLocalFunction;
+        assert_eq!(
+            EligibilityPolicy::plan(&facts),
+            Err(Ineligibility::NestedLocalFunctionExcluded)
+        );
+    }
+
+    #[test]
+    fn nested_local_async_function_is_intentionally_excluded() {
+        let mut facts = facts();
+        facts.shape = FunctionShape::NestedLocalFunction;
+        facts.is_async = true;
+        assert_eq!(
+            EligibilityPolicy::plan(&facts),
+            Err(Ineligibility::NestedLocalFunctionExcluded)
         );
     }
 

@@ -1,5 +1,6 @@
 #![feature(rustc_private)]
 
+extern crate rustc_ast;
 extern crate rustc_driver;
 extern crate rustc_errors;
 extern crate rustc_hir;
@@ -57,6 +58,7 @@ struct SelectedPackage {
 struct P23Visitor<'tcx> {
     tcx: TyCtxt<'tcx>,
     config: DriverConfig,
+    visited: std::collections::HashSet<rustc_hir::def_id::LocalDefId>,
 }
 
 impl<'tcx> Visitor<'tcx> for P23Visitor<'tcx> {
@@ -82,12 +84,15 @@ impl<'tcx> Visitor<'tcx> for P23Visitor<'tcx> {
 
 impl<'tcx> P23Visitor<'tcx> {
     fn check_function(
-        &self,
+        &mut self,
         kind: FnKind<'tcx>,
         body: &'tcx rustc_hir::Body<'tcx>,
         span: Span,
         def_id: rustc_hir::def_id::LocalDefId,
     ) {
+        if !self.visited.insert(def_id) {
+            return;
+        }
         let body_span = body.value.span;
         if span.from_expansion()
             || body_span.from_expansion()
@@ -98,20 +103,25 @@ impl<'tcx> P23Visitor<'tcx> {
         {
             return;
         }
-        let shape = match kind {
-            FnKind::ItemFn(..) => FunctionShape::FreeFunction,
-            FnKind::Method(..) => {
-                let hir_id = self.tcx.local_def_id_to_hir_id(def_id);
-                let parent = self.tcx.hir_get_parent_item(hir_id).def_id;
-                let ItemKind::Impl(implementation) = self.tcx.hir_expect_item(parent).kind else {
-                    return;
-                };
-                if implementation.of_trait.is_some() {
-                    return;
+        let shape = if is_nested_function(self.tcx, def_id) {
+            FunctionShape::NestedLocalFunction
+        } else {
+            match kind {
+                FnKind::ItemFn(..) => FunctionShape::FreeFunction,
+                FnKind::Method(..) => {
+                    let hir_id = self.tcx.local_def_id_to_hir_id(def_id);
+                    let parent = self.tcx.hir_get_parent_item(hir_id).def_id;
+                    let ItemKind::Impl(implementation) = self.tcx.hir_expect_item(parent).kind
+                    else {
+                        return;
+                    };
+                    if implementation.of_trait.is_some() {
+                        return;
+                    }
+                    FunctionShape::InherentMethod
                 }
-                FunctionShape::InherentMethod
+                FnKind::Closure => return,
             }
-            FnKind::Closure => return,
         };
         let source_map = self.tcx.sess.source_map();
         let Some(file_name) = source_map.span_to_filename(body_span).into_local_path() else {
@@ -128,6 +138,7 @@ impl<'tcx> P23Visitor<'tcx> {
         let Ok(original) = source_map.span_to_snippet(body_span) else {
             return;
         };
+        let hir_id = self.tcx.local_def_id_to_hir_id(def_id);
         let facts = FunctionFacts {
             function_name: self.tcx.item_name(def_id.to_def_id()).to_string(),
             crate_name: self.config.crate_name.clone(),
@@ -135,6 +146,9 @@ impl<'tcx> P23Visitor<'tcx> {
             is_async: kind.asyncness().is_async(),
             first_party: true,
             already_instrumented: original.contains(P23_MARKER),
+            has_explicit_instrumentation: has_explicit_instrumentation(
+                self.tcx, hir_id, body, &original,
+            ),
             has_opentelemetry: self.config.has_opentelemetry,
         };
         let Ok(plan) = EligibilityPolicy::plan(&facts) else {
@@ -156,6 +170,89 @@ impl<'tcx> P23Visitor<'tcx> {
             }),
         );
     }
+}
+
+fn has_explicit_instrumentation<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    hir_id: rustc_hir::HirId,
+    body: &rustc_hir::Body<'tcx>,
+    original: &str,
+) -> bool {
+    // 1. Direct item attributes (inert/unexpanded, e.g. #[instrument], #[instrument_span], #[propagate_context])
+    let attrs = tcx.hir_attrs(hir_id);
+    for attr in attrs {
+        if let Some(last) = attr.path().last() {
+            let s = last.as_str();
+            if matches!(s, "instrument" | "instrument_span" | "propagate_context") {
+                return true;
+            }
+        }
+    }
+
+    // 2. Procedural macro expansions inside the body (e.g. #[tracing::instrument])
+    struct MacroFinder<'tcx> {
+        tcx: TyCtxt<'tcx>,
+        found: bool,
+    }
+    impl<'tcx> intravisit::Visitor<'tcx> for MacroFinder<'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::All;
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+        fn visit_expr(&mut self, ex: &'tcx rustc_hir::Expr<'tcx>) {
+            if self.found {
+                return;
+            }
+            let data = ex.span.ctxt().outer_expn_data();
+            if let rustc_span::hygiene::ExpnKind::Macro(rustc_span::hygiene::MacroKind::Attr, sym) =
+                data.kind
+            {
+                let s = sym.as_str();
+                if s.ends_with("instrument")
+                    || s.ends_with("propagate_context")
+                    || s.ends_with("instrument_span")
+                {
+                    self.found = true;
+                    return;
+                }
+            }
+            intravisit::walk_expr(self, ex);
+        }
+        fn visit_stmt(&mut self, stmt: &'tcx rustc_hir::Stmt<'tcx>) {
+            if self.found {
+                return;
+            }
+            let data = stmt.span.ctxt().outer_expn_data();
+            if let rustc_span::hygiene::ExpnKind::Macro(rustc_span::hygiene::MacroKind::Attr, sym) =
+                data.kind
+            {
+                let s = sym.as_str();
+                if s.ends_with("instrument")
+                    || s.ends_with("propagate_context")
+                    || s.ends_with("instrument_span")
+                {
+                    self.found = true;
+                    return;
+                }
+            }
+            intravisit::walk_stmt(self, stmt);
+        }
+    }
+    let mut finder = MacroFinder { tcx, found: false };
+    intravisit::walk_body(&mut finder, body);
+    if finder.found {
+        return true;
+    }
+
+    // 3. Hand-written OpenTelemetry span creation or attachment in body (R10 / ADR-009 parity)
+    if original.contains("__otel_")
+        || original.contains("tracer.start")
+        || original.contains("FutureExt::with_context")
+    {
+        return true;
+    }
+
+    false
 }
 
 fn selected_package_for_current_compilation(
@@ -181,6 +278,27 @@ fn is_owned_source(source: &Path, package: &SelectedPackage) -> bool {
         .is_some_and(|extension| extension == "rs")
         && source.file_name().is_none_or(|name| name != "build.rs")
         && canonical_source.starts_with(canonical_root)
+}
+
+fn is_nested_function(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) -> bool {
+    let hir_id = tcx.local_def_id_to_hir_id(def_id);
+    let mut current = hir_id;
+    loop {
+        let parent = tcx.hir_get_parent_item(current);
+        if parent.def_id == rustc_span::def_id::CRATE_DEF_ID
+            || parent.def_id == current.owner.def_id
+        {
+            return false;
+        }
+        match tcx.def_kind(parent.def_id) {
+            rustc_hir::def::DefKind::Fn
+            | rustc_hir::def::DefKind::AssocFn
+            | rustc_hir::def::DefKind::Closure => return true,
+            _ => {
+                current = tcx.local_def_id_to_hir_id(parent.def_id);
+            }
+        }
+    }
 }
 
 fn instrument_body(original: &str, plan: &InstrumentationPlan) -> String {
@@ -228,6 +346,7 @@ impl rustc_driver::Callbacks for P23Callbacks {
             tcx.hir_visit_all_item_likes_in_crate(&mut P23Visitor {
                 tcx,
                 config: self.config.clone(),
+                visited: std::collections::HashSet::new(),
             });
         }
         rustc_driver::Compilation::Continue
