@@ -1,0 +1,46 @@
+name: P2.3 HIR Apply
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  p23-apply:
+    name: Pinned nightly HIR apply proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust for the workspace fixture rebuild
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install the pinned P2.3 compiler driver toolchain
+        shell: bash
+        run: |
+          toolchain="$(tr -d '\r\n' < tools/p23-toolchain.txt)"
+          rustup toolchain install "$toolchain" --profile minimal
+          rustup component add --toolchain "$toolchain" rustc-dev rust-src llvm-tools-preview
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: p23-hir-apply
+
+      - name: Prefetch fixture dependencies
+        run: cargo +stable fetch
+
+      - name: Build isolated pinned-nightly driver
+        shell: bash
+        run: |
+          toolchain="$(tr -d '\r\n' < tools/p23-toolchain.txt)"
+          cargo +"$toolchain" build --manifest-path tools/cargo-instrument-rust-driver/Cargo.toml
+
+      - name: Prove real Cargo subcommand apply round trip
+        run: cargo +stable test -p cargo-instrument --test p23_apply_tests -- --ignored --nocapture
