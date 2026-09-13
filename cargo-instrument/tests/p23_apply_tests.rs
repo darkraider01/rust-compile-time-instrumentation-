@@ -94,7 +94,7 @@ impl Fixture {
         );
         write(
             &temp.path().join(".cargo/config.toml"),
-            "[build]\nrustflags = [\"--cfg\", \"p23_fixture_cfg\"]\n",
+            "[build]\nrustflags = [\"--cfg\", \"p23_fixture_cfg\", \"--force-warn=unused-parens\"]\n",
         );
         write(&temp.path().join(".gitignore"), "/target\n");
         write(

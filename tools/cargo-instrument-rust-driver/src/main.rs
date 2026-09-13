@@ -117,7 +117,8 @@ impl<'tcx> P23Visitor<'tcx> {
         let Some(file_name) = source_map.span_to_filename(body_span).into_local_path() else {
             return;
         };
-        let Some(package) = selected_package_for_current_compilation(&self.config.selected_packages)
+        let Some(package) =
+            selected_package_for_current_compilation(&self.config.selected_packages)
         else {
             return;
         };
@@ -145,13 +146,13 @@ impl<'tcx> P23Visitor<'tcx> {
             hir_id,
             body_span,
             rustc_errors::DiagDecorator(|diagnostic: &mut rustc_errors::Diag<'_, ()>| {
-            diagnostic.primary_message("p2.3 first-party instrumentation is available");
-            diagnostic.span_suggestion(
-                body_span,
-                "insert an idempotent OpenTelemetry instrumentation block",
-                instrument_body(&original, &plan),
-                Applicability::MachineApplicable,
-            );
+                diagnostic.primary_message("p2.3 first-party instrumentation is available");
+                diagnostic.span_suggestion(
+                    body_span,
+                    "insert an idempotent OpenTelemetry instrumentation block",
+                    instrument_body(&original, &plan),
+                    Applicability::MachineApplicable,
+                );
             }),
         );
     }
@@ -248,7 +249,7 @@ fn main() {
             args.push(sysroot);
         }
     }
-    replace_lint_cap(&mut args);
+    normalize_lint_controls(&mut args);
     // These are driver arguments, not Cargo rustflags. Ordinary diagnostics
     // are capped while this registered lint is force-warned for rustfix.
     args.push("--cap-lints=allow".into());
@@ -264,13 +265,15 @@ fn main() {
     rustc_driver::run_compiler(&args, &mut P23Callbacks { config });
 }
 
-fn replace_lint_cap(args: &mut Vec<String>) {
-    let mut filtered = Vec::with_capacity(args.len() + 1);
+fn normalize_lint_controls(args: &mut Vec<String>) {
+    let mut filtered = Vec::with_capacity(args.len() + 2);
     let mut index = 0;
     while index < args.len() {
-        if args[index] == "--cap-lints" {
-            index += 2;
-        } else if args[index].starts_with("--cap-lints=") {
+        if args[index] == "--cap-lints" || args[index] == "--force-warn" {
+            index += if index + 1 < args.len() { 2 } else { 1 };
+        } else if args[index].starts_with("--cap-lints=")
+            || args[index].starts_with("--force-warn=")
+        {
             index += 1;
         } else {
             filtered.push(args[index].clone());
@@ -309,7 +312,7 @@ fn crate_name(args: &[String]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_opentelemetry_extern, replace_lint_cap};
+    use super::{has_opentelemetry_extern, normalize_lint_controls};
 
     fn args(arguments: &[&str]) -> Vec<String> {
         arguments.iter().map(ToString::to_string).collect()
@@ -331,15 +334,32 @@ mod tests {
     }
 
     #[test]
-    fn replaces_existing_lint_caps_with_the_drivers_cap() {
+    fn removes_existing_lint_caps_and_force_warns_while_preserving_build_flags() {
         let mut arguments = args(&[
             "rustc",
             "--cap-lints",
             "warn",
             "--cap-lints=deny",
+            "--force-warn",
+            "unused-parens",
+            "--force-warn=dead-code",
+            "--cfg",
+            "p23_fixture_cfg",
+            "-C",
+            "opt-level=2",
             "fixture.rs",
         ]);
-        replace_lint_cap(&mut arguments);
-        assert_eq!(arguments, args(&["rustc", "fixture.rs"]));
+        normalize_lint_controls(&mut arguments);
+        assert_eq!(
+            arguments,
+            args(&[
+                "rustc",
+                "--cfg",
+                "p23_fixture_cfg",
+                "-C",
+                "opt-level=2",
+                "fixture.rs"
+            ])
+        );
     }
 }

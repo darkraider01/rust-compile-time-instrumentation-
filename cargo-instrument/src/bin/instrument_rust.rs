@@ -32,7 +32,11 @@ fn run() -> Result<(), String> {
     let toolchain = p23_toolchain();
     let driver = build_driver(options.offline, &toolchain)?;
     let sysroot = nightly_sysroot(&toolchain)?;
-    let driver_path = driver_library_path(&sysroot)?;
+    let driver_path = driver_bin_path(&sysroot)?;
+    let driver_ld_path = driver_dynamic_library_path(&sysroot, "LD_LIBRARY_PATH")?;
+    let driver_dyld_fallback_path =
+        driver_dynamic_library_path(&sysroot, "DYLD_FALLBACK_LIBRARY_PATH")?;
+    let driver_dyld_path = driver_dynamic_library_path(&sysroot, "DYLD_LIBRARY_PATH")?;
 
     let mut command = Command::new(cargo_executable());
     // Cargo checks for VCS below each package root. A virtual workspace may
@@ -56,8 +60,11 @@ fn run() -> Result<(), String> {
             serde_json::to_string(&selected_packages)
                 .map_err(|error| format!("could not encode selected packages: {error}"))?,
         )
-        .env("CARGO_INSTRUMENT_RUST_SYSROOT", sysroot)
-        .env("PATH", driver_path);
+        .env("CARGO_INSTRUMENT_RUST_SYSROOT", &sysroot)
+        .env("PATH", driver_path)
+        .env("LD_LIBRARY_PATH", driver_ld_path)
+        .env("DYLD_FALLBACK_LIBRARY_PATH", driver_dyld_fallback_path)
+        .env("DYLD_LIBRARY_PATH", driver_dyld_path);
     // Deliberately leave RUSTC_WRAPPER alone: Cargo installs its rustfix proxy.
     run_status(&mut command, "cargo fix")
 }
@@ -255,12 +262,38 @@ fn p23_toolchain() -> String {
         .unwrap_or_else(|_| PINNED_P23_TOOLCHAIN.trim().to_owned())
 }
 
-fn driver_library_path(sysroot: &OsString) -> Result<OsString, String> {
-    let mut paths = vec![PathBuf::from(sysroot).join("bin")];
+fn driver_bin_path(sysroot: &OsString) -> Result<OsString, String> {
+    let mut paths = vec![
+        PathBuf::from(sysroot).join("bin"),
+        PathBuf::from(sysroot).join("lib"),
+    ];
     if let Some(existing) = env::var_os("PATH") {
         paths.extend(env::split_paths(&existing));
     }
     env::join_paths(paths).map_err(|error| format!("could not construct driver PATH: {error}"))
+}
+
+fn driver_dylib_search_paths(sysroot: &OsString) -> Vec<PathBuf> {
+    let sysroot_lib = PathBuf::from(sysroot).join("lib");
+    let mut paths = vec![sysroot_lib.clone()];
+    if let Ok(entries) = std::fs::read_dir(sysroot_lib.join("rustlib")) {
+        for entry in entries.flatten() {
+            let target_lib = entry.path().join("lib");
+            if target_lib.is_dir() {
+                paths.push(target_lib);
+            }
+        }
+    }
+    paths
+}
+
+fn driver_dynamic_library_path(sysroot: &OsString, var_name: &str) -> Result<OsString, String> {
+    let mut paths = driver_dylib_search_paths(sysroot);
+    if let Some(existing) = env::var_os(var_name) {
+        paths.extend(env::split_paths(&existing));
+    }
+    env::join_paths(paths)
+        .map_err(|error| format!("could not construct driver {var_name}: {error}"))
 }
 
 fn driver_manifest_path() -> Result<PathBuf, String> {
@@ -285,7 +318,9 @@ fn run_status(command: &mut Command, description: &str) -> Result<(), String> {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{cargo_executable_from, Options};
+    use super::{
+        cargo_executable_from, driver_dylib_search_paths, driver_dynamic_library_path, Options,
+    };
 
     #[test]
     fn accepts_direct_binary_invocation() {
@@ -310,5 +345,35 @@ mod tests {
             OsString::from("custom-cargo")
         );
         assert_eq!(cargo_executable_from(None), OsString::from("cargo"));
+    }
+
+    #[test]
+    fn driver_dylib_search_paths_includes_sysroot_lib_and_rustlib_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let sysroot = temp.path();
+        let lib = sysroot.join("lib");
+        let target_lib = lib.join("rustlib/x86_64-unknown-linux-gnu/lib");
+        std::fs::create_dir_all(&target_lib).unwrap();
+
+        let paths = driver_dylib_search_paths(&sysroot.as_os_str().to_os_string());
+        assert!(paths.contains(&lib));
+        assert!(paths.contains(&target_lib));
+    }
+
+    #[test]
+    fn driver_dynamic_library_path_prepends_to_existing_env() {
+        let temp = tempfile::tempdir().unwrap();
+        let sysroot = temp.path();
+        let lib = sysroot.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+
+        let joined = driver_dynamic_library_path(
+            &sysroot.as_os_str().to_os_string(),
+            "NONEXISTENT_TEST_DYLIB_VAR",
+        )
+        .unwrap();
+        assert!(joined
+            .to_string_lossy()
+            .contains(&lib.to_string_lossy().to_string()));
     }
 }
