@@ -36,11 +36,11 @@ jobs:
       - name: Prefetch fixture dependencies
         run: cargo +stable fetch
 
-      - name: Build isolated pinned-nightly driver
+      - name: Test isolated pinned-nightly driver
         shell: bash
         run: |
           toolchain="$(tr -d '\r\n' < tools/p23-toolchain.txt)"
-          cargo +"$toolchain" build --manifest-path tools/cargo-instrument-rust-driver/Cargo.toml
+          cargo +"$toolchain" test --manifest-path tools/cargo-instrument-rust-driver/Cargo.toml
 
       - name: Prove real Cargo subcommand apply round trip
         run: cargo +stable test -p cargo-instrument --test p23_apply_tests -- --ignored --nocapture
