@@ -19,6 +19,8 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     let nested_dependency_before = fs::read_to_string(fixture.nested_dependency_source()).unwrap();
     let outside_source_before = fs::read_to_string(fixture.outside_source()).unwrap();
 
+    fixture.stable_check();
+
     let first = fixture.run_apply();
     eprintln!("FIRST STDERR:\n{}", String::from_utf8_lossy(&first.stderr));
     assert!(first.status.success(), "first apply failed:\n{first:?}");
@@ -331,7 +333,7 @@ impl Fixture {
             &temp.path().join(".cargo/config.toml"),
             "[build]\nrustflags = [\"--cfg\", \"p23_fixture_cfg\", \"--force-warn=unused-parens\"]\nrustdocflags = [\"--cfg\", \"p23_fixture_cfg\"]\n",
         );
-        write(&temp.path().join(".gitignore"), "/target\n");
+        write(&temp.path().join(".gitignore"), "/target\nCargo.lock\n");
         write(
             &temp.path().join("external-dependency/Cargo.toml"),
             "[package]\nname = \"external-dependency\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
