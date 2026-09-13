@@ -26,7 +26,7 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     assert_ne!(edited, original, "cargo fix output:\n{first:?}");
     assert_eq!(
         edited.matches(MARKER).count(),
-        5,
+        7,
         "edited source:\n{edited}"
     );
     assert!(
@@ -35,6 +35,44 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     );
     assert!(edited.contains("pub const fn constant() -> i32 { 7 }"));
     assert!(edited.contains("pub extern \"C\" fn exported() -> i32 { 9 }"));
+
+    // Explicit user instrumentation precedence: no duplicate markers on traced functions
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"traced\")"),
+        "traced() should not receive a P2.3 marker:\n{edited}"
+    );
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"traced_async\")"),
+        "traced_async() should not receive a P2.3 marker:\n{edited}"
+    );
+    assert!(
+        edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"ordinary_neighbor\")"),
+        "ordinary_neighbor() adjacent to traced functions should be instrumented:\n{edited}"
+    );
+
+    // Nested local functions are intentionally excluded to maintain parity and prevent overlapping edits
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"inner_local\")"),
+        "nested inner_local() should not receive a P2.3 marker:\n{edited}"
+    );
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"inner_local_async\")"),
+        "nested inner_local_async() should not receive a P2.3 marker:\n{edited}"
+    );
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"require_send\")"),
+        "nested require_send() should not receive a P2.3 marker:\n{edited}"
+    );
+    assert!(
+        edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"outer_with_nested\")"),
+        "outer_with_nested() should be instrumented once:\n{edited}"
+    );
+    assert!(
+        edited.contains(
+            "Tracer::start(&__cargo_instrument_rust_tracer, \"assert_async_future_is_send\")"
+        ),
+        "assert_async_future_is_send() should be instrumented once:\n{edited}"
+    );
     let asynchronous = edited
         .split("pub async fn asynchronous")
         .nth(1)
@@ -119,11 +157,11 @@ impl Fixture {
         );
         write(
             &temp.path().join("app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nnested-dependency = { path = \"vendor/nested_dep\" }\nopentelemetry = \"0.32.0\"\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nnested-dependency = { path = \"vendor/nested_dep\" }\nopentelemetry = \"0.32.0\"\ntracing = { version = \"0.1\", features = [\"attributes\"] }\n",
         );
         write(
             &temp.path().join("app/src/lib.rs"),
-            "#[cfg(not(p23_fixture_cfg))]\ncompile_error!(\"the fixture Cargo rustflags must remain active\");\n\n#[path = \"../../shared/generated.rs\"]\npub mod generated;\n\npub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) + nested_dependency::nested(0) }\n\npub fn unrelated_fixable_warning() -> i32 { (42) }\n\npub const fn constant() -> i32 { 7 }\n\npub extern \"C\" fn exported() -> i32 { 9 }\n\npub struct Service;\n\nimpl Service {\n    pub fn method(&self, value: i32) -> i32 { value * 2 }\n\n    pub async fn asynchronous(&self, value: i32) -> i32 {\n        std::future::ready(()).await;\n        value + 3\n    }\n}\n\npub fn assert_async_future_is_send() {\n    fn require_send<T: Send>(_: T) {}\n    require_send(Service.asynchronous(1));\n}\n",
+            "#[cfg(not(p23_fixture_cfg))]\ncompile_error!(\"the fixture Cargo rustflags must remain active\");\n\n#[path = \"../../shared/generated.rs\"]\npub mod generated;\n\npub fn sync(value: i32) -> i32 { external_dependency::plus_one(value) + nested_dependency::nested(0) }\n\npub fn unrelated_fixable_warning() -> i32 { (42) }\n\npub const fn constant() -> i32 { 7 }\n\npub extern \"C\" fn exported() -> i32 { 9 }\n\n#[tracing::instrument]\npub fn traced() -> i32 { 10 }\n\n#[tracing::instrument]\npub async fn traced_async() -> i32 {\n    std::future::ready(()).await;\n    20\n}\n\npub fn ordinary_neighbor(value: i32) -> i32 {\n    value + 5\n}\n\npub fn outer_with_nested() -> i32 {\n    fn inner_local(value: i32) -> i32 {\n        value + 1\n    }\n    async fn inner_local_async() {\n        std::future::ready(()).await;\n    }\n    let _ = inner_local_async();\n    inner_local(41)\n}\n\npub struct Service;\n\nimpl Service {\n    pub fn method(&self, value: i32) -> i32 { value * 2 }\n\n    pub async fn asynchronous(&self, value: i32) -> i32 {\n        std::future::ready(()).await;\n        value + 3\n    }\n}\n\npub fn assert_async_future_is_send() {\n    fn require_send<T: Send>(_: T) {}\n    require_send(Service.asynchronous(1));\n}\n",
         );
         let fixture = Self { temp };
         fixture.run_git(&["init"]);
