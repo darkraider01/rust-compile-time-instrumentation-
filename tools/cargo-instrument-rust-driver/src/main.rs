@@ -77,7 +77,7 @@ impl<'tcx> Visitor<'tcx> for P23Visitor<'tcx> {
         def_id: rustc_hir::def_id::LocalDefId,
     ) {
         let body = self.tcx.hir_body(body_id);
-        self.check_function(kind, body, span, def_id);
+        self.check_function(kind, decl, body, span, def_id);
         intravisit::walk_fn(self, kind, decl, body_id, def_id);
     }
 }
@@ -86,6 +86,7 @@ impl<'tcx> P23Visitor<'tcx> {
     fn check_function(
         &mut self,
         kind: FnKind<'tcx>,
+        decl: &'tcx FnDecl<'tcx>,
         body: &'tcx rustc_hir::Body<'tcx>,
         span: Span,
         def_id: rustc_hir::def_id::LocalDefId,
@@ -139,11 +140,14 @@ impl<'tcx> P23Visitor<'tcx> {
             return;
         };
         let hir_id = self.tcx.local_def_id_to_hir_id(def_id);
+        let is_async = kind.asyncness().is_async();
         let facts = FunctionFacts {
             function_name: self.tcx.item_name(def_id.to_def_id()).to_string(),
             crate_name: self.config.crate_name.clone(),
             shape,
-            is_async: kind.asyncness().is_async(),
+            is_async,
+            returns_result: check_returns_result(self.tcx, def_id, decl, is_async),
+            is_directly_recursive: check_is_directly_recursive(self.tcx, def_id, body),
             first_party: true,
             already_instrumented: original.contains(P23_MARKER),
             has_explicit_instrumentation: has_explicit_instrumentation(
@@ -301,6 +305,176 @@ fn is_nested_function(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) ->
     }
 }
 
+/// Semantic Result detection: resolves the declared return type through rustc type information.
+/// For an ADT, identifies standard `core::result::Result` using rustc diagnostic-item identity (`sym::Result`),
+/// naturally handling aliases (`std::io::Result<T>`) while avoiding false positives from custom types named `Result`.
+/// Sync functions returning non-static or mutable references fall back to prefix-only instrumentation (§16.10 / C1),
+/// whereas async Result functions remain eligible because they use the Future lifecycle rather than a closure.
+fn check_returns_result<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: rustc_hir::def_id::LocalDefId,
+    decl: &'tcx rustc_hir::FnDecl<'tcx>,
+    is_async: bool,
+) -> bool {
+    let rustc_hir::FnRetTy::Return(mut hir_ty) = decl.output else {
+        return false;
+    };
+
+    // For async fn, the declared return type in decl.output is an OpaqueDef (impl Future<Output = T>).
+    // Extract the inner Output type from the future bounds.
+    if let rustc_hir::TyKind::OpaqueDef(ref opaque_ty) = hir_ty.kind {
+        for bound in opaque_ty.bounds {
+            if let rustc_hir::GenericBound::Trait(ref poly_trait_ref) = bound {
+                for segment in poly_trait_ref.trait_ref.path.segments {
+                    if let Some(args) = segment.args {
+                        for constraint in args.constraints {
+                            if constraint.ident.as_str() == "Output" {
+                                if let rustc_hir::AssocItemConstraintKind::Equality {
+                                    term: rustc_hir::Term::Ty(inner_ty),
+                                } = constraint.kind
+                                {
+                                    hir_ty = inner_ty;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let typeck = tcx.typeck(def_id);
+    let is_result = if let rustc_hir::TyKind::Path(ref qpath) = hir_ty.kind {
+        let res = match qpath {
+            rustc_hir::QPath::Resolved(_, path) => path.res,
+            rustc_hir::QPath::TypeRelative(..) => typeck.qpath_res(qpath, hir_ty.hir_id),
+        };
+        match res {
+            rustc_hir::def::Res::Def(rustc_hir::def::DefKind::Enum, did) => {
+                tcx.is_diagnostic_item(rustc_span::symbol::sym::Result, did)
+            }
+            rustc_hir::def::Res::Def(rustc_hir::def::DefKind::TyAlias, alias_did) => {
+                let aliased = tcx.type_of(alias_did).skip_binder();
+                is_diagnostic_result(tcx, aliased)
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
+
+    if !is_result {
+        return false;
+    }
+
+    if !is_async {
+        let fn_sig = tcx
+            .fn_sig(def_id.to_def_id())
+            .instantiate_identity()
+            .skip_binder();
+        let output_ty = fn_sig.output();
+        if sync_closure_ineligible_for_references(output_ty) {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn is_diagnostic_result<'tcx>(tcx: TyCtxt<'tcx>, ty: rustc_middle::ty::Ty<'tcx>) -> bool {
+    match ty.kind() {
+        rustc_middle::ty::TyKind::Adt(def, _) => {
+            tcx.is_diagnostic_item(rustc_span::symbol::sym::Result, def.did())
+        }
+        _ => false,
+    }
+}
+
+fn sync_closure_ineligible_for_references<'tcx>(ty: rustc_middle::ty::Ty<'tcx>) -> bool {
+    for arg in ty.walk() {
+        if let Some(t) = arg.as_type() {
+            if let rustc_middle::ty::TyKind::Ref(region, _, mutability) = t.kind() {
+                if mutability.is_mut() || !region.is_static() {
+                    return true;
+                }
+            }
+        }
+        if let Some(region) = arg.as_region() {
+            if !region.is_static() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Direct self-recursion exclusion parity (§12.3): direct self-recursive functions are excluded
+/// to prevent unbounded recursive span explosion. In HIR, exact DefId comparison is used for both
+/// path calls and type-dependent method calls, improving precision over syn AST name-based matching
+/// without false positives, while retaining the same exclusion policy.
+fn check_is_directly_recursive<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    def_id: rustc_hir::def_id::LocalDefId,
+    body: &'tcx rustc_hir::Body<'tcx>,
+) -> bool {
+    let typeck = tcx.typeck(def_id);
+    let target = def_id.to_def_id();
+
+    struct RecursionFinder<'a, 'tcx> {
+        tcx: TyCtxt<'tcx>,
+        typeck: &'a rustc_middle::ty::TypeckResults<'tcx>,
+        target: rustc_span::def_id::DefId,
+        found: bool,
+    }
+
+    impl<'a, 'tcx> intravisit::Visitor<'tcx> for RecursionFinder<'a, 'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn visit_expr(&mut self, expr: &'tcx rustc_hir::Expr<'tcx>) {
+            if self.found {
+                return;
+            }
+            match expr.kind {
+                rustc_hir::ExprKind::Call(func, _) => {
+                    if let rustc_hir::ExprKind::Path(ref qpath) = func.kind {
+                        let res = self.typeck.qpath_res(qpath, func.hir_id);
+                        if let rustc_hir::def::Res::Def(_, called_did) = res {
+                            if called_did == self.target {
+                                self.found = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+                rustc_hir::ExprKind::MethodCall(..) => {
+                    if let Some(called_did) = self.typeck.type_dependent_def_id(expr.hir_id) {
+                        if called_did == self.target {
+                            self.found = true;
+                            return;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            intravisit::walk_expr(self, expr);
+        }
+    }
+
+    let mut finder = RecursionFinder {
+        tcx,
+        typeck,
+        target,
+        found: false,
+    };
+    intravisit::walk_body(&mut finder, body);
+    finder.found
+}
+
 fn instrument_body(original: &str, plan: &InstrumentationPlan) -> String {
     let inner = original
         .trim()
@@ -313,12 +487,28 @@ fn instrument_body(original: &str, plan: &InstrumentationPlan) -> String {
         plan.marker, plan.span.tracer_scope, plan.span.span_name
     );
     match plan.lifecycle {
-        ExecutionLifecycle::SyncScopedContext => format!(
-            "{{\n{prelude}\n    let _cargo_instrument_rust_guard = __cargo_instrument_rust_cx.attach();\n    {inner}\n}}"
-        ),
-        ExecutionLifecycle::AsyncFutureContext => format!(
-            "{{\n{prelude}\n    opentelemetry::trace::FutureExt::with_context(async move {{\n        {inner}\n    }}, __cargo_instrument_rust_cx).await\n}}"
-        ),
+        ExecutionLifecycle::SyncScopedContext => {
+            if plan.returns_result {
+                format!(
+                    "{{\n{prelude}\n    let _cargo_instrument_rust_guard = __cargo_instrument_rust_cx.clone().attach();\n    #[allow(clippy::redundant_closure_call)]\n    let __cargo_instrument_rust_res: Result<_, _> = (|| {{\n        {inner}\n    }})();\n    if __cargo_instrument_rust_res.is_err() {{\n        opentelemetry::trace::TraceContextExt::span(&__cargo_instrument_rust_cx)\n            .set_status(opentelemetry::trace::Status::error(\"\"));\n    }}\n    __cargo_instrument_rust_res\n}}"
+                )
+            } else {
+                format!(
+                    "{{\n{prelude}\n    let _cargo_instrument_rust_guard = __cargo_instrument_rust_cx.attach();\n    {inner}\n}}"
+                )
+            }
+        }
+        ExecutionLifecycle::AsyncFutureContext => {
+            if plan.returns_result {
+                format!(
+                    "{{\n{prelude}\n    let __cargo_instrument_rust_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {{\n        {inner}\n    }}, __cargo_instrument_rust_cx.clone()).await;\n    if __cargo_instrument_rust_res.is_err() {{\n        opentelemetry::trace::TraceContextExt::span(&__cargo_instrument_rust_cx)\n            .set_status(opentelemetry::trace::Status::error(\"\"));\n    }}\n    __cargo_instrument_rust_res\n}}"
+                )
+            } else {
+                format!(
+                    "{{\n{prelude}\n    opentelemetry::trace::FutureExt::with_context(async move {{\n        {inner}\n    }}, __cargo_instrument_rust_cx).await\n}}"
+                )
+            }
+        }
     }
 }
 
