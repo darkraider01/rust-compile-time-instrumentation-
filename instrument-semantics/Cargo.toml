@@ -1,0 +1,9 @@
+[package]
+name = "instrument-semantics"
+version = "0.1.0"
+edition = "2021"
+description = "Shared, compiler-independent semantics for cargo-instrument frontends"
+license = "Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
