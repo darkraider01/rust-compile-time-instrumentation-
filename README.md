@@ -7,13 +7,13 @@
 [![CI](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/ci.yml/badge.svg)](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/ci.yml)
 [![Integration](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/integration.yml/badge.svg)](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/workflows/integration.yml)
 [![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust)](https://www.rust-lang.org)
-[![No nightly](https://img.shields.io/badge/nightly-not%20required-brightgreen)](docs/research/17-decision-records.md)
+[![Stable output](https://img.shields.io/badge/instrumented%20source-stable%20Rust-brightgreen)](docs/phase2/README.md)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Phase](https://img.shields.io/badge/phase-2%20in%20progress-blue)](#status)
 
 </div>
 
-Instruments Rust applications *and their dependencies* at build time - no source annotations, no manual span wiring - by intercepting `rustc` via `RUSTC_WRAPPER` and splicing native OpenTelemetry calls at the byte level. Runs on stable Rust with no compiler forks, no MIR passes, and no eBPF; the frozen architecture and the evidence behind it are in [`docs/research/`](docs/research/).
+Instruments Rust applications *and their dependencies* at build time - no source annotations, no manual span wiring - by intercepting `rustc` via `RUSTC_WRAPPER` and splicing native OpenTelemetry calls at the byte level. The existing wrapper path and already-instrumented application source build on stable Rust. P2.3 source generation intentionally uses an isolated pinned nightly `rustc_private` driver with `rustc-dev`; it does not change the stable workspace toolchain or require nightly to compile generated source.
 
 ## Status
 
