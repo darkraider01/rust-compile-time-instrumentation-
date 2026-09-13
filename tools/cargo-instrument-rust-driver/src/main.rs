@@ -11,10 +11,13 @@ extern crate rustc_span;
 use std::env;
 use std::path::{Path, PathBuf};
 
-use instrument_semantics::{EligibilityPolicy, FunctionFacts, FunctionShape, P23_MARKER};
+use instrument_semantics::{
+    EligibilityPolicy, ExecutionLifecycle, FunctionFacts, FunctionShape, InstrumentationPlan,
+    P23_MARKER,
+};
 use rustc_errors::Applicability;
 use rustc_hir::intravisit::{self, FnKind, Visitor};
-use rustc_hir::{BodyId, FnDecl, ItemKind};
+use rustc_hir::{BodyId, Constness, FnDecl, ItemKind};
 use rustc_middle::ty::TyCtxt;
 use rustc_span::Span;
 
@@ -61,7 +64,13 @@ impl<'tcx> P23Visitor<'tcx> {
         def_id: rustc_hir::def_id::LocalDefId,
     ) {
         let body_span = body.value.span;
-        if span.from_expansion() || body_span.from_expansion() {
+        if span.from_expansion()
+            || body_span.from_expansion()
+            || matches!(kind.constness(), Constness::Const { .. })
+            || !kind
+                .header()
+                .is_some_and(|header| header.abi.is_rustic_abi())
+        {
             return;
         }
         let shape = match kind {
@@ -79,7 +88,6 @@ impl<'tcx> P23Visitor<'tcx> {
             }
             FnKind::Closure => return,
         };
-
         let source_map = self.tcx.sess.source_map();
         let Some(file_name) = source_map.span_to_filename(body_span).into_local_path() else {
             return;
@@ -100,7 +108,7 @@ impl<'tcx> P23Visitor<'tcx> {
             function_name: self.tcx.item_name(def_id.to_def_id()).to_string(),
             crate_name: self.config.crate_name.clone(),
             shape,
-            is_async: self.tcx.asyncness(def_id).is_async(),
+            is_async: kind.asyncness().is_async(),
             first_party: true,
             already_instrumented: original.contains(P23_MARKER),
             has_opentelemetry: self.config.has_opentelemetry,
@@ -108,20 +116,17 @@ impl<'tcx> P23Visitor<'tcx> {
         let Ok(plan) = EligibilityPolicy::plan(&facts) else {
             return;
         };
-        let replacement = instrument_body(
-            &original,
-            &plan.span.tracer_scope,
-            &plan.span.span_name,
-            plan.marker,
-        );
+        // This is deliberately an error, rather than an ordinary warning lint:
+        // `cargo fix --broken-code` receives only our suggestions while Cargo's
+        // unrelated lint suggestions are capped to `allow` by the CLI.
         let mut diagnostic = self
             .tcx
             .dcx()
-            .struct_span_warn(body_span, "P2.3 first-party instrumentation is available");
+            .struct_span_err(body_span, "p2.3 first-party instrumentation is available");
         diagnostic.span_suggestion(
             body_span,
             "insert an idempotent OpenTelemetry instrumentation block",
-            replacement,
+            instrument_body(&original, &plan),
             Applicability::MachineApplicable,
         );
         diagnostic.emit();
@@ -136,16 +141,25 @@ fn is_owned_source(source: &Path, roots: &[PathBuf]) -> bool {
         && roots.iter().any(|root| source.starts_with(root))
 }
 
-fn instrument_body(original: &str, tracer_scope: &str, span_name: &str, marker: &str) -> String {
+fn instrument_body(original: &str, plan: &InstrumentationPlan) -> String {
     let inner = original
         .trim()
         .strip_prefix('{')
         .and_then(|source| source.strip_suffix('}'))
         .unwrap_or(original)
         .trim();
-    format!(
-        "{{\n    {marker}\n    let __cargo_instrument_rust_tracer = opentelemetry::global::tracer({tracer_scope:?});\n    let __cargo_instrument_rust_span = opentelemetry::trace::Tracer::start(&__cargo_instrument_rust_tracer, {span_name:?});\n    let __cargo_instrument_rust_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__cargo_instrument_rust_span);\n    let _cargo_instrument_rust_guard = __cargo_instrument_rust_cx.attach();\n    {inner}\n}}"
-    )
+    let prelude = format!(
+        "    {}\n    let __cargo_instrument_rust_tracer = opentelemetry::global::tracer({:?});\n    let __cargo_instrument_rust_span = opentelemetry::trace::Tracer::start(&__cargo_instrument_rust_tracer, {:?});\n    let __cargo_instrument_rust_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__cargo_instrument_rust_span);",
+        plan.marker, plan.span.tracer_scope, plan.span.span_name
+    );
+    match plan.lifecycle {
+        ExecutionLifecycle::SyncScopedContext => format!(
+            "{{\n{prelude}\n    let _cargo_instrument_rust_guard = __cargo_instrument_rust_cx.attach();\n    {inner}\n}}"
+        ),
+        ExecutionLifecycle::AsyncFutureContext => format!(
+            "{{\n{prelude}\n    opentelemetry::trace::FutureExt::with_context(async move {{\n        {inner}\n    }}, __cargo_instrument_rust_cx).await\n}}"
+        ),
+    }
 }
 
 struct P23Callbacks {
@@ -191,13 +205,58 @@ fn main() {
             .map(|packages| packages.split(';').map(str::to_owned).collect())
             .unwrap_or_default(),
         crate_name: crate_name(&args).unwrap_or_else(|| "unknown".into()),
-        has_opentelemetry: args.iter().any(|arg| arg.contains("opentelemetry")),
+        has_opentelemetry: has_opentelemetry_extern(&args),
     };
     rustc_driver::run_compiler(&args, &mut P23Callbacks { config });
+}
+
+fn has_opentelemetry_extern(args: &[String]) -> bool {
+    let mut index = 0;
+    while index < args.len() {
+        let spec = if args[index] == "--extern" {
+            index += 1;
+            args.get(index).map(String::as_str)
+        } else {
+            args[index].strip_prefix("--extern=")
+        };
+        if let Some(spec) = spec {
+            let extern_name = spec.split('=').next().unwrap_or(spec);
+            let extern_name = extern_name.rsplit(':').next().unwrap_or(extern_name);
+            if extern_name == "opentelemetry" {
+                return true;
+            }
+        }
+        index += 1;
+    }
+    false
 }
 
 fn crate_name(args: &[String]) -> Option<String> {
     args.windows(2)
         .find(|window| window[0] == "--crate-name")
         .map(|window| window[1].clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_opentelemetry_extern;
+
+    fn args(arguments: &[&str]) -> Vec<String> {
+        arguments.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn detects_only_the_exact_opentelemetry_extern_name() {
+        assert!(has_opentelemetry_extern(&args(&[
+            "--extern",
+            "opentelemetry=C:/registry/libopentelemetry.rlib"
+        ])));
+        assert!(!has_opentelemetry_extern(&args(&[
+            "--extern",
+            "opentelemetry_sdk=C:/registry/libopentelemetry_sdk.rlib"
+        ])));
+        assert!(!has_opentelemetry_extern(&args(&[
+            "C:/contains-opentelemetry-but-is-not-an-extern"
+        ])));
+    }
 }
