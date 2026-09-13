@@ -39,6 +39,14 @@ pub struct SpanSemantics {
 pub struct InstrumentationPlan {
     pub marker: &'static str,
     pub span: SpanSemantics,
+    pub lifecycle: ExecutionLifecycle,
+}
+
+/// The execution model selected by shared policy, not by an individual frontend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionLifecycle {
+    SyncScopedContext,
+    AsyncFutureContext,
 }
 
 pub struct EligibilityPolicy;
@@ -67,6 +75,11 @@ impl EligibilityPolicy {
                 tracer_scope: facts.crate_name.clone(),
                 span_name: facts.function_name.clone(),
             },
+            lifecycle: if facts.is_async {
+                ExecutionLifecycle::AsyncFutureContext
+            } else {
+                ExecutionLifecycle::SyncScopedContext
+            },
         })
     }
 }
@@ -92,6 +105,7 @@ mod tests {
         let plan = EligibilityPolicy::plan(&facts()).unwrap();
         assert_eq!(plan.marker, P23_MARKER);
         assert_eq!(plan.span.span_name, "work");
+        assert_eq!(plan.lifecycle, ExecutionLifecycle::SyncScopedContext);
     }
 
     #[test]
@@ -101,6 +115,16 @@ mod tests {
         assert_eq!(
             EligibilityPolicy::plan(&facts),
             Err(Ineligibility::AlreadyInstrumented)
+        );
+    }
+
+    #[test]
+    fn async_facts_select_per_poll_future_context() {
+        let mut facts = facts();
+        facts.is_async = true;
+        assert_eq!(
+            EligibilityPolicy::plan(&facts).unwrap().lifecycle,
+            ExecutionLifecycle::AsyncFutureContext
         );
     }
 }
