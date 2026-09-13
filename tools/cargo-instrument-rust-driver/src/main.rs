@@ -143,9 +143,16 @@ impl<'tcx> P23Visitor<'tcx> {
             return;
         };
         let hir_id = self.tcx.local_def_id_to_hir_id(def_id);
-        let is_async = is_async_function(kind, body);
-        let (returns_result, can_capture_result_status) =
-            check_returns_result(self.tcx, def_id, decl, is_async);
+        let is_native_async = kind.asyncness().is_async();
+        let is_async = is_async_function(self.tcx, hir_id, kind, body);
+        let is_verified_async_trait = is_async && !is_native_async;
+        let (returns_result, can_capture_result_status) = check_returns_result(
+            self.tcx,
+            def_id,
+            decl,
+            is_native_async,
+            is_verified_async_trait,
+        );
         let facts = FunctionFacts {
             function_name: self.tcx.item_name(def_id.to_def_id()).to_string(),
             crate_name: self.config.crate_name.clone(),
@@ -311,11 +318,97 @@ fn is_nested_function(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) ->
     }
 }
 
-fn is_async_function<'tcx>(kind: FnKind<'tcx>, body: &'tcx rustc_hir::Body<'tcx>) -> bool {
+fn is_async_function<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    hir_id: rustc_hir::HirId,
+    kind: FnKind<'tcx>,
+    body: &'tcx rustc_hir::Body<'tcx>,
+) -> bool {
     if kind.asyncness().is_async() {
         return true;
     }
-    is_async_coroutine_expr(body.value)
+    is_verified_async_trait(tcx, hir_id, body)
+}
+
+fn is_verified_async_trait<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    hir_id: rustc_hir::HirId,
+    body: &'tcx rustc_hir::Body<'tcx>,
+) -> bool {
+    if !is_async_coroutine_expr(body.value) {
+        return false;
+    }
+
+    let is_async_trait_expn = |data: &rustc_span::hygiene::ExpnData| {
+        if let rustc_span::hygiene::ExpnKind::Macro(rustc_span::hygiene::MacroKind::Attr, sym) =
+            data.kind
+        {
+            let s = sym.as_str();
+            if s == "async_trait" || s == "async_trait::async_trait" || s.ends_with("::async_trait")
+            {
+                return true;
+            }
+        }
+        if let Some(macro_def_id) = data.macro_def_id {
+            if tcx.crate_name(macro_def_id.krate).as_str() == "async_trait" {
+                return true;
+            }
+        }
+        false
+    };
+
+    // 1. Check item attributes for async_trait macro expansion provenance
+    for attr in tcx.hir_attrs(hir_id) {
+        if is_async_trait_expn(&attr.span().ctxt().outer_expn_data()) {
+            return true;
+        }
+    }
+
+    // 2. Also check parent item attributes (the impl block)
+    let parent_item = tcx.hir_get_parent_item(hir_id).def_id;
+    let parent_hir_id = tcx.local_def_id_to_hir_id(parent_item);
+    for attr in tcx.hir_attrs(parent_hir_id) {
+        if is_async_trait_expn(&attr.span().ctxt().outer_expn_data()) {
+            return true;
+        }
+    }
+
+    // 3. Check for async_trait syntax context in closure inputs (e.g. ResumeTy)
+    struct ExpnFinder<'tcx, F> {
+        tcx: TyCtxt<'tcx>,
+        predicate: F,
+        found: bool,
+    }
+    impl<'tcx, F: Fn(&rustc_span::hygiene::ExpnData) -> bool> intravisit::Visitor<'tcx>
+        for ExpnFinder<'tcx, F>
+    {
+        type NestedFilter = rustc_middle::hir::nested_filter::All;
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+        fn visit_expr(&mut self, ex: &'tcx rustc_hir::Expr<'tcx>) {
+            if self.found {
+                return;
+            }
+            if let rustc_hir::ExprKind::Closure(closure) = ex.kind {
+                for input in closure.fn_decl.inputs {
+                    let data = input.span.ctxt().outer_expn_data();
+                    if (self.predicate)(&data) {
+                        self.found = true;
+                        return;
+                    }
+                }
+            }
+            intravisit::walk_expr(self, ex);
+        }
+    }
+    let mut finder = ExpnFinder {
+        tcx,
+        predicate: is_async_trait_expn,
+        found: false,
+    };
+    intravisit::walk_body(&mut finder, body);
+    finder.found
 }
 
 fn is_async_coroutine_expr<'tcx>(expr: &'tcx rustc_hir::Expr<'tcx>) -> bool {
@@ -350,21 +443,28 @@ fn is_async_coroutine_expr<'tcx>(expr: &'tcx rustc_hir::Expr<'tcx>) -> bool {
 /// naturally handling aliases (`std::io::Result<T>`) while avoiding false positives from custom types named `Result`.
 /// Sync functions returning non-static or mutable references fall back to prefix-only instrumentation (§16.10 / C1),
 /// modeled clearly as `returns_result: true`, `can_capture_result_status: false`.
-/// Async Result functions (native or async_trait) remain eligible for status capture because they use the Future lifecycle.
+/// Async Result functions (native or verified async_trait) remain eligible for status capture because they use the Future lifecycle.
 fn check_returns_result<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: rustc_hir::def_id::LocalDefId,
     decl: &'tcx rustc_hir::FnDecl<'tcx>,
-    is_async: bool,
+    is_native_async: bool,
+    is_verified_async_trait: bool,
 ) -> (bool, bool) {
     let rustc_hir::FnRetTy::Return(hir_ty) = decl.output else {
         return (false, false);
     };
 
-    // For async fn, the declared return type in decl.output is an OpaqueDef (impl Future<Output = T>),
-    // or for #[async_trait] it is Pin<Box<dyn Future<Output = T>>>.
-    // Extract the inner Output type from the future bounds.
-    let effective_ty = extract_future_output_ty(hir_ty);
+    // Extract inner Future::Output ONLY for native async functions or verified #[async_trait] functions.
+    // For all other functions (including handwritten sync functions returning Pin<Box<dyn Future...>> or
+    // functions returning Box<dyn HasOutput<Output = ...>>), use the declared return type directly.
+    let effective_ty = if is_native_async {
+        extract_native_async_output_ty(tcx, hir_ty)
+    } else if is_verified_async_trait {
+        extract_async_trait_output_ty(tcx, hir_ty)
+    } else {
+        hir_ty
+    };
 
     let typeck = tcx.typeck(def_id);
     let is_result = if let rustc_hir::TyKind::Path(ref qpath) = effective_ty.kind {
@@ -390,7 +490,7 @@ fn check_returns_result<'tcx>(
         return (false, false);
     }
 
-    if is_async {
+    if is_native_async || is_verified_async_trait {
         return (true, true);
     }
 
@@ -403,21 +503,90 @@ fn check_returns_result<'tcx>(
     (true, can_capture)
 }
 
-fn extract_future_output_ty<'tcx>(hir_ty: &'tcx rustc_hir::Ty<'tcx>) -> &'tcx rustc_hir::Ty<'tcx> {
+fn is_future_trait(tcx: TyCtxt<'_>, trait_did: rustc_span::def_id::DefId) -> bool {
+    tcx.lang_items().future_trait() == Some(trait_did)
+        || tcx.is_diagnostic_item(rustc_span::symbol::Symbol::intern("Future"), trait_did)
+}
+
+fn extract_native_async_output_ty<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    hir_ty: &'tcx rustc_hir::Ty<'tcx>,
+) -> &'tcx rustc_hir::Ty<'tcx> {
     if let rustc_hir::TyKind::OpaqueDef(ref opaque_ty) = hir_ty.kind {
         for bound in opaque_ty.bounds {
             if let rustc_hir::GenericBound::Trait(ref poly_trait_ref) = bound {
-                if let Some(output) = find_output_in_poly_trait_ref(poly_trait_ref) {
-                    return output;
+                if let rustc_hir::def::Res::Def(rustc_hir::def::DefKind::Trait, trait_did) =
+                    poly_trait_ref.trait_ref.path.res
+                {
+                    if is_future_trait(tcx, trait_did) {
+                        if let Some(output) = find_output_in_poly_trait_ref(poly_trait_ref) {
+                            return output;
+                        }
+                    }
                 }
             }
         }
     }
+    hir_ty
+}
 
-    if let Some(output) = find_output_in_pin_box(hir_ty) {
-        return output;
+fn extract_async_trait_output_ty<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    hir_ty: &'tcx rustc_hir::Ty<'tcx>,
+) -> &'tcx rustc_hir::Ty<'tcx> {
+    // Verified async_trait functions return Pin<Box<dyn Future<Output = T> + Send + 'async_trait>>.
+    // Traverse specifically Pin -> Box -> TraitObject(Future).
+    if let rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(_, pin_path)) = hir_ty.kind {
+        if let Some(pin_segment) = pin_path.segments.last() {
+            if pin_segment.ident.as_str() == "Pin" {
+                if let Some(args) = pin_segment.args {
+                    for arg in args.args {
+                        if let rustc_hir::GenericArg::Type(box_ty) = arg {
+                            if let rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(
+                                _,
+                                box_path,
+                            )) = box_ty.as_unambig_ty().kind
+                            {
+                                if let Some(box_segment) = box_path.segments.last() {
+                                    if box_segment.ident.as_str() == "Box" {
+                                        if let Some(box_args) = box_segment.args {
+                                            for b_arg in box_args.args {
+                                                if let rustc_hir::GenericArg::Type(dyn_ty) = b_arg {
+                                                    if let rustc_hir::TyKind::TraitObject(
+                                                        bounds,
+                                                        _,
+                                                    ) = dyn_ty.as_unambig_ty().kind
+                                                    {
+                                                        for bound in bounds {
+                                                            if let rustc_hir::def::Res::Def(
+                                                                rustc_hir::def::DefKind::Trait,
+                                                                trait_did,
+                                                            ) = bound.trait_ref.path.res
+                                                            {
+                                                                if is_future_trait(tcx, trait_did) {
+                                                                    if let Some(output) =
+                                                                        find_output_in_poly_trait_ref(
+                                                                            bound,
+                                                                        )
+                                                                    {
+                                                                        return output;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-
     hir_ty
 }
 
@@ -439,36 +608,6 @@ fn find_output_in_poly_trait_ref<'tcx>(
         }
     }
     None
-}
-
-fn find_output_in_pin_box<'tcx>(
-    hir_ty: &'tcx rustc_hir::Ty<'tcx>,
-) -> Option<&'tcx rustc_hir::Ty<'tcx>> {
-    match hir_ty.kind {
-        rustc_hir::TyKind::Path(rustc_hir::QPath::Resolved(_, path)) => {
-            for segment in path.segments {
-                if let Some(args) = segment.args {
-                    for arg in args.args {
-                        if let rustc_hir::GenericArg::Type(inner) = arg {
-                            if let Some(output) = find_output_in_pin_box(inner.as_unambig_ty()) {
-                                return Some(output);
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        }
-        rustc_hir::TyKind::TraitObject(bounds, _) => {
-            for bound in bounds {
-                if let Some(output) = find_output_in_poly_trait_ref(bound) {
-                    return Some(output);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
 }
 
 fn is_diagnostic_result<'tcx>(tcx: TyCtxt<'tcx>, ty: rustc_middle::ty::Ty<'tcx>) -> bool {
@@ -500,8 +639,11 @@ fn sync_closure_ineligible_for_references<'tcx>(ty: rustc_middle::ty::Ty<'tcx>) 
 
 /// Direct self-recursion exclusion parity (§12.3): direct self-recursive functions are excluded
 /// to prevent unbounded recursive span explosion. In HIR, exact DefId comparison is used for both
-/// path calls and type-dependent method calls, improving precision over syn AST name-based matching
-/// without false positives, while retaining the same exclusion policy.
+/// path calls and type-dependent method calls.
+/// For methods, receiver identity is verified: only calls whose receiver resolves to `self`
+/// (e.g. `self.foo(...)`) are excluded as direct self-recursion. Calls on distinct receivers
+/// (e.g. `other.foo(...)` where `other` is a parameter or local) are NOT self-recursion and
+/// remain eligible for instrumentation.
 fn check_is_directly_recursive<'tcx>(
     tcx: TyCtxt<'tcx>,
     def_id: rustc_hir::def_id::LocalDefId,
@@ -511,11 +653,22 @@ fn check_is_directly_recursive<'tcx>(
     let target = def_id.to_def_id();
     let trait_target = tcx.trait_item_of(target);
 
+    // Identify if the function has a `self` parameter (inherent or trait method)
+    let self_hir_id = body.params.first().and_then(|param| {
+        if let rustc_hir::PatKind::Binding(_, hir_id, ident, _) = param.pat.kind {
+            if ident.as_str() == "self" {
+                return Some(hir_id);
+            }
+        }
+        None
+    });
+
     struct RecursionFinder<'a, 'tcx> {
         tcx: TyCtxt<'tcx>,
         typeck: &'a rustc_middle::ty::TypeckResults<'tcx>,
         target: rustc_span::def_id::DefId,
         trait_target: Option<rustc_span::def_id::DefId>,
+        self_hir_id: Option<rustc_hir::HirId>,
         found: bool,
     }
 
@@ -531,22 +684,38 @@ fn check_is_directly_recursive<'tcx>(
                 return;
             }
             match expr.kind {
-                rustc_hir::ExprKind::Call(func, _) => {
+                rustc_hir::ExprKind::Call(func, args) => {
                     if let rustc_hir::ExprKind::Path(ref qpath) = func.kind {
                         let res = self.typeck.qpath_res(qpath, func.hir_id);
                         if let rustc_hir::def::Res::Def(_, called_did) = res {
                             if called_did == self.target || Some(called_did) == self.trait_target {
-                                self.found = true;
-                                return;
+                                if let Some(self_id) = self.self_hir_id {
+                                    if let Some(first_arg) = args.first() {
+                                        if is_self_expr(self.typeck, self_id, first_arg) {
+                                            self.found = true;
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    self.found = true;
+                                    return;
+                                }
                             }
                         }
                     }
                 }
-                rustc_hir::ExprKind::MethodCall(..) => {
+                rustc_hir::ExprKind::MethodCall(_segment, receiver, _args, _span) => {
                     if let Some(called_did) = self.typeck.type_dependent_def_id(expr.hir_id) {
                         if called_did == self.target || Some(called_did) == self.trait_target {
-                            self.found = true;
-                            return;
+                            if let Some(self_id) = self.self_hir_id {
+                                if is_self_expr(self.typeck, self_id, receiver) {
+                                    self.found = true;
+                                    return;
+                                }
+                            } else {
+                                self.found = true;
+                                return;
+                            }
                         }
                     }
                 }
@@ -561,10 +730,45 @@ fn check_is_directly_recursive<'tcx>(
         typeck,
         target,
         trait_target,
+        self_hir_id,
         found: false,
     };
     intravisit::walk_body(&mut finder, body);
     finder.found
+}
+
+fn is_self_expr<'tcx>(
+    typeck: &rustc_middle::ty::TypeckResults<'tcx>,
+    self_hir_id: rustc_hir::HirId,
+    mut expr: &'tcx rustc_hir::Expr<'tcx>,
+) -> bool {
+    loop {
+        match expr.kind {
+            rustc_hir::ExprKind::AddrOf(_, _, inner)
+            | rustc_hir::ExprKind::Unary(rustc_hir::UnOp::Deref, inner)
+            | rustc_hir::ExprKind::DropTemps(inner) => {
+                expr = inner;
+            }
+            rustc_hir::ExprKind::Block(block, _) => {
+                if let Some(inner) = block.expr {
+                    expr = inner;
+                } else {
+                    return false;
+                }
+            }
+            rustc_hir::ExprKind::Path(ref qpath) => {
+                let res = match qpath {
+                    rustc_hir::QPath::Resolved(_, path) => path.res,
+                    rustc_hir::QPath::TypeRelative(..) => typeck.qpath_res(qpath, expr.hir_id),
+                };
+                return match res {
+                    rustc_hir::def::Res::Local(hir_id) => hir_id == self_hir_id,
+                    _ => false,
+                };
+            }
+            _ => return false,
+        }
+    }
 }
 
 fn instrument_body(original: &str, plan: &InstrumentationPlan) -> String {
