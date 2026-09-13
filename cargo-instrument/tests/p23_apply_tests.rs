@@ -20,13 +20,14 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     let outside_source_before = fs::read_to_string(fixture.outside_source()).unwrap();
 
     let first = fixture.run_apply();
+    eprintln!("FIRST STDERR:\n{}", String::from_utf8_lossy(&first.stderr));
     assert!(first.status.success(), "first apply failed:\n{first:?}");
 
     let edited = fs::read_to_string(fixture.app_source()).unwrap();
     assert_ne!(edited, original, "cargo fix output:\n{first:?}");
     assert_eq!(
         edited.matches(MARKER).count(),
-        21,
+        26,
         "edited source:\n{edited}"
     );
     assert!(
@@ -83,10 +84,83 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
         !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"recursive_method\")"),
         "directly self-recursive recursive_method() should not receive a P2.3 marker:\n{edited}"
     );
-    // Precision proof: non-recursive function calling a same-named method on another type is NOT excluded
+
+    // C2: Precision proof: non-recursive function calling a same-named method on another type is NOT excluded
+    // Both concrete source regions (method on Worker and free function) must be instrumented.
+    let worker_method_body = edited
+        .split("impl Worker {")
+        .nth(1)
+        .and_then(|s| s.split("pub fn work(&self)").nth(1))
+        .and_then(|s| s.split("pub fn work(worker: &Worker)").next())
+        .expect("Worker::work method body");
     assert!(
-        edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"work\")"),
-        "work() must be instrumented (no false-positive recursion exclusion):\n{edited}"
+        worker_method_body.contains(MARKER),
+        "Worker::work method must be instrumented:\n{worker_method_body}"
+    );
+
+    let free_work_body = edited
+        .split("pub fn work(worker: &Worker)")
+        .nth(1)
+        .and_then(|s| s.split("pub trait PlainWorker").next())
+        .expect("free work function body");
+    assert!(
+        free_work_body.contains(MARKER),
+        "free work function must be instrumented:\n{free_work_body}"
+    );
+
+    // Trait implementation method policy:
+    // 1. Plain trait impl method is instrumented
+    assert!(
+        edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"plain_work\")"),
+        "plain_work() trait impl method should be instrumented:\n{edited}"
+    );
+    // 2. Default trait method body is intentionally excluded
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"default_work\")"),
+        "default trait method default_work() must not receive a P2.3 marker:\n{edited}"
+    );
+    // 3. Trait impl method with direct self-recursion is intentionally excluded
+    assert!(
+        !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"recursive_trait_method\")"),
+        "directly self-recursive trait method recursive_trait_method() must not receive a P2.3 marker:\n{edited}"
+    );
+
+    // Part A: #[async_trait] source instrumentation
+    let work_trait_body = edited
+        .split("impl AsyncWorker for AsyncWorkerService")
+        .nth(1)
+        .and_then(|s| s.split("async fn work_traced").next())
+        .expect("work_trait body");
+    assert!(
+        work_trait_body.contains(MARKER),
+        "async_trait work_trait() must receive P2.3 marker:\n{work_trait_body}"
+    );
+    assert!(
+        work_trait_body.contains("FutureExt::with_context(async move"),
+        "async_trait work_trait() must use FutureExt::with_context:\n{work_trait_body}"
+    );
+    assert!(
+        work_trait_body.contains("set_status(opentelemetry::trace::Status::error(\"\"))"),
+        "async_trait work_trait() must set error status on Err:\n{work_trait_body}"
+    );
+
+    // Explicit instrumentation precedence under #[async_trait]:
+    let work_traced_body = edited
+        .split("impl AsyncWorker for AsyncWorkerService")
+        .nth(1)
+        .and_then(|s| s.split("async fn work_traced").nth(1))
+        .and_then(|s| s.split("pub async fn caller_of_async_trait").next())
+        .expect("work_traced body");
+    assert!(
+        !work_traced_body.contains(MARKER),
+        "async_trait method with #[tracing::instrument] must not be double instrumented:\n{work_traced_body}"
+    );
+
+    // Caller of async_trait method is instrumented
+    assert!(
+        edited
+            .contains("Tracer::start(&__cargo_instrument_rust_tracer, \"caller_of_async_trait\")"),
+        "caller_of_async_trait() must be instrumented:\n{edited}"
     );
 
     // Result span-status instrumentation shape checks
@@ -224,7 +298,7 @@ impl Fixture {
         );
         write(
             &temp.path().join("app/Cargo.toml"),
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nnested-dependency = { path = \"vendor/nested_dep\" }\nopentelemetry = \"0.32.0\"\ntracing = { version = \"0.1\", features = [\"attributes\"] }\n\n[dev-dependencies]\nopentelemetry_sdk = { version = \"0.32.0\", features = [\"testing\"] }\n",
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nexternal-dependency = { path = \"../external-dependency\" }\nnested-dependency = { path = \"vendor/nested_dep\" }\nopentelemetry = \"0.32.0\"\ntracing = { version = \"0.1\", features = [\"attributes\"] }\nasync-trait = \"0.1\"\n\n[dev-dependencies]\nopentelemetry_sdk = { version = \"0.32.0\", features = [\"testing\"] }\n",
         );
         write(
             &temp.path().join("app/src/lib.rs"),
@@ -391,6 +465,92 @@ pub fn work(worker: &Worker) -> u32 {
     worker.work()
 }
 
+pub trait PlainWorker {
+    fn plain_work(&self, value: i32) -> i32;
+    fn default_work(&self) -> i32 { 42 }
+}
+
+impl PlainWorker for Service {
+    fn plain_work(&self, value: i32) -> i32 {
+        value + 10
+    }
+}
+
+pub trait RecursiveWorker {
+    fn recursive_trait_method(&self, n: u32) -> u32;
+}
+
+impl RecursiveWorker for Service {
+    fn recursive_trait_method(&self, n: u32) -> u32 {
+        if n == 0 {
+            0
+        } else {
+            self.recursive_trait_method(n - 1)
+        }
+    }
+}
+
+pub struct YieldOnce {
+    pub yielded: bool,
+}
+
+impl YieldOnce {
+    pub fn new() -> Self {
+        Self { yielded: false }
+    }
+}
+
+impl std::future::Future for YieldOnce {
+    type Output = ();
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        if self.yielded {
+            std::task::Poll::Ready(())
+        } else {
+            self.yielded = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    }
+}
+
+#[async_trait::async_trait]
+pub trait AsyncWorker {
+    async fn work_trait(&self, value: i32) -> Result<i32, &'static str>;
+    async fn work_traced(&self, value: i32) -> Result<i32, &'static str>;
+}
+
+#[derive(Debug)]
+pub struct AsyncWorkerService;
+
+#[async_trait::async_trait]
+impl AsyncWorker for AsyncWorkerService {
+    async fn work_trait(&self, value: i32) -> Result<i32, &'static str> {
+        YieldOnce::new().await;
+        if value < 0 {
+            Err("async_trait failure")
+        } else {
+            Ok(value + 1)
+        }
+    }
+
+    #[tracing::instrument]
+    async fn work_traced(&self, value: i32) -> Result<i32, &'static str> {
+        YieldOnce::new().await;
+        Ok(value * 2)
+    }
+}
+
+pub async fn caller_of_async_trait(
+    worker: &AsyncWorkerService,
+    value: i32,
+) -> Result<i32, &'static str> {
+    worker.work_trait(value).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,6 +614,33 @@ mod tests {
         // 8. Non-recursive call to helper with same method name
         assert_eq!(work(&Worker), 99);
 
+        // 9. Plain trait method
+        assert_eq!(Service.plain_work(5), 15);
+
+        // 10. Default trait method
+        assert_eq!(Service.default_work(), 42);
+
+        // 11. Trait method direct recursion exclusion
+        assert_eq!(Service.recursive_trait_method(3), 0);
+
+        // 12. async_trait method execution with real suspension (YieldOnce: Pending -> wake -> Ready)
+        let async_svc = AsyncWorkerService;
+
+        // 12a. Caller -> async_trait method parenting proof
+        let fut_parenting = caller_of_async_trait(&async_svc, 10);
+        assert_send(&fut_parenting);
+        assert_eq!(run_future(fut_parenting), Ok(11));
+
+        // 12b. async_trait Err returns unchanged value, future is Send, status is Error("")
+        let fut_trait_err = async_svc.work_trait(-5);
+        assert_send(&fut_trait_err);
+        assert_eq!(run_future(fut_trait_err), Err("async_trait failure"));
+
+        // 12c. async_trait explicit instrumentation precedence (#[tracing::instrument])
+        let fut_traced = async_svc.work_traced(21);
+        assert_send(&fut_traced);
+        assert_eq!(run_future(fut_traced), Ok(42));
+
         // Retrieve and assert finished span statuses
         let spans = exporter.get_finished_spans().expect("get finished spans");
 
@@ -482,6 +669,32 @@ mod tests {
         // Excluded direct recursion functions must not produce spans
         assert!(!spans.iter().any(|s| s.name == "factorial"), "factorial must not produce any span");
         assert!(!spans.iter().any(|s| s.name == "recursive_method"), "recursive_method must not produce any span");
+
+        let s_plain = find_span("plain_work");
+        assert_eq!(s_plain.status, opentelemetry::trace::Status::Unset);
+
+        assert!(!spans.iter().any(|s| s.name == "default_work"), "default_work must not produce any span");
+        assert!(!spans.iter().any(|s| s.name == "recursive_trait_method"), "recursive_trait_method must not produce any span");
+
+        // C2: exact same-name recursion precision proof at runtime
+        let work_spans: Vec<_> = spans.iter().filter(|s| s.name == "work").collect();
+        assert_eq!(work_spans.len(), 2, "must produce exactly 2 'work' spans (one free, one method)");
+        let parent_work = work_spans.iter().find(|s| s.parent_span_id == opentelemetry::trace::SpanId::INVALID).expect("parent work span");
+        let child_work = work_spans.iter().find(|s| s.parent_span_id != opentelemetry::trace::SpanId::INVALID).expect("child work span");
+        assert_eq!(child_work.parent_span_id, parent_work.span_context.span_id(), "method work must be child of free work");
+        assert_eq!(child_work.span_context.trace_id(), parent_work.span_context.trace_id(), "method and free work must share trace_id");
+
+        // async_trait caller-callee parenting proof
+        let s_caller = find_span("caller_of_async_trait");
+        let s_trait_ok = spans.iter().find(|s| s.name == "work_trait" && s.status == opentelemetry::trace::Status::Unset).expect("work_trait ok span");
+        assert_eq!(s_trait_ok.span_context.trace_id(), s_caller.span_context.trace_id(), "async_trait span must share trace_id with caller");
+        assert_eq!(s_trait_ok.parent_span_id, s_caller.span_context.span_id(), "async_trait span must have caller as parent_span_id");
+
+        let s_trait_err = spans.iter().find(|s| s.name == "work_trait" && s.status != opentelemetry::trace::Status::Unset).expect("work_trait err span");
+        assert_eq!(s_trait_err.status, opentelemetry::trace::Status::error(""), "async_trait error status must be Error with empty description");
+
+        // Explicitly instrumented async_trait method must NOT produce a P2.3 span
+        assert!(!spans.iter().any(|s| s.name == "work_traced"), "work_traced has #[tracing::instrument] and must not receive a P2.3 span");
     }
 }
 "#,
