@@ -6,7 +6,7 @@
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
 **Status:** In progress (P2.1 Steps 1–7 + Closeout D1–D5 complete; P2.2 coexistence complete; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
-**Toolchain:** Stable Rust (CI tracks latest `stable`; verified locally on 1.97.1)
+**Toolchain:** Stable Rust for the workspace (CI tracks latest `stable`; verified locally on 1.97.1); the isolated P2.3 driver additionally requires nightly plus `rustc-dev`.
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
 **Phase 2 test suite status:** 11 graph-topology regression tests + 1 105-unit scale test + 5 hybrid coexistence tests added, all passing (176 tests total across the workspace)
 **Architecture decisions:** [ADR-007 … ADR-013](decision-records.md), continuing the frozen Phase 0 numbering
@@ -38,7 +38,7 @@ Phase 2 - Production Hardening (In Progress)
           │       ├── Collision prevention (__otel_cx)      ✅ Complete
           │       ├── Hybrid parenting proof (ADR-010)      ✅ Complete
           │       └── Contain panic at C ABI boundary (R-3) ✅ Complete
-          ├── P2.3 First-Party Lint-Apply (`cargo instrument-rust`) ⬜ In Progress ◀── current
+          ├── P2.3 First-Party Lint-Apply (`cargo instrument-rust`) ◐ Bounded vertical slice complete
           │       ├── Spike: Body wrapping & `#[async_trait]` reachability (ADR-012) ✅ Complete
           │       ├── Step 1  `rustc_private` lint driver foundation
           │       ├── Step 2  HIR eligibility analysis & visit dedup
@@ -505,9 +505,9 @@ Steps 2-3 alone close G1 and G3.
 - **Hybrid Parenting Proof ([ADR-010](decision-records.md#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry)):** Explicit `#[tracing::instrument]` caller activates its context via `tracing-opentelemetry`, and downstream automatic dependency spans attach as children across sync and `#[async_trait]` boundaries.
 - **C-ABI Panic Containment (R-3, commit [`6bf0880`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/6bf0880)):** Implemented fail-open `catch_unwind` (Layer 1) and `extern "C-unwind"` boundary declarations (Layer 2) per [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional).
 
-### 6.3 P2.3 - First-Party Lint-Apply Driver (`cargo instrument-rust`) (In Progress ◀── current)
+### 6.3 P2.3 - First-Party Lint-Apply Driver (`cargo instrument-rust`) (Bounded vertical slice complete)
 
-**Objective:** Build the new default first-party workflow established in [ADR-012](decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture). Instead of intercepting every compilation with `RUSTC_WRAPPER` and rewriting sources invisibly, a compiler driver built on `rustc_private` (`rustc_lint` and `rustc_errors`) analyzes the crate and offers machine-applicable suggestions applied directly to disk via a CLI tool.
+**Delivered slice:** `cargo instrument-rust --apply` builds an isolated nightly `rustc_driver` HIR frontend, sets it as `RUSTC`, and lets Cargo retain its `RUSTC_WRAPPER` Rustfix proxy. It applies marker-backed `MachineApplicable` body edits for ordinary free functions, inherent methods, and async functions in selected workspace packages with `opentelemetry` available. The stable workspace remains free of `rustc_private`; only the excluded driver requires nightly plus `rustc-dev`.
 
 #### Feasibility Spike Results (commit [`0b98e5f`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/0b98e5f), 2026-09-10)
 
