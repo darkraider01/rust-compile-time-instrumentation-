@@ -8,6 +8,8 @@ pub const P23_MARKER: &str = "/* __cargo_instrument_rust:p23 */";
 pub enum FunctionShape {
     FreeFunction,
     InherentMethod,
+    TraitImplMethod,
+    DefaultTraitMethod,
     NestedLocalFunction,
 }
 
@@ -18,6 +20,7 @@ pub struct FunctionFacts {
     pub shape: FunctionShape,
     pub is_async: bool,
     pub returns_result: bool,
+    pub can_capture_result_status: bool,
     pub is_directly_recursive: bool,
     pub first_party: bool,
     pub already_instrumented: bool,
@@ -32,6 +35,7 @@ pub enum Ineligibility {
     ExplicitlyInstrumented,
     NestedLocalFunctionExcluded,
     DirectSelfRecursionExcluded,
+    DefaultTraitMethodExcluded,
     UnsupportedFunctionShape,
     MissingOpenTelemetryDependency,
 }
@@ -47,7 +51,7 @@ pub struct InstrumentationPlan {
     pub marker: &'static str,
     pub span: SpanSemantics,
     pub lifecycle: ExecutionLifecycle,
-    pub returns_result: bool,
+    pub captures_result_status: bool,
 }
 
 /// The execution model selected by shared policy, not by an individual frontend.
@@ -73,18 +77,21 @@ impl EligibilityPolicy {
         if facts.shape == FunctionShape::NestedLocalFunction {
             return Err(Ineligibility::NestedLocalFunctionExcluded);
         }
+        if facts.shape == FunctionShape::DefaultTraitMethod {
+            return Err(Ineligibility::DefaultTraitMethodExcluded);
+        }
         if facts.is_directly_recursive {
             return Err(Ineligibility::DirectSelfRecursionExcluded);
         }
         if !facts.has_opentelemetry {
             return Err(Ineligibility::MissingOpenTelemetryDependency);
         }
-        if !matches!(
-            facts.shape,
-            FunctionShape::FreeFunction | FunctionShape::InherentMethod
-        ) {
-            return Err(Ineligibility::UnsupportedFunctionShape);
-        }
+
+        let lifecycle = if facts.is_async {
+            ExecutionLifecycle::AsyncFutureContext
+        } else {
+            ExecutionLifecycle::SyncScopedContext
+        };
 
         Ok(InstrumentationPlan {
             marker: P23_MARKER,
@@ -92,12 +99,8 @@ impl EligibilityPolicy {
                 tracer_scope: facts.crate_name.clone(),
                 span_name: facts.function_name.clone(),
             },
-            lifecycle: if facts.is_async {
-                ExecutionLifecycle::AsyncFutureContext
-            } else {
-                ExecutionLifecycle::SyncScopedContext
-            },
-            returns_result: facts.returns_result,
+            lifecycle,
+            captures_result_status: facts.returns_result && facts.can_capture_result_status,
         })
     }
 }
@@ -113,6 +116,7 @@ mod tests {
             shape: FunctionShape::FreeFunction,
             is_async: false,
             returns_result: false,
+            can_capture_result_status: true,
             is_directly_recursive: false,
             first_party: true,
             already_instrumented: false,
@@ -127,7 +131,7 @@ mod tests {
         assert_eq!(plan.marker, P23_MARKER);
         assert_eq!(plan.span.span_name, "work");
         assert_eq!(plan.lifecycle, ExecutionLifecycle::SyncScopedContext);
-        assert!(!plan.returns_result);
+        assert!(!plan.captures_result_status);
     }
 
     #[test]
@@ -182,11 +186,37 @@ mod tests {
     }
 
     #[test]
+    fn default_trait_method_is_intentionally_excluded() {
+        let mut facts = facts();
+        facts.shape = FunctionShape::DefaultTraitMethod;
+        assert_eq!(
+            EligibilityPolicy::plan(&facts),
+            Err(Ineligibility::DefaultTraitMethodExcluded)
+        );
+    }
+
+    #[test]
+    fn trait_impl_method_is_eligible() {
+        let mut facts = facts();
+        facts.shape = FunctionShape::TraitImplMethod;
+        assert!(EligibilityPolicy::plan(&facts).is_ok());
+    }
+
+    #[test]
     fn returns_result_is_propagated_into_plan() {
         let mut facts = facts();
         facts.returns_result = true;
         let plan = EligibilityPolicy::plan(&facts).unwrap();
-        assert!(plan.returns_result);
+        assert!(plan.captures_result_status);
+    }
+
+    #[test]
+    fn sync_reference_result_returns_result_true_but_captures_result_status_false() {
+        let mut facts = facts();
+        facts.returns_result = true;
+        facts.can_capture_result_status = false;
+        let plan = EligibilityPolicy::plan(&facts).unwrap();
+        assert!(!plan.captures_result_status);
     }
 
     #[test]
