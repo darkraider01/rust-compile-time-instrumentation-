@@ -27,7 +27,7 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     assert_ne!(edited, original, "cargo fix output:\n{first:?}");
     assert_eq!(
         edited.matches(MARKER).count(),
-        26,
+        29,
         "edited source:\n{edited}"
     );
     assert!(
@@ -123,6 +123,62 @@ fn cargo_subcommand_apply_is_owned_idempotent_and_async_safe() {
     assert!(
         !edited.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"recursive_trait_method\")"),
         "directly self-recursive trait method recursive_trait_method() must not receive a P2.3 marker:\n{edited}"
+    );
+    // 4. Issue 3: Trait method calling other.handle() is NOT direct self-recursion
+    let delegate_body = edited
+        .split("impl Delegate for Service")
+        .nth(1)
+        .and_then(|s| s.split("pub struct YieldOnce").next())
+        .expect("Delegate handle body");
+    assert!(
+        delegate_body.contains(MARKER),
+        "Delegate::handle calling other.handle must NOT be classified as direct self-recursion:\n{delegate_body}"
+    );
+    assert!(
+        delegate_body.contains("Tracer::start(&__cargo_instrument_rust_tracer, \"handle\")"),
+        "Delegate::handle must produce a 'handle' span:\n{delegate_body}"
+    );
+
+    // Issue 1: Handwritten boxed future must remain synchronous and NOT contain outer .await or Result closure
+    let handwritten_body = edited
+        .split("pub fn handwritten_boxed_future")
+        .nth(1)
+        .and_then(|s| s.split("pub trait HasOutput").next())
+        .expect("handwritten_boxed_future body");
+    assert!(
+        handwritten_body.contains(MARKER),
+        "handwritten_boxed_future must be instrumented with sync scoped context:\n{handwritten_body}"
+    );
+    assert!(
+        !handwritten_body.contains("FutureExt::with_context"),
+        "handwritten_boxed_future must not use async FutureExt::with_context:\n{handwritten_body}"
+    );
+    assert!(
+        !handwritten_body.contains("}).await"),
+        "handwritten_boxed_future must not contain an outer .await on the function:\n{handwritten_body}"
+    );
+    assert!(
+        !handwritten_body.contains("__cargo_instrument_rust_res"),
+        "handwritten_boxed_future must not be wrapped in Result status closure:\n{handwritten_body}"
+    );
+    assert!(
+        handwritten_body.contains("_cargo_instrument_rust_guard"),
+        "handwritten_boxed_future must have synchronous attach guard:\n{handwritten_body}"
+    );
+
+    // Issue 2: Unrelated associated Output must NOT be treated as Future::Output or Result
+    let unrelated_output_body = edited
+        .split("pub fn unrelated_output_type")
+        .nth(1)
+        .and_then(|s| s.split("pub struct Worker;").next())
+        .expect("unrelated_output_type body");
+    assert!(
+        unrelated_output_body.contains(MARKER),
+        "unrelated_output_type must be instrumented with sync scoped context:\n{unrelated_output_body}"
+    );
+    assert!(
+        !unrelated_output_body.contains("__cargo_instrument_rust_res"),
+        "unrelated_output_type must NOT receive Result closure status wrapping:\n{unrelated_output_body}"
     );
 
     // Part A: #[async_trait] source instrumentation
@@ -452,6 +508,31 @@ impl Counter {
     }
 }
 
+// Issue 1: Handwritten boxed future (sync function returning Pin<Box<dyn Future>>)
+pub fn handwritten_boxed_future() -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<i32, &'static str>> + Send>,
+> {
+    Box::pin(async move {
+        YieldOnce::new().await;
+        Ok(123)
+    })
+}
+
+// Issue 2: Unrelated associated Output type (not a Future)
+pub trait HasOutput {
+    type Output;
+}
+
+pub struct UnrelatedOutputStruct;
+
+impl HasOutput for UnrelatedOutputStruct {
+    type Output = Result<i32, &'static str>;
+}
+
+pub fn unrelated_output_type() -> Box<dyn HasOutput<Output = Result<i32, &'static str>>> {
+    Box::new(UnrelatedOutputStruct)
+}
+
 // Precision check: a non-recursive function calling a same-named method on another type is NOT excluded
 pub struct Worker;
 
@@ -486,6 +567,21 @@ impl RecursiveWorker for Service {
             0
         } else {
             self.recursive_trait_method(n - 1)
+        }
+    }
+}
+
+// Issue 3: Trait method calling other receiver is NOT direct self-recursion
+pub trait Delegate {
+    fn handle(&self, other: &dyn Delegate, n: u32) -> u32;
+}
+
+impl Delegate for Service {
+    fn handle(&self, other: &dyn Delegate, n: u32) -> u32 {
+        if n == 0 {
+            0
+        } else {
+            other.handle(other, n - 1)
         }
     }
 }
@@ -623,7 +719,9 @@ mod tests {
         // 11. Trait method direct recursion exclusion
         assert_eq!(Service.recursive_trait_method(3), 0);
 
-        // 12. async_trait method execution with real suspension (YieldOnce: Pending -> wake -> Ready)
+        // 12. async_trait context-safe behavior across a real suspension/resume boundary (YieldOnce: Pending -> wake -> Ready)
+        // Note: P2.3 proves context preservation across suspension points under FutureExt::with_context;
+        // arbitrary task migration / executor propagation remains P2.4 scope.
         let async_svc = AsyncWorkerService;
 
         // 12a. Caller -> async_trait method parenting proof
@@ -640,6 +738,17 @@ mod tests {
         let fut_traced = async_svc.work_traced(21);
         assert_send(&fut_traced);
         assert_eq!(run_future(fut_traced), Ok(42));
+
+        // 13. Issue 1: Handwritten boxed future executes correctly, future is Send, and returns Ok(123)
+        let fut_handwritten = handwritten_boxed_future();
+        assert_send(&fut_handwritten);
+        assert_eq!(run_future(fut_handwritten), Ok(123));
+
+        // 14. Issue 2: Unrelated HasOutput executes correctly
+        let _unrelated = unrelated_output_type();
+
+        // 15. Issue 3: Trait method calling other receiver executes and is instrumented
+        assert_eq!(Service.handle(&Service, 2), 0);
 
         // Retrieve and assert finished span statuses
         let spans = exporter.get_finished_spans().expect("get finished spans");
@@ -665,6 +774,15 @@ mod tests {
 
         let s_custom = find_span("custom_type_named_result");
         assert_eq!(s_custom.status, opentelemetry::trace::Status::Unset, "custom Result must not have Error status");
+
+        let s_handwritten = find_span("handwritten_boxed_future");
+        assert_eq!(s_handwritten.status, opentelemetry::trace::Status::Unset, "handwritten boxed future must produce span with Unset status");
+
+        let s_unrelated = find_span("unrelated_output_type");
+        assert_eq!(s_unrelated.status, opentelemetry::trace::Status::Unset, "unrelated HasOutput function must produce span with Unset status");
+
+        let s_handle = find_span("handle");
+        assert_eq!(s_handle.status, opentelemetry::trace::Status::Unset, "other-receiver trait method handle must produce span with Unset status");
 
         // Excluded direct recursion functions must not produce spans
         assert!(!spans.iter().any(|s| s.name == "factorial"), "factorial must not produce any span");
