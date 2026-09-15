@@ -18,16 +18,6 @@ use crate::unit::UnitId;
 pub const RECURSION_GUARD_ENV: &str = "CARGO_INSTRUMENT_ACTIVE";
 pub const DEBUG_ENV: &str = "INSTRUMENT_DEBUG";
 
-/// Isolated R-4 spike input: the exact, Cargo-produced OpenTelemetry rlib to inject.
-///
-/// This is deliberately not a user-facing option or artifact-discovery mechanism. The R-4
-/// experiment must receive an authoritative path so it never selects an rlib by filename glob.
-pub const EXPERIMENTAL_EXTERN_OTEL_RLIB_ENV: &str =
-    "CARGO_INSTRUMENT_EXPERIMENTAL_EXTERN_OTEL_RLIB";
-/// Isolated R-4 spike input: only inject into this exact dependency crate name.
-pub const EXPERIMENTAL_EXTERN_OTEL_CRATE_ENV: &str =
-    "CARGO_INSTRUMENT_EXPERIMENTAL_EXTERN_OTEL_CRATE";
-
 #[derive(Debug, Error)]
 pub enum WrapperError {
     #[error("No rustc command specified")]
@@ -201,8 +191,22 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
 
                                 // H1: Splicing pipeline integration
                                 if !report.candidates.is_empty() {
-                                    let experimental_otel_rlib =
-                                        experimental_otel_rlib_for(crate_name);
+                                    let r4_native_otel_rlib = match session_plan
+                                        .r4_native_otel_artifact_for(
+                                            &resolved_path,
+                                            &config.rustc_args,
+                                        ) {
+                                        Ok(artifact) => {
+                                            artifact.map(|artifact| artifact.rlib_path.clone())
+                                        }
+                                        Err(reason) => {
+                                            eprintln!(
+                                                "warning: cargo-instrument: R-4 native OpenTelemetry resolution for '{crate_name}' is unsafe: {reason}. \
+                                                 Preserving the existing Tier-2 path per S11 fail-open."
+                                            );
+                                            None
+                                        }
+                                    };
                                     let emitter: Option<Box<dyn Emitter>> = if preflight_failed {
                                         None
                                     } else if report.has_colliding_symbols {
@@ -239,10 +243,9 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                         }
                                     } else {
                                         // Tier 2: Non-application crate
-                                        // R-4 spike only: use the exact pre-resolved rlib supplied by the
-                                        // harness. Do not discover artifacts from the filesystem: selecting
-                                        // among multiple versions by filename would be nondeterministic.
-                                        if experimental_otel_rlib.is_some() {
+                                        // R-4 spike only: the SessionPlan supplies an exact Cargo JSON artifact.
+                                        // The wrapper never searches a dependency directory by filename.
+                                        if r4_native_otel_rlib.is_some() {
                                             Some(Box::new(NativeOtelEmitter::new(crate_name)))
                                         // G4 / G7 link provider gate: verify otel-shim is reachable in the build graph
                                         // and that no target root reaching this crate lacks otel-shim.
@@ -268,7 +271,7 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                     };
 
                                     if let Some(emitter) = emitter {
-                                        if let Some(otel_rlib) = experimental_otel_rlib {
+                                        if let Some(otel_rlib) = r4_native_otel_rlib {
                                             args_to_run.push("--extern".to_string());
                                             args_to_run.push(format!(
                                                 "opentelemetry={}",
@@ -344,33 +347,6 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
     }
 
     Ok(status.code().unwrap_or(1))
-}
-
-/// Returns the explicit R-4 artifact only for its intended dependency crate.
-///
-/// A missing or non-rlib artifact deliberately falls back to the existing Tier-2 decision path,
-/// which keeps the wrapper fail-open and leaves the C ABI available throughout the spike.
-fn experimental_otel_rlib_for(crate_name: &str) -> Option<PathBuf> {
-    let requested_crate = env::var(EXPERIMENTAL_EXTERN_OTEL_CRATE_ENV).ok()?;
-    if requested_crate != crate_name {
-        return None;
-    }
-
-    let path = PathBuf::from(env::var_os(EXPERIMENTAL_EXTERN_OTEL_RLIB_ENV)?);
-    let is_rlib = path
-        .extension()
-        .is_some_and(|extension| extension == "rlib");
-    if is_rlib && path.is_file() {
-        return Some(path);
-    }
-
-    eprintln!(
-        "warning: cargo-instrument: R-4 experimental OpenTelemetry artifact '{}' for '{}' is unavailable; \
-         preserving the existing Tier-2 path per S11 fail-open.",
-        path.display(),
-        crate_name
-    );
-    None
 }
 
 #[derive(Debug, Clone)]
