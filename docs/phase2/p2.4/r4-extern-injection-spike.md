@@ -1,7 +1,7 @@
 # P2.4/R-4 `--extern` Injection Spike
 
-**Status:** Complete as an isolated architecture experiment.  
-**Recommendation:** **Further investigation required** before replacing Tier-2 C ABI.
+**Status:** Production-oriented artifact-resolution spike complete.
+**Recommendation:** **Use a hybrid fallback**; native injection is safe only for an explicitly resolved compatible unit.
 
 This record is the evidence for [issue #3](https://github.com/darkraider01/rust-compile-time-instrumentation-/issues/3). It does not change ADR-011 and does not remove or refactor the existing C-ABI path.
 
@@ -15,18 +15,18 @@ Can a dependency which does not declare `opentelemetry` compile and export the e
 
 without mutating its manifest or source?
 
-## Isolated implementation
+## Deterministic artifact resolver
 
-The spike is intentionally test-only and requires both environment variables:
+The spike no longer accepts a manually supplied rlib path. `SessionPlan` now records:
 
-```text
-CARGO_INSTRUMENT_EXPERIMENTAL_EXTERN_OTEL_CRATE=dep_r4
-CARGO_INSTRUMENT_EXPERIMENTAL_EXTERN_OTEL_RLIB=<exact .rlib path>
-```
+- the exact dependency package ID, inferred from its manifest directory;
+- the sole OpenTelemetry package ID shared by every target root that reaches that dependency;
+- Cargo metadata's resolved feature set and package version; and
+- exactly one `rlib` path from Cargo's `compiler-artifact` JSON output, keyed by target and profile.
 
-The wrapper applies native `NativeOtelEmitter` output only to the named non-application crate, appends that exact `--extern` argument, and otherwise retains the normal Tier-2 C-ABI selection. There is no CLI flag, artifact globbing, or production artifact resolver in this spike.
+The resolver rejects missing artifacts, duplicate matching artifacts, target mismatch, profile mismatch, a shared dependency with multiple OpenTelemetry package IDs, and stale paths. Every rejection preserves the existing Tier-2 C-ABI route under S11. It never scans a dependency directory or selects an artifact by filename.
 
-An absent or non-rlib path logs an S11 fail-open warning and preserves the C-ABI route. This protects the experiment from selecting an arbitrary artifact and proves the C ABI remains available as a fallback.
+The JSON pre-pass remains deliberately test-spike orchestration: it is not exposed as a user-facing CLI and is not a decision to migrate all dependency instrumentation.
 
 The runnable evidence is deliberately gated because it builds an isolated multi-crate Cargo workspace:
 
@@ -38,7 +38,7 @@ cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --n
 
 The test creates a path dependency, `dep_r4`, whose `Cargo.toml` has an empty `[dependencies]` table. The normal wrapper mirrors and transforms its synchronous and asynchronous functions using the established native P1.5/P1.6 emitter; only the mirror contains the OpenTelemetry calls.
 
-The pre-pass first builds a workspace member with the same `opentelemetry` and `opentelemetry_sdk` feature set used by the application. The exact resulting `libopentelemetry-*.rlib` is supplied to the wrapper. The application installs an `InMemorySpanExporter` and proves:
+The pre-pass first builds a workspace member with the same `opentelemetry` and `opentelemetry_sdk` feature set used by the application. Cargo emits the artifact JSON; the session-plan resolver records the exact path and the wrapper obtains it only through that plan. The application installs an `InMemorySpanExporter` and proves:
 
 - the transformed synchronous dependency span exports under the manually-created application parent;
 - the transformed suspended/resumed async dependency span exports under that same parent; and
@@ -77,20 +77,21 @@ This is the expected boundary for #6. The spike does not introduce a synthetic t
 | Registry cache untouched | Pass: the cached `opentelemetry-0.32.0` source tree is byte-snapshotted before/after. |
 | Cold, repeat, incremental, clean rebuild | Pass: the gated probe executes all four. The clean rebuild reruns the artifact pre-pass. |
 | Missing artifact fails open | Pass: the wrapper warns and retains existing Tier-2 C ABI; a subsequent `cargo check` succeeds. |
-| Ambiguous artifacts never arbitrarily selected | Pass for the injection mechanism: a second plausible `libopentelemetry-*.rlib` filename is present, but the wrapper injects only its explicit path. Genuine multi-version graph resolution remains open below. |
+| Ambiguous artifacts never arbitrarily selected | Pass: the resolver stores Cargo's exact JSON artifact; a second plausible filename is ignored. Duplicate matching JSON records are rejected. |
+| Multiple OTel versions / target roots | Pass: metadata fixture models 0.30 and 0.32 under two roots sharing a dependency; that dependency receives no native mapping and fails open. Root-specific packages retain their exact package ID. |
+| Target/profile identity | Pass: resolver rejects host-vs-target and dev-vs-release mismatches. |
 | Host/proc-macro units excluded | Pass: the fixture includes a proc-macro crate; it is not entered into the eligible analysis/injection path. |
 | C ABI retained | Pass: no C-ABI code was removed; missing-artifact fallback exercises its existing selection path. |
 
 ## Remaining blockers
 
-1. The production `SessionPlan` has no per-target-root, feature-compatible pre-pass or JSON artifact capture. Implementing one is follow-on work, not part of this spike.
-2. A genuine two-version graph still needs the planned version-qualified `cargo --message-format=json` artifact selection test. The explicit-path mechanism is safe; package/feature selection is not yet automated.
-3. A dependency shared by target roots that resolve incompatible OpenTelemetry versions remains structurally unsatisfiable for a single native-instrumented compilation unit.
-4. Automatic Tokio task-boundary propagation needs the distinct #6 design and implementation.
-5. Cross-target and proc-macro/build-script coverage has only the narrow invocation-exclusion proof here; broader P2.5 validation remains out of scope.
+1. The test pre-pass is not yet integrated into a supported user-facing dependency mode. Cargo scheduling must be preserved while producing a feature-compatible artifact for the selected target root.
+2. A dependency shared by target roots that resolve incompatible OpenTelemetry versions remains structurally unsatisfiable for one native-instrumented compilation unit. The resolver correctly fails open, so C ABI remains the available fallback.
+3. Automatic Tokio task-boundary propagation is intentionally untouched and belongs to #6.
+4. Cross-target and proc-macro/build-script coverage has only target/profile and invocation-exclusion fixtures; broader platform validation remains P2.5 work.
 
 ## Conclusion
 
-**4. Further investigation required.**
+**3. Use a hybrid.**
 
-`--extern` injection is viable for a dependency when the wrapper receives an authoritative artifact that matches the target root's resolved OpenTelemetry feature set. It is not yet safe to replace Tier-2 C ABI because the project has not implemented a deterministic, per-target-root artifact pre-pass/selection mechanism and has not resolved the shared-dependency multi-version limit. Keep the C ABI intact while that work is evaluated.
+`--extern` injection is viable and selection-safe when `SessionPlan` has a Cargo-authoritative artifact matching the dependency's package identity, resolved features, target, and profile. It cannot safely replace Tier-2 outright: the shared multi-root/multi-version case must fail open, and the C ABI remains necessary while supported pre-pass orchestration is completed. Keep the C ABI intact.
