@@ -8,7 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn run_cargo(workspace: &Path, target_dir: &Path, args: &[&str], rlib: &Path) -> Output {
+use cargo_instrument::SessionPlan;
+
+fn run_cargo(workspace: &Path, target_dir: &Path, args: &[&str], session_file: &Path) -> Output {
     Command::new("cargo")
         .args(args)
         .arg("--offline")
@@ -16,8 +18,7 @@ fn run_cargo(workspace: &Path, target_dir: &Path, args: &[&str], rlib: &Path) ->
         .arg(target_dir)
         .current_dir(workspace)
         .env("RUSTC_WRAPPER", env!("CARGO_BIN_EXE_cargo-instrument"))
-        .env("CARGO_INSTRUMENT_EXPERIMENTAL_EXTERN_OTEL_CRATE", "dep_r4")
-        .env("CARGO_INSTRUMENT_EXPERIMENTAL_EXTERN_OTEL_RLIB", rlib)
+        .env("CARGO_INSTRUMENT_SESSION", session_file)
         .env("CARGO_INSTRUMENT_WRAPPER_MODE", "1")
         .env("INSTRUMENT_DEBUG", "1")
         .output()
@@ -31,29 +32,6 @@ fn assert_success(output: &Output, context: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-}
-
-fn find_single_otel_rlib(target_dir: &Path) -> PathBuf {
-    let deps = target_dir.join("debug").join("deps");
-    let rlibs: Vec<_> = fs::read_dir(&deps)
-        .expect("read pre-pass deps directory")
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.starts_with("libopentelemetry-")
-                        && path.extension().is_some_and(|e| e == "rlib")
-                })
-        })
-        .collect();
-    assert_eq!(
-        rlibs.len(),
-        1,
-        "the pre-pass fixture must resolve exactly one OpenTelemetry rlib, got {rlibs:?}"
-    );
-    rlibs.into_iter().next().unwrap()
 }
 
 fn find_mirrored_dependency_source(root: &Path) -> Option<PathBuf> {
@@ -104,6 +82,46 @@ fn cached_otel_source() -> PathBuf {
         }
     }
     panic!("find cached opentelemetry-0.32.0 source");
+}
+
+fn prepare_r4_session(workspace: &Path, target: &Path) -> (SessionPlan, PathBuf, PathBuf) {
+    let metadata_output = Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--offline"])
+        .current_dir(workspace)
+        .output()
+        .expect("read Cargo metadata for R-4 plan");
+    assert_success(&metadata_output, "R-4 Cargo metadata");
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&metadata_output.stdout).expect("parse Cargo metadata JSON");
+
+    let prepass = Command::new("cargo")
+        .args([
+            "build",
+            "--package",
+            "otel_provider",
+            "--offline",
+            "--message-format=json",
+            "--target-dir",
+        ])
+        .arg(target)
+        .current_dir(workspace)
+        .output()
+        .expect("run R-4 artifact pre-pass");
+    assert_success(&prepass, "R-4 artifact pre-pass");
+
+    let mut plan = SessionPlan::from_metadata_json(&metadata).expect("build R-4 session plan");
+    plan.add_r4_artifacts_from_cargo_json(&metadata, &prepass.stdout, None)
+        .expect("capture authoritative R-4 Cargo artifact");
+    assert_eq!(
+        plan.r4_native_otel_artifacts.len(),
+        1,
+        "fixture should produce one deterministic native OpenTelemetry artifact"
+    );
+    let rlib = plan.r4_native_otel_artifacts[0].rlib_path.clone();
+    let session_file = target.join("r4-session.json");
+    plan.save_to_file(&session_file)
+        .expect("save R-4 session plan");
+    (plan, session_file, rlib)
 }
 
 fn write_fixture(workspace: &Path, otel_shim: &Path) -> (PathBuf, PathBuf) {
@@ -300,26 +318,18 @@ fn r4_extern_injection_path_dependency_proof() {
     );
 
     let target = workspace.join("target");
-    let prepass = Command::new("cargo")
-        .args([
-            "build",
-            "--package",
-            "otel_provider",
-            "--offline",
-            "--target-dir",
-        ])
-        .arg(&target)
-        .current_dir(workspace)
-        .output()
-        .expect("run R-4 artifact pre-pass");
-    assert_success(&prepass, "R-4 artifact pre-pass");
-    let rlib = find_single_otel_rlib(&target);
+    let (_, session_file, rlib) = prepare_r4_session(workspace, &target);
 
     // A second plausible filename proves the wrapper is not selecting an artifact by globbing.
     let duplicate_name = target.join("debug/deps/libopentelemetry-r4-ambiguous.rlib");
     fs::copy(&rlib, &duplicate_name).expect("create decoy artifact");
 
-    let cold = run_cargo(workspace, &target, &["run", "--package", "app"], &rlib);
+    let cold = run_cargo(
+        workspace,
+        &target,
+        &["run", "--package", "app"],
+        &session_file,
+    );
     assert_success(&cold, "R-4 cold instrumented build");
     assert!(
         String::from_utf8_lossy(&cold.stdout).contains("R4_EXTERN_INJECTION_VERIFIED"),
@@ -346,7 +356,12 @@ fn r4_extern_injection_path_dependency_proof() {
         "the R-4 path must not use the C ABI for the selected dependency"
     );
 
-    let repeat = run_cargo(workspace, &target, &["run", "--package", "app"], &rlib);
+    let repeat = run_cargo(
+        workspace,
+        &target,
+        &["run", "--package", "app"],
+        &session_file,
+    );
     assert_success(&repeat, "R-4 repeat build");
 
     fs::write(
@@ -357,7 +372,12 @@ fn r4_extern_injection_path_dependency_proof() {
         ),
     )
     .unwrap();
-    let incremental = run_cargo(workspace, &target, &["run", "--package", "app"], &rlib);
+    let incremental = run_cargo(
+        workspace,
+        &target,
+        &["run", "--package", "app"],
+        &session_file,
+    );
     assert_success(&incremental, "R-4 incremental app rebuild");
 
     let clean = Command::new("cargo")
@@ -367,29 +387,15 @@ fn r4_extern_injection_path_dependency_proof() {
         .output()
         .expect("clean R-4 app artifacts");
     assert_success(&clean, "R-4 clean");
-    let prepass_after_clean = Command::new("cargo")
-        .args([
-            "build",
-            "--package",
-            "otel_provider",
-            "--offline",
-            "--target-dir",
-        ])
-        .arg(&target)
-        .current_dir(workspace)
-        .output()
-        .expect("rerun R-4 artifact pre-pass");
-    assert_success(&prepass_after_clean, "R-4 clean-rebuild artifact pre-pass");
-    let clean_rebuild_rlib = find_single_otel_rlib(&target);
+    let (mut clean_plan, clean_session_file, _) = prepare_r4_session(workspace, &target);
     let clean_rebuild = run_cargo(
         workspace,
         &target,
         &["run", "--package", "app"],
-        &clean_rebuild_rlib,
+        &clean_session_file,
     );
     assert_success(&clean_rebuild, "R-4 clean rebuild");
 
-    let missing_artifact = target.join("missing-opentelemetry.rlib");
     let clean_dependency = Command::new("cargo")
         .args(["clean", "--package", "dep_r4", "--target-dir"])
         .arg(&target)
@@ -397,11 +403,15 @@ fn r4_extern_injection_path_dependency_proof() {
         .output()
         .expect("clean R-4 dependency before missing-artifact probe");
     assert_success(&clean_dependency, "R-4 missing-artifact dependency clean");
+    clean_plan.r4_native_otel_artifacts.clear();
+    clean_plan
+        .save_to_file(&clean_session_file)
+        .expect("save missing-artifact R-4 plan");
     let missing = run_cargo(
         workspace,
         &target,
         &["check", "--package", "app"],
-        &missing_artifact,
+        &clean_session_file,
     );
     assert_success(&missing, "R-4 missing-artifact fail-open check");
     assert!(
