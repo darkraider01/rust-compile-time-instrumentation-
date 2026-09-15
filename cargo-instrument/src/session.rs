@@ -7,6 +7,42 @@ use std::process::Command;
 
 pub const SESSION_ENV: &str = "CARGO_INSTRUMENT_SESSION";
 
+/// The portion of Cargo's compiler-artifact profile that must agree with a wrapped rustc unit.
+/// A missing or mismatched profile is a fail-open condition for native R-4 injection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct R4Profile {
+    pub opt_level: String,
+    pub debug_assertions: bool,
+    pub overflow_checks: bool,
+    pub test: bool,
+}
+
+impl Default for R4Profile {
+    fn default() -> Self {
+        // Cargo's dev profile omits these defaults from rustc argv, so absence must not be
+        // mistaken for an unknown profile. Release/custom profiles carry explicit `-C` values.
+        Self {
+            opt_level: "0".to_string(),
+            debug_assertions: true,
+            overflow_checks: true,
+            test: false,
+        }
+    }
+}
+
+/// A native OpenTelemetry artifact reported by Cargo's `compiler-artifact` JSON message.
+///
+/// The path is authoritative Cargo output, never the result of a filename search by this tool.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct R4NativeOtelArtifact {
+    pub package_id: String,
+    pub package_version: String,
+    pub resolved_features: Vec<String>,
+    pub target: Option<String>,
+    pub profile: R4Profile,
+    pub rlib_path: PathBuf,
+}
+
 /// Reason why compile-time instrumentation was skipped for a compilation unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkipCause {
@@ -58,6 +94,16 @@ pub struct SessionPlan {
     /// Resolved root workspace directory.
     #[serde(default)]
     pub workspace_root: Option<PathBuf>,
+    /// Cargo package id -> manifest directory, used to identify a wrapped dependency exactly.
+    #[serde(default)]
+    pub package_manifest_dirs: HashMap<String, PathBuf>,
+    /// Dependency package id -> the sole OpenTelemetry package id shared by every target root
+    /// that reaches it. Omitted when roots disagree or no target-safe choice exists.
+    #[serde(default)]
+    pub r4_otel_package_by_dependency: HashMap<String, String>,
+    /// Exact Cargo-reported artifacts available to the R-4 resolver.
+    #[serde(default)]
+    pub r4_native_otel_artifacts: Vec<R4NativeOtelArtifact>,
 }
 
 impl SessionPlan {
@@ -103,6 +149,194 @@ impl SessionPlan {
     /// Returns true if `otel-shim` is reachable in the target dependency graph.
     pub fn has_otel_shim_provider(&self) -> bool {
         self.has_otel_shim_provider
+    }
+
+    /// Adds authoritative OpenTelemetry artifacts from newline-delimited Cargo JSON output.
+    ///
+    /// Callers must run Cargo with `--message-format=json` for the same target/profile they
+    /// intend to instrument. This routine rejects missing or ambiguous rlib output rather than
+    /// inspecting a dependency directory itself.
+    pub fn add_r4_artifacts_from_cargo_json(
+        &mut self,
+        metadata: &serde_json::Value,
+        cargo_messages: &[u8],
+        target: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let features_by_package = metadata["resolve"]["nodes"]
+            .as_array()
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|node| {
+                        let id = node["id"].as_str()?;
+                        let mut features: Vec<String> = node["features"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|feature| feature.as_str().map(String::from))
+                            .collect();
+                        features.sort();
+                        Some((id.to_string(), features))
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+        let versions_by_package = metadata["packages"]
+            .as_array()
+            .map(|packages| {
+                packages
+                    .iter()
+                    .filter_map(|package| {
+                        Some((
+                            package["id"].as_str()?.to_string(),
+                            package["version"].as_str()?.to_string(),
+                        ))
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        let wanted_packages: HashSet<&str> = self
+            .r4_otel_package_by_dependency
+            .values()
+            .map(String::as_str)
+            .collect();
+        if wanted_packages.is_empty() {
+            return Ok(());
+        }
+
+        let mut artifacts = Vec::new();
+        for line in cargo_messages.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let message: serde_json::Value = match serde_json::from_slice(line) {
+                Ok(message) => message,
+                Err(_) => continue,
+            };
+            if message["reason"].as_str() != Some("compiler-artifact") {
+                continue;
+            }
+            let package_id = match message["package_id"].as_str() {
+                Some(id) if wanted_packages.contains(id) => id,
+                _ => continue,
+            };
+            let rlibs: Vec<PathBuf> = message["filenames"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|filename| filename.as_str())
+                .map(PathBuf::from)
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "rlib")
+                })
+                .collect();
+            if rlibs.len() != 1 {
+                return Err(format!(
+                    "Cargo compiler-artifact for '{package_id}' reported {} rlib files; expected exactly one",
+                    rlibs.len()
+                )
+                .into());
+            }
+            let profile = R4Profile {
+                opt_level: message["profile"]["opt_level"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                debug_assertions: message["profile"]["debug_assertions"]
+                    .as_bool()
+                    .unwrap_or(false),
+                overflow_checks: message["profile"]["overflow_checks"]
+                    .as_bool()
+                    .unwrap_or(false),
+                test: message["profile"]["test"].as_bool().unwrap_or(false),
+            };
+            artifacts.push(R4NativeOtelArtifact {
+                package_id: package_id.to_string(),
+                package_version: versions_by_package
+                    .get(package_id)
+                    .cloned()
+                    .ok_or_else(|| format!("Cargo metadata lacks version for '{package_id}'"))?,
+                resolved_features: features_by_package.get(package_id).cloned().ok_or_else(
+                    || format!("Cargo metadata lacks resolved features for '{package_id}'"),
+                )?,
+                target: target.clone(),
+                profile,
+                rlib_path: rlibs.into_iter().next().unwrap(),
+            });
+        }
+
+        for artifact in artifacts {
+            if !artifact.rlib_path.is_file() {
+                return Err(format!(
+                    "Cargo-reported OpenTelemetry artifact '{}' does not exist",
+                    artifact.rlib_path.display()
+                )
+                .into());
+            }
+            if self.r4_native_otel_artifacts.iter().any(|existing| {
+                existing.package_id == artifact.package_id
+                    && existing.target == artifact.target
+                    && existing.profile == artifact.profile
+            }) {
+                return Err(format!(
+                    "multiple Cargo artifacts match OpenTelemetry package '{}' for the same target/profile",
+                    artifact.package_id
+                )
+                .into());
+            }
+            self.r4_native_otel_artifacts.push(artifact);
+        }
+        Ok(())
+    }
+
+    /// Resolves the exact native OpenTelemetry artifact for one wrapped dependency unit.
+    ///
+    /// `Ok(None)` means this package was not selected for R-4 native injection. `Err` is an
+    /// ambiguity, stale path, profile mismatch, or target mismatch and must fall open to Tier-2.
+    pub fn r4_native_otel_artifact_for(
+        &self,
+        source_file: &Path,
+        rustc_args: &[String],
+    ) -> Result<Option<&R4NativeOtelArtifact>, String> {
+        let package_id = self
+            .package_manifest_dirs
+            .iter()
+            .filter(|(_, manifest_dir)| source_file.starts_with(manifest_dir.as_path()))
+            .max_by_key(|(_, manifest_dir)| manifest_dir.components().count())
+            .map(|(package_id, _)| package_id);
+        let Some(package_id) = package_id else {
+            return Ok(None);
+        };
+        let Some(otel_package_id) = self.r4_otel_package_by_dependency.get(package_id) else {
+            return Ok(None);
+        };
+        let target = rustc_target(rustc_args);
+        let profile = rustc_profile(rustc_args);
+        let matches: Vec<_> = self
+            .r4_native_otel_artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.package_id == *otel_package_id
+                    && artifact.target == target
+                    && artifact.profile == profile
+            })
+            .collect();
+        match matches.as_slice() {
+            [] => Err(format!(
+                "no Cargo-authoritative OpenTelemetry artifact for package '{otel_package_id}', target {target:?}, profile {profile:?}; available artifacts: {:?}",
+                self.r4_native_otel_artifacts,
+            )),
+            [artifact] if artifact.rlib_path.is_file() => Ok(Some(*artifact)),
+            [artifact] => Err(format!(
+                "Cargo-authoritative OpenTelemetry artifact '{}' is no longer present",
+                artifact.rlib_path.display()
+            )),
+            _ => Err(format!(
+                "multiple Cargo-authoritative OpenTelemetry artifacts match package '{otel_package_id}', target {target:?}, profile {profile:?}"
+            )),
+        }
     }
 
     /// Compute a SHA-256 fingerprint over Cargo.lock and all workspace/local Cargo.toml manifests.
@@ -357,12 +591,18 @@ impl SessionPlan {
             .ok_or("missing packages in metadata")?;
 
         let mut pkg_id_to_name: HashMap<String, String> = HashMap::new();
+        let mut package_manifest_dirs: HashMap<String, PathBuf> = HashMap::new();
         let mut proc_macro_ids: HashSet<String> = HashSet::new();
         let mut bin_or_cdylib_ids: HashSet<String> = HashSet::new();
 
         for pkg in packages {
             if let (Some(id), Some(name)) = (pkg["id"].as_str(), pkg["name"].as_str()) {
                 pkg_id_to_name.insert(id.to_string(), name.to_string());
+                if let Some(manifest_path) = pkg["manifest_path"].as_str() {
+                    if let Some(manifest_dir) = Path::new(manifest_path).parent() {
+                        package_manifest_dirs.insert(id.to_string(), manifest_dir.to_path_buf());
+                    }
+                }
                 if let Some(targets) = pkg["targets"].as_array() {
                     let is_pm = targets.iter().any(|t| {
                         t["kind"]
@@ -432,6 +672,9 @@ impl SessionPlan {
                     fingerprint,
                     manifest_paths,
                     workspace_root: Some(workspace_root),
+                    package_manifest_dirs,
+                    r4_otel_package_by_dependency: HashMap::new(),
+                    r4_native_otel_artifacts: Vec::new(),
                 });
             }
         };
@@ -508,6 +751,7 @@ impl SessionPlan {
         // A package is otel-shim-safe to instrument only if every target root whose reachable
         // set contains that package also has otel-shim in its own reachable set.
         let mut target_reachable_ids: HashSet<String> = HashSet::new();
+        let mut target_root_reachability: Vec<HashSet<String>> = Vec::new();
         let mut shim_unsafe_packages: HashSet<String> = HashSet::new();
         let mut has_otel_shim_provider = false;
 
@@ -555,7 +799,43 @@ impl SessionPlan {
                 }
             }
 
-            target_reachable_ids.extend(root_reachable_ids);
+            target_reachable_ids.extend(root_reachable_ids.iter().cloned());
+            target_root_reachability.push(root_reachable_ids);
+        }
+
+        // R-4 native injection is safe only when every target root that shares a dependency
+        // resolves exactly one, identical OpenTelemetry package id. Metadata package ids carry
+        // the source/version identity; a disagreement is deliberately left unmapped.
+        let mut r4_otel_package_by_dependency = HashMap::new();
+        for dependency_id in &target_reachable_ids {
+            let root_otel_ids: Vec<HashSet<String>> = target_root_reachability
+                .iter()
+                .filter(|reachable| reachable.contains(dependency_id))
+                .map(|reachable| {
+                    reachable
+                        .iter()
+                        .filter(|id| {
+                            pkg_id_to_name
+                                .get(*id)
+                                .is_some_and(|name| name == "opentelemetry")
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .collect();
+            if root_otel_ids.is_empty() || root_otel_ids.iter().any(|ids| ids.len() != 1) {
+                continue;
+            }
+            let shared_otel_ids: HashSet<String> = root_otel_ids
+                .iter()
+                .flat_map(|ids| ids.iter().cloned())
+                .collect();
+            if shared_otel_ids.len() == 1 {
+                r4_otel_package_by_dependency.insert(
+                    dependency_id.clone(),
+                    shared_otel_ids.into_iter().next().unwrap(),
+                );
+            }
         }
 
         // Target-reachable package names (normalized to underscored form for consistent comparison)
@@ -593,6 +873,9 @@ impl SessionPlan {
             fingerprint,
             manifest_paths,
             workspace_root: Some(workspace_root),
+            package_manifest_dirs,
+            r4_otel_package_by_dependency,
+            r4_native_otel_artifacts: Vec::new(),
         })
     }
 
@@ -620,6 +903,48 @@ impl SessionPlan {
         let plan: Self = serde_json::from_slice(&content)?;
         Ok(plan)
     }
+}
+
+fn rustc_target(args: &[String]) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == "--target")
+        .and_then(|index| args.get(index + 1).cloned())
+        .or_else(|| {
+            args.iter()
+                .find_map(|arg| arg.strip_prefix("--target=").map(String::from))
+        })
+}
+
+fn rustc_profile(args: &[String]) -> R4Profile {
+    let mut profile = R4Profile::default();
+    for (index, arg) in args.iter().enumerate() {
+        let codegen = if arg == "-C" {
+            args.get(index + 1).map(String::as_str)
+        } else {
+            arg.strip_prefix("-C")
+        };
+        if let Some(codegen) = codegen {
+            if let Some(value) = codegen.strip_prefix("opt-level=") {
+                profile.opt_level = value.to_string();
+            } else if let Some(value) = codegen.strip_prefix("overflow-checks=") {
+                profile.overflow_checks = value == "on" || value == "true";
+            } else if let Some(value) = codegen.strip_prefix("debug-assertions=") {
+                profile.debug_assertions = value == "on" || value == "true";
+            }
+        }
+        if arg == "--cfg"
+            && args
+                .get(index + 1)
+                .is_some_and(|value| value == "debug_assertions")
+            || arg == "--cfg=debug_assertions"
+        {
+            profile.debug_assertions = true;
+        }
+        if arg == "--test" {
+            profile.test = true;
+        }
+    }
+    profile
 }
 
 /// Compute the set of host-only package names by filtering out target-reachable packages.
@@ -871,6 +1196,107 @@ mod tests {
         assert!(
             !plan.is_shim_unsafe("app-a"),
             "app_a links otel-shim and is shim-safe"
+        );
+    }
+
+    #[test]
+    fn test_r4_multiple_otel_versions_across_target_roots_fail_open_for_shared_dependency() {
+        let app_a = "app-a 0.1.0 (path+file:///app-a)";
+        let app_b = "app-b 0.1.0 (path+file:///app-b)";
+        let common = "common 0.1.0 (path+file:///common)";
+        let otel_30 = "registry+https://example.invalid#index#opentelemetry@0.30.0";
+        let otel_32 = "registry+https://example.invalid#index#opentelemetry@0.32.0";
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": app_a, "name": "app-a", "version": "0.1.0", "manifest_path": "/app-a/Cargo.toml", "targets": [{"kind": ["bin"]}]},
+                {"id": app_b, "name": "app-b", "version": "0.1.0", "manifest_path": "/app-b/Cargo.toml", "targets": [{"kind": ["bin"]}]},
+                {"id": common, "name": "common", "version": "0.1.0", "manifest_path": "/common/Cargo.toml", "targets": [{"kind": ["lib"]}]},
+                {"id": otel_30, "name": "opentelemetry", "version": "0.30.0", "manifest_path": "/registry/opentelemetry-0.30.0/Cargo.toml", "targets": [{"kind": ["lib"]}]},
+                {"id": otel_32, "name": "opentelemetry", "version": "0.32.0", "manifest_path": "/registry/opentelemetry-0.32.0/Cargo.toml", "targets": [{"kind": ["lib"]}]}
+            ],
+            "workspace_members": [app_a, app_b, common],
+            "workspace_root": "/",
+            "resolve": {"nodes": [
+                {"id": app_a, "deps": [{"pkg": common, "dep_kinds": [{"kind": null}]}, {"pkg": otel_32, "dep_kinds": [{"kind": null}]}]},
+                {"id": app_b, "deps": [{"pkg": common, "dep_kinds": [{"kind": null}]}, {"pkg": otel_30, "dep_kinds": [{"kind": null}]}]},
+                {"id": common, "deps": []},
+                {"id": otel_30, "deps": [], "features": ["trace"]},
+                {"id": otel_32, "deps": [], "features": ["trace"]}
+            ]}
+        });
+
+        let plan = SessionPlan::from_metadata_json(&metadata).expect("parse multi-root metadata");
+        assert!(
+            !plan.r4_otel_package_by_dependency.contains_key(common),
+            "a shared dependency reached by roots with 0.30 and 0.32 must be left on the fail-open path"
+        );
+        assert_eq!(
+            plan.r4_otel_package_by_dependency.get(app_a),
+            Some(&otel_32.to_string()),
+            "a single-root package retains its exact 0.32 package identity"
+        );
+        assert_eq!(
+            plan.r4_otel_package_by_dependency.get(app_b),
+            Some(&otel_30.to_string()),
+            "a single-root package retains its exact 0.30 package identity"
+        );
+    }
+
+    #[test]
+    fn test_r4_compiler_artifact_requires_exact_target_and_profile() {
+        let temp = tempfile::tempdir().expect("create artifact fixture");
+        let dep_dir = temp.path().join("dep");
+        fs::create_dir_all(&dep_dir).unwrap();
+        let source = dep_dir.join("src/lib.rs");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "pub fn work() {}\n").unwrap();
+        let rlib = temp.path().join("libopentelemetry-exact.rlib");
+        fs::write(&rlib, b"artifact").unwrap();
+
+        let dep_id = "dep 0.1.0 (path+file:///dep)";
+        let otel_id = "registry+https://example.invalid#index#opentelemetry@0.32.0";
+        let metadata = serde_json::json!({
+            "packages": [
+                {"id": dep_id, "name": "dep", "version": "0.1.0"},
+                {"id": otel_id, "name": "opentelemetry", "version": "0.32.0"}
+            ],
+            "resolve": {"nodes": [
+                {"id": otel_id, "features": ["trace", "testing"]}
+            ]}
+        });
+        let mut plan = SessionPlan::default();
+        plan.package_manifest_dirs
+            .insert(dep_id.to_string(), dep_dir);
+        plan.r4_otel_package_by_dependency
+            .insert(dep_id.to_string(), otel_id.to_string());
+        let message = serde_json::json!({
+            "reason": "compiler-artifact",
+            "package_id": otel_id,
+            "filenames": [rlib],
+            "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
+        });
+        plan.add_r4_artifacts_from_cargo_json(&metadata, format!("{message}\n").as_bytes(), None)
+            .expect("accept exact compiler artifact");
+
+        assert!(plan
+            .r4_native_otel_artifact_for(&source, &[])
+            .expect("resolve default dev profile")
+            .is_some());
+        assert!(
+            plan.r4_native_otel_artifact_for(
+                &source,
+                &["--target".to_string(), "wasm32-wasip1".to_string()],
+            )
+            .is_err(),
+            "a host artifact must not be injected into a target unit"
+        );
+        assert!(
+            plan.r4_native_otel_artifact_for(
+                &source,
+                &["-C".to_string(), "opt-level=3".to_string()],
+            )
+            .is_err(),
+            "a dev artifact must not be injected into a release-profile unit"
         );
     }
 }
