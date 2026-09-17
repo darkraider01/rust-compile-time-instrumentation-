@@ -38,6 +38,7 @@ pub enum CompilationUnit {
         source_file: PathBuf,
         is_test: bool,
         has_opentelemetry: bool,
+        has_tokio: bool,
         has_otel_shim: bool,
         metadata_hash: Option<String>,
         extra_filename: Option<String>,
@@ -106,6 +107,14 @@ impl CompilationUnit {
             CompilationUnit::RustCrate {
                 has_opentelemetry, ..
             } => *has_opentelemetry,
+            _ => false,
+        }
+    }
+
+    /// Whether the compilation unit includes Tokio as an extern dependency.
+    pub fn has_tokio(&self) -> bool {
+        match self {
+            CompilationUnit::RustCrate { has_tokio, .. } => *has_tokio,
             _ => false,
         }
     }
@@ -265,6 +274,7 @@ impl CrateInvocation {
         let mut out_dir: Option<PathBuf> = None;
         let mut is_test = false;
         let mut has_opentelemetry = false;
+        let mut has_tokio = false;
         let mut has_otel_shim = false;
         let mut metadata_hash: Option<String> = None;
         let mut extra_filename: Option<String> = None;
@@ -312,6 +322,8 @@ impl CrateInvocation {
                     let extern_crate = extern_name.rsplit(':').next().unwrap_or(extern_name);
                     if extern_crate == "opentelemetry" {
                         has_opentelemetry = true;
+                    } else if extern_crate == "tokio" {
+                        has_tokio = true;
                     } else if extern_crate == "otel_shim" || extern_crate == "otel-shim" {
                         has_otel_shim = true;
                     }
@@ -323,6 +335,8 @@ impl CrateInvocation {
                 let extern_crate = extern_name.rsplit(':').next().unwrap_or(extern_name);
                 if extern_crate == "opentelemetry" {
                     has_opentelemetry = true;
+                } else if extern_crate == "tokio" {
+                    has_tokio = true;
                 } else if extern_crate == "otel_shim" || extern_crate == "otel-shim" {
                     has_otel_shim = true;
                 }
@@ -445,6 +459,7 @@ impl CrateInvocation {
                 source_file,
                 is_test,
                 has_opentelemetry,
+                has_tokio,
                 has_otel_shim,
                 metadata_hash,
                 extra_filename,

@@ -40,7 +40,7 @@ Robust, continuous context propagation regardless of runtime task scheduling
 
 ## 2. Architecture & Design Principles
 
-### 2.1 Conservative Syntactic Recognition (No False Positives)
+### 2.1 Conservative Syntactic Recognition with Explicit Shadow Exclusions
 
 Because `cargo-instrument` operates via `syn` AST analysis rather than full `rustc` name resolution, spawn recognition is strictly conservative:
 
@@ -57,13 +57,14 @@ Because `cargo-instrument` operates via `syn` AST analysis rather than full `rus
   * `tokio::task::spawn_blocking(...)`
   * Calls with argument count $\ne 1$
 
+Before accepting those syntactic forms, the analyzer excludes an entire source file if it finds a local binding named `tokio`, including `mod tokio`, a `use` binding or alias to `tokio`, and `extern crate ... as tokio`. This deliberately under-transforms independent scopes in such a file rather than risking a rewrite of a shadowed call. At wrapper time, Cargo's `--extern tokio` input is also required; without that authoritative dependency signal, discovered spawn sites are discarded.
+
 ### 2.2 Structural Idempotence Detection
 
-A spawn site is considered already instrumented if and only if its **top-level** argument expression is an OpenTelemetry context wrapper:
-* `FutureExt::with_context(fut, cx)`
-* `fut.with_context(cx)`
+A spawn site is considered already instrumented if and only if its **top-level** argument expression is the exact wrapper emitted by this project:
+* `opentelemetry::trace::FutureExt::with_context(fut, cx)`
 
-Inner statements inside the spawned future (such as `anyhow::Context::with_context` or nested async calls) do not trigger false-positive skipping; the spawn boundary itself is still wrapped.
+Neither a final path segment named `with_context` nor a method call named `.with_context(...)` is enough to suppress instrumentation: `custom_lib::with_context(...)` and `future.with_context(custom_state)` remain eligible. Inner statements inside the spawned future (such as `anyhow::Context::with_context` or nested async calls) also do not trigger skipping.
 
 ### 2.3 Pure Insertion Edit Model
 
@@ -106,9 +107,9 @@ $$\text{app\_parent} \longrightarrow \text{dep\_r4::async\_work}$$
 
 A dedicated integration test suite in `cargo-instrument/tests/tokio_spawn_tests.rs` covers all design criteria:
 
-1. `test_uninstrumented_tokio_spawn_loses_parent_context`: Demonstrates that raw `tokio::spawn` loses context on multi-threaded runtimes, producing `SpanId::INVALID`.
-2. `test_ast_conservative_tokio_spawn_recognition`: Proves that only unambiguous `tokio::spawn` / `tokio::task::spawn` paths match; bare `spawn`, `other::spawn`, and `std::thread::spawn` remain untouched.
-3. `test_ast_structural_idempotence`: Proves top-level `with_context` wrappers are skipped, while inner `.with_context(...)` calls inside async blocks remain eligible.
+1. `test_uninstrumented_tokio_spawn_loses_parent_context`: Constructs and attaches a fixed, valid nonzero `SpanContext`, proves it is active before dispatch, then proves raw `tokio::spawn` sees `SpanId::INVALID` while the explicit wrapper preserves the exact fixed IDs. It has no global provider dependency.
+2. `test_ast_conservative_tokio_spawn_recognition` and `test_ast_tokio_shadowing_excludes_syntactic_spawn_matches`: Prove only accepted paths match and that `mod tokio`, `use ... as tokio`, and `extern crate ... as tokio` suppress rewrites.
+3. `test_ast_structural_idempotence`: Proves only the exact generated OpenTelemetry path is skipped; custom path and method calls named `with_context`, plus inner calls, remain eligible.
 4. `test_emitter_tokio_spawn_scoping`: Asserts `NativeOtelEmitter` handles spawns while `TrampolineEmitter` and `SentinelEmitter` reject spawn rewrites.
 5. `test_transform_composition_with_candidate_and_spawns`: Verifies clean composition of function candidate prefix/suffix edits and spawn argument wrapping in the same file.
 6. `test_transform_nested_tokio_spawns`: Verifies nested `tokio::spawn` calls are both wrapped without offset drift or overlapping edit collisions.
@@ -126,3 +127,14 @@ The full end-to-end integration proof (`r4_extern_injection_path_dependency_proo
 * Verified that `spawned_async.span_context.trace_id() == parent.span_context.trace_id()`;
 * Verified deterministic cross-thread migration for plain async and `Result` async dependency functions;
 * Verified full suite execution in 53.72s.
+
+### 3.3 Issue #6 Scope Checklist
+
+The closed issue remains correctly closed. The following criteria are covered by the tests and the linked Issue #5 poll-time proof:
+
+- [x] Multi-thread Tokio runtime.
+- [x] Task migration between worker threads.
+- [x] Nested spawns.
+- [x] Spawned dependency work.
+- [x] No thread-local identity assumptions.
+- [x] No leaked contexts/spans.

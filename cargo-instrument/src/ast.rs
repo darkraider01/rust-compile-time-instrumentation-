@@ -167,6 +167,7 @@ fn analyze_file_and_submodules(
 
     // 2. Visit syntax tree of this file
     let file_has_otel = file_has_otel_import(syn_file);
+    let file_shadows_tokio = file_shadows_tokio(syn_file);
     let mut visitor = CandidateFinder {
         source_path: file_path.to_path_buf(),
         current_dir: base_dir.clone(),
@@ -175,6 +176,7 @@ fn analyze_file_and_submodules(
         current_impl: None,
         inside_fn_body: false,
         file_has_otel,
+        file_shadows_tokio,
         skipped_stats: SkippedStats::default(),
         has_colliding_symbols: false,
     };
@@ -801,8 +803,57 @@ struct CandidateFinder {
     /// Per §12.2 / §16.14, nested functions inside blocks are excluded.
     inside_fn_body: bool,
     file_has_otel: bool,
+    file_shadows_tokio: bool,
     skipped_stats: SkippedStats,
     has_colliding_symbols: bool,
+}
+
+/// Conservatively identifies source-level declarations that make a syntactic
+/// `tokio::...` path ambiguous without attempting full Rust name resolution.
+///
+/// The analysis is intentionally file-wide: if a file declares or imports a
+/// different binding named `tokio`, no Tokio spawn in that file is rewritten.
+/// This may under-transform independent scopes in that file, but never rewrites
+/// a known-shadowed call.
+fn file_shadows_tokio(file: &syn::File) -> bool {
+    struct TokioShadowFinder {
+        found: bool,
+    }
+
+    impl<'ast> Visit<'ast> for TokioShadowFinder {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            self.found |= item.ident == "tokio";
+            syn::visit::visit_item_mod(self, item);
+        }
+
+        fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+            self.found |= use_tree_binds_tokio(&item.tree);
+            syn::visit::visit_item_use(self, item);
+        }
+
+        fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
+            self.found |= item
+                .rename
+                .as_ref()
+                .is_some_and(|(_, alias)| alias == "tokio");
+            syn::visit::visit_item_extern_crate(self, item);
+        }
+    }
+
+    let mut finder = TokioShadowFinder { found: false };
+    finder.visit_file(file);
+    finder.found
+}
+
+/// Whether a `use` tree introduces a binding named `tokio` into its scope.
+fn use_tree_binds_tokio(tree: &syn::UseTree) -> bool {
+    match tree {
+        syn::UseTree::Name(name) => name.ident == "tokio",
+        syn::UseTree::Rename(rename) => rename.rename == "tokio",
+        syn::UseTree::Path(path) => use_tree_binds_tokio(&path.tree),
+        syn::UseTree::Group(group) => group.items.iter().any(use_tree_binds_tokio),
+        syn::UseTree::Glob(_) => false,
+    }
 }
 
 impl<'ast> CandidateFinder {
@@ -1061,7 +1112,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if is_tokio_spawn_call(call) {
+        if is_tokio_spawn_call(call, self.file_shadows_tokio) {
             self.spawn_sites.push(SpawnSite {
                 source_file: self.source_path.clone(),
                 arg_byte_range: call.args[0].span().byte_range(),
@@ -1071,7 +1122,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
     }
 }
 
-/// Check whether a call expression is syntactically an unambiguous `tokio::spawn` invocation (Issue #6).
+/// Check whether a call expression is a conservatively recognized `tokio::spawn` invocation (Issue #6).
 ///
 /// Matches only:
 /// - `tokio::spawn(...)`
@@ -1080,9 +1131,10 @@ impl<'ast> Visit<'ast> for CandidateFinder {
 /// - `::tokio::task::spawn(...)`
 ///
 /// Deliberately excludes bare `spawn(...)`, `task::spawn(...)`, `other::spawn(...)`,
-/// `std::thread::spawn(...)`, `tokio::task::spawn_blocking(...)`, and calls with != 1 argument.
-fn is_tokio_spawn_call(call: &syn::ExprCall) -> bool {
-    if call.args.len() != 1 {
+/// `std::thread::spawn(...)`, `tokio::task::spawn_blocking(...)`, calls with != 1 argument,
+/// and every syntactic match in a file that locally binds `tokio`.
+fn is_tokio_spawn_call(call: &syn::ExprCall, file_shadows_tokio: bool) -> bool {
+    if file_shadows_tokio || call.args.len() != 1 {
         return false;
     }
     if let syn::Expr::Path(ref expr_path) = *call.func {
@@ -1101,22 +1153,21 @@ fn is_tokio_spawn_call(call: &syn::ExprCall) -> bool {
 
 /// Structural idempotence detector for `tokio::spawn` arguments (Issue #6 refinement 4).
 ///
-/// Checks if the top-level argument expression is already wrapped with OpenTelemetry context,
-/// e.g. `FutureExt::with_context(fut, cx)` or `fut.with_context(cx)`.
+/// Checks whether the top-level argument expression is the explicit OpenTelemetry
+/// wrapper emitted by this project: `opentelemetry::trace::FutureExt::with_context(fut, cx)`.
 /// Does NOT check inner statements inside an async block (preventing false-positive skips).
 fn is_arg_already_context_wrapped(arg: &syn::Expr) -> bool {
     match arg {
         syn::Expr::Call(call) => {
             if let syn::Expr::Path(ref p) = *call.func {
-                if let Some(last) = p.path.segments.last() {
-                    if last.ident == "with_context" {
-                        return true;
-                    }
-                }
+                return p.path.segments.len() == 4
+                    && p.path.segments[0].ident == "opentelemetry"
+                    && p.path.segments[1].ident == "trace"
+                    && p.path.segments[2].ident == "FutureExt"
+                    && p.path.segments[3].ident == "with_context";
             }
             false
         }
-        syn::Expr::MethodCall(method_call) => method_call.method == "with_context",
         syn::Expr::Group(group) => is_arg_already_context_wrapped(&group.expr),
         syn::Expr::Paren(paren) => is_arg_already_context_wrapped(&paren.expr),
         _ => false,
