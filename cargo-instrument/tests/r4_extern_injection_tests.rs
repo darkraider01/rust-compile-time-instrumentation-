@@ -167,6 +167,25 @@ pub async fn async_work() -> u32 {
     .await;
     11
 }
+
+pub async fn async_result_work(fail: bool) -> Result<u32, String> {
+    let mut first_poll = true;
+    std::future::poll_fn(move |cx| {
+        if first_poll {
+            first_poll = false;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
+    if fail {
+        Err("dependency error".to_string())
+    } else {
+        Ok(42)
+    }
+}
 "#,
     )
     .unwrap();
@@ -240,8 +259,127 @@ tokio = {{ version = "1", features = ["rt-multi-thread", "macros"] }}
         app.join("src/main.rs"),
         r#"#![deny(warnings)]
 
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::task::{Context as TaskContext, Wake, Waker};
+use std::thread;
+
 use opentelemetry::trace::{TraceContextExt as _, Tracer as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+struct SimpleWaker(AtomicBool);
+impl Wake for SimpleWaker {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+fn create_waker() -> Waker {
+    Waker::from(Arc::new(SimpleWaker(AtomicBool::new(false))))
+}
+
+/// Compile-time generic bound asserting that the future itself implements Send.
+/// Takes ownership of val to assert Send directly on the future type.
+fn assert_is_send<T: Send>(val: T) -> T {
+    val
+}
+
+fn test_cross_thread_migration<F, R>(
+    parent_name: &'static str,
+    make_fut: impl FnOnce() -> F + Send + 'static,
+) -> (opentelemetry::trace::TraceId, opentelemetry::trace::SpanId)
+where
+    F: std::future::Future<Output = R> + Send + 'static,
+    R: Send + 'static,
+{
+    let tracer = opentelemetry::global::tracer("r4-app");
+    let parent_span = tracer.start(parent_name);
+    let parent_cx = opentelemetry::Context::current_with_span(parent_span);
+    let parent_trace_id = parent_cx.span().span_context().trace_id();
+    let parent_span_id = parent_cx.span().span_context().span_id();
+
+    let (tx_a_to_b, rx_b) = std::sync::mpsc::sync_channel::<Pin<Box<F>>>(1);
+
+    // Thread A: create future under application parent context and poll once to Pending
+    let parent_cx_for_a = parent_cx.clone();
+    let thread_a = thread::Builder::new()
+        .name("thread-a-poller".into())
+        .spawn(move || {
+            let parent_guard = parent_cx_for_a.attach();
+
+            // Create future under the active application parent context
+            let fut = make_fut();
+            // Statically assert Send on the future itself
+            let fut = assert_is_send(fut);
+            let mut pinned_fut = Box::pin(fut);
+
+            // Poll once on Thread A
+            let waker_a = create_waker();
+            let mut task_cx_a = TaskContext::from_waker(&waker_a);
+            let poll1 = pinned_fut.as_mut().poll(&mut task_cx_a);
+            assert!(poll1.is_pending(), "first poll on Thread A must return Poll::Pending");
+
+            // Drop parent guard and verify Thread A has no active context leak
+            drop(parent_guard);
+            assert_eq!(
+                opentelemetry::Context::current().span().span_context().span_id(),
+                opentelemetry::trace::SpanId::INVALID,
+                "Thread A must have no active context leak after first poll and guard drop"
+            );
+
+            // Transfer the pending future across thread boundary to Thread B
+            tx_a_to_b.send(pinned_fut).expect("send future to Thread B");
+        })
+        .expect("spawn Thread A");
+
+    thread_a.join().expect("Thread A panicked");
+
+    // Thread B: receive pending future, resume, and poll to Ready
+    let thread_b = thread::Builder::new()
+        .name("thread-b-poller".into())
+        .spawn(move || {
+            let mut pinned_fut = rx_b.recv().expect("receive future on Thread B");
+
+            // Verify Thread B does not implicitly inherit any context
+            assert_eq!(
+                opentelemetry::Context::current().span().span_context().span_id(),
+                opentelemetry::trace::SpanId::INVALID,
+                "Thread B must have no active context before polling"
+            );
+
+            // Poll on Thread B until Poll::Ready
+            let waker_b = create_waker();
+            let mut task_cx_b = TaskContext::from_waker(&waker_b);
+            let poll2 = pinned_fut.as_mut().poll(&mut task_cx_b);
+            assert!(poll2.is_ready(), "resumed poll on Thread B must return Poll::Ready");
+
+            // Verify Thread B has no active context leak after completion
+            assert_eq!(
+                opentelemetry::Context::current().span().span_context().span_id(),
+                opentelemetry::trace::SpanId::INVALID,
+                "Thread B must have no active context leak after future completion"
+            );
+
+            // Drop the completed future on Thread B
+            drop(pinned_fut);
+
+            // Verify Thread B remains clean after drop
+            assert_eq!(
+                opentelemetry::Context::current().span().span_context().span_id(),
+                opentelemetry::trace::SpanId::INVALID,
+                "Thread B must have no active context leak after dropping future"
+            );
+        })
+        .expect("spawn Thread B");
+
+    thread_b.join().expect("Thread B panicked");
+
+    // End parent span so it exports
+    parent_cx.span().end();
+
+    (parent_trace_id, parent_span_id)
+}
 
 #[probe_macro::passthrough]
 fn main() {
@@ -252,6 +390,7 @@ fn main() {
         .build();
     opentelemetry::global::set_tracer_provider(provider);
 
+    // 1. Run direct sync, ordinary async, and tokio::spawn probe
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -259,18 +398,36 @@ fn main() {
         .unwrap();
     runtime.block_on(run_probe());
 
+    // 2. Run deterministic cross-thread migration test for plain async dependency future
+    let (plain_trace_id, plain_parent_id) = test_cross_thread_migration(
+        "p24_parent_plain",
+        || dep_r4::async_work(),
+    );
+
+    // 3. Run deterministic cross-thread migration test for Result async dependency future (error case)
+    let (result_trace_id, result_parent_id) = test_cross_thread_migration(
+        "p24_parent_result",
+        || dep_r4::async_result_work(true),
+    );
+
     let spans = exporter.get_finished_spans().expect("read exported spans");
+
+    // Assert direct sync
     let parent = spans.iter().find(|span| span.name == "r4_parent").expect("parent span");
     let direct_sync = spans.iter().find(|span| span.name == "sync_work").expect("sync dependency span");
     assert_eq!(direct_sync.parent_span_id, parent.span_context.span_id());
 
+    // Assert direct async (ordinary suspension/resumption on runtime)
     let direct_async = spans
         .iter()
         .find(|span| span.name == "async_work" && span.parent_span_id == parent.span_context.span_id())
         .expect("direct async dependency span parented by r4_parent");
+    assert_eq!(direct_async.span_context.trace_id(), parent.span_context.trace_id());
+
+    // Assert tokio::spawn observation (#6 boundary)
     let spawned_async = spans
         .iter()
-        .find(|span| span.name == "async_work" && span.span_context.span_id() != direct_async.span_context.span_id())
+        .find(|span| span.name == "async_work" && span.span_context.span_id() != direct_async.span_context.span_id() && span.parent_span_id != plain_parent_id)
         .expect("spawned async dependency span");
     println!("SPAWN_PARENT={:?}", spawned_async.parent_span_id);
     assert_eq!(
@@ -278,7 +435,37 @@ fn main() {
         opentelemetry::trace::SpanId::INVALID,
         "native FutureExt propagation alone must not claim to preserve context across tokio::spawn"
     );
+
+    // Assert cross-thread migration for plain async future
+    let cross_plain = spans
+        .iter()
+        .find(|span| span.name == "async_work" && span.parent_span_id == plain_parent_id)
+        .expect("cross-thread plain async span parented by p24_parent_plain");
+    assert_eq!(cross_plain.span_context.trace_id(), plain_trace_id, "TraceId must match application parent");
+    assert_eq!(cross_plain.parent_span_id, plain_parent_id, "Parent SpanId must match application parent");
+    assert_eq!(cross_plain.status, opentelemetry::trace::Status::Unset);
+    let cross_plain_count = spans
+        .iter()
+        .filter(|span| span.name == "async_work" && span.parent_span_id == plain_parent_id)
+        .count();
+    assert_eq!(cross_plain_count, 1, "exactly one plain async span exported across migration");
+
+    // Assert cross-thread migration for Result async future
+    let cross_result = spans
+        .iter()
+        .find(|span| span.name == "async_result_work" && span.parent_span_id == result_parent_id)
+        .expect("cross-thread result async span parented by p24_parent_result");
+    assert_eq!(cross_result.span_context.trace_id(), result_trace_id, "Result TraceId must match application parent");
+    assert_eq!(cross_result.parent_span_id, result_parent_id, "Result Parent SpanId must match application parent");
+    assert_eq!(cross_result.status, opentelemetry::trace::Status::error(""), "Result span must capture error status");
+    let cross_result_count = spans
+        .iter()
+        .filter(|span| span.name == "async_result_work" && span.parent_span_id == result_parent_id)
+        .count();
+    assert_eq!(cross_result_count, 1, "exactly one result async span exported across migration");
+
     println!("R4_EXTERN_INJECTION_VERIFIED");
+    println!("P24_ASYNC_CROSS_THREAD_VERIFIED");
 }
 
 async fn run_probe() {
@@ -334,6 +521,11 @@ fn r4_extern_injection_path_dependency_proof() {
     assert!(
         String::from_utf8_lossy(&cold.stdout).contains("R4_EXTERN_INJECTION_VERIFIED"),
         "cold run did not verify native dependency spans:\n{}",
+        String::from_utf8_lossy(&cold.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&cold.stdout).contains("P24_ASYNC_CROSS_THREAD_VERIFIED"),
+        "cold run did not verify cross-thread async context propagation:\n{}",
         String::from_utf8_lossy(&cold.stdout)
     );
     assert!(
