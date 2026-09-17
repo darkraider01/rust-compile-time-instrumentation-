@@ -156,7 +156,13 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
 
                     if !should_skip && resolved_path.exists() {
                         match analyze_source_file(crate_name, &resolved_path) {
-                            Ok(report) => {
+                            Ok(mut report) => {
+                                // `--extern tokio` is Cargo's authoritative, cheap dependency
+                                // signal. A syntactic `tokio::spawn` cannot be a Tokio call when
+                                // this unit does not receive Tokio, so preserve it unchanged.
+                                if !invocation.unit.has_tokio() {
+                                    report.spawn_sites.clear();
+                                }
                                 if config.debug_output {
                                     eprintln!(
                                         "[cargo-instrument PID={} crate={}]\n{}",

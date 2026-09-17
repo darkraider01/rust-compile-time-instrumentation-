@@ -263,6 +263,40 @@ fn test_discovery_has_opentelemetry_separated_and_equals() {
 }
 
 #[test]
+fn test_discovery_has_tokio_separated_and_equals() {
+    let separated = vec![
+        "rustc".to_string(),
+        "src/lib.rs".to_string(),
+        "--extern".to_string(),
+        "tokio=target/debug/deps/libtokio.rlib".to_string(),
+    ];
+    let equals = vec![
+        "rustc".to_string(),
+        "src/lib.rs".to_string(),
+        "--extern=tokio=target/debug/deps/libtokio.rlib".to_string(),
+    ];
+    let unrelated = vec![
+        "rustc".to_string(),
+        "src/lib.rs".to_string(),
+        "--extern".to_string(),
+        "serde=target/debug/deps/libserde.rlib".to_string(),
+    ];
+
+    assert!(CrateInvocation::parse(&separated)
+        .expect("parse separated Tokio extern")
+        .unit
+        .has_tokio());
+    assert!(CrateInvocation::parse(&equals)
+        .expect("parse equals Tokio extern")
+        .unit
+        .has_tokio());
+    assert!(!CrateInvocation::parse(&unrelated)
+        .expect("parse unrelated extern")
+        .unit
+        .has_tokio());
+}
+
+#[test]
 fn test_discovery_has_otel_shim() {
     let args1 = vec![
         "rustc".to_string(),

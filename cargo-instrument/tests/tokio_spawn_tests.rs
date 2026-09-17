@@ -9,7 +9,9 @@ use cargo_instrument::transform::{
     transform_source_str_with_native_otel_and_spawns, Emitter, NativeOtelEmitter, SentinelEmitter,
     TrampolineEmitter, TransformationPlan,
 };
-use opentelemetry::trace::{TraceContextExt as _, Tracer as _};
+use opentelemetry::trace::{
+    SpanContext, SpanId, TraceContextExt as _, TraceFlags, TraceId, TraceState, Tracer as _,
+};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
 /// Compile-time generic bound asserting that the future type implements Send.
@@ -23,13 +25,29 @@ fn assert_is_send<T: Send>(val: T) -> T {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_uninstrumented_tokio_spawn_loses_parent_context() {
-    let tracer = opentelemetry::global::tracer("test_tokio_spawn");
-    let parent_span = tracer.start("enclosing_parent");
-    let parent_cx = opentelemetry::Context::current_with_span(parent_span);
-    let parent_span_id = parent_cx.span().span_context().span_id();
-    let parent_trace_id = parent_cx.span().span_context().trace_id();
+    let parent_trace_id = TraceId::from(0x1111_2222_3333_4444_5555_6666_7777_8888_u128);
+    let parent_span_id = SpanId::from(0x1111_2222_3333_4444_u64);
+    let parent_cx = opentelemetry::Context::new().with_remote_span_context(SpanContext::new(
+        parent_trace_id,
+        parent_span_id,
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    ));
+
+    assert_ne!(parent_trace_id, TraceId::INVALID);
+    assert_ne!(parent_span_id, SpanId::INVALID);
 
     let _guard = parent_cx.attach();
+    let active_parent = opentelemetry::Context::current();
+    assert_eq!(
+        active_parent.span().span_context().trace_id(),
+        parent_trace_id
+    );
+    assert_eq!(
+        active_parent.span().span_context().span_id(),
+        parent_span_id
+    );
 
     // Plain, uninstrumented tokio::spawn loses caller TLS context at first poll
     let handle_unwrapped = tokio::spawn(async {
@@ -109,6 +127,31 @@ fn test_calls() {
     );
 }
 
+#[test]
+fn test_ast_tokio_shadowing_excludes_syntactic_spawn_matches() {
+    for source in [
+        r#"
+            mod tokio { pub fn spawn<T>(value: T) { let _ = value; } }
+            fn run() { tokio::spawn(123); }
+        "#,
+        r#"
+            use some_other_crate as tokio;
+            fn run() { tokio::spawn(async {}); }
+        "#,
+        r#"
+            extern crate something_else as tokio;
+            fn run() { tokio::task::spawn(async {}); }
+        "#,
+    ] {
+        let report =
+            analyze_source_str("shadowed_tokio", Path::new("src/lib.rs"), source).expect("parse");
+        assert!(
+            report.spawn_sites.is_empty(),
+            "locally shadowed tokio must never be rewritten: {source}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 3. Structural idempotence vs substring false positives (Issue #6 refinement 4)
 // ---------------------------------------------------------------------------
@@ -119,15 +162,18 @@ fn test_ast_structural_idempotence() {
 fn test_idempotence() {
     let cx = opentelemetry::Context::current();
 
-    // Already wrapped at top level via FutureExt::with_context (MUST NOT double-wrap)
+    // The exact project-generated wrapper MUST NOT double-wrap.
     tokio::spawn(opentelemetry::trace::FutureExt::with_context(async { 1 }, cx.clone()));
 
-    // Already wrapped at top level via method call (MUST NOT double-wrap)
+    // Arbitrary method calls cannot be attributed to OpenTelemetry without name resolution.
     tokio::spawn(async { 2 }.with_context(cx));
+
+    // An unrelated path ending in with_context is not an OpenTelemetry wrapper.
+    tokio::spawn(custom_lib::with_context(async { 3 }, cx));
 
     // Inner with_context statement inside async block (MUST still wrap the spawn boundary)
     tokio::spawn(async {
-        let inner_fut = async { 3 };
+        let inner_fut = async { 4 };
         let _ = inner_fut.with_context(opentelemetry::Context::current()).await;
         4
     });
@@ -137,15 +183,26 @@ fn test_idempotence() {
     let report =
         analyze_source_str("test_crate", Path::new("src/lib.rs"), source).expect("analyze source");
 
-    // Only the 3rd spawn call must be discovered; the first two are structurally already wrapped
+    // Only the exact OpenTelemetry wrapper is skipped; method and custom-path calls remain eligible.
     assert_eq!(
         report.spawn_sites.len(),
-        1,
-        "top-level with_context must be skipped, but inner with_context must NOT prevent spawn wrapping"
+        3,
+        "only the explicit OpenTelemetry wrapper may suppress spawn instrumentation"
     );
-    let snippet = &source[report.spawn_sites[0].arg_byte_range.clone()];
-    assert!(snippet.starts_with("async {"));
-    assert!(snippet.contains("inner_fut.with_context"));
+    let snippets: Vec<_> = report
+        .spawn_sites
+        .iter()
+        .map(|site| &source[site.arg_byte_range.clone()])
+        .collect();
+    assert!(snippets
+        .iter()
+        .any(|snippet| snippet.contains(".with_context(cx)")));
+    assert!(snippets
+        .iter()
+        .any(|snippet| snippet.contains("custom_lib::with_context")));
+    assert!(snippets
+        .iter()
+        .any(|snippet| snippet.contains("inner_fut.with_context")));
 }
 
 // ---------------------------------------------------------------------------
