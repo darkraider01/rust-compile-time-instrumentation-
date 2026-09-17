@@ -659,7 +659,10 @@ fn mirror_dir_recursive(
                 fs::create_dir_all(parent)?;
             }
             let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-            let file_candidates = candidates_by_file.get(&canon).map(Vec::as_slice).unwrap_or(&[]);
+            let file_candidates = candidates_by_file
+                .get(&canon)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let file_spawns = spawns_by_file.get(&canon).map(Vec::as_slice).unwrap_or(&[]);
             if !file_candidates.is_empty() || !file_spawns.is_empty() {
                 let plan = transform_source_file_scoped_with_emitter(

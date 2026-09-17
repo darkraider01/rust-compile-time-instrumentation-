@@ -392,11 +392,7 @@ impl TransformationPlan {
         }
 
         // 3. Global sort and validation of all edits (Refinements 1, 3)
-        edits.sort_by(|a, b| {
-            a.start
-                .cmp(&b.start)
-                .then_with(|| a.end.cmp(&b.end))
-        });
+        edits.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
 
         for window in edits.windows(2) {
             if window[0].end > window[1].start {
