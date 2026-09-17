@@ -143,6 +143,21 @@ pub struct DiscoveryReport {
     pub skipped_stats: SkippedStats,
     /// Discovered eligible function candidates.
     pub candidates: Vec<Candidate>,
+
+    /// Discovered Tokio spawn sites for task-boundary context propagation (Issue #6).
+    pub spawn_sites: Vec<SpawnSite>,
+}
+
+/// An identified Tokio spawn call site for task-creation context propagation (Issue #6).
+///
+/// Records the exact source file and the byte range of the future argument passed to `tokio::spawn`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnSite {
+    /// Path to the source file where this spawn site was discovered.
+    pub source_file: PathBuf,
+
+    /// Exact byte range `start..end` of the argument to `tokio::spawn(arg)` in the original UTF-8 buffer.
+    pub arg_byte_range: Range<usize>,
 }
 
 impl DiscoveryReport {
@@ -173,6 +188,17 @@ impl DiscoveryReport {
                     c.byte_range.start,
                     c.byte_range.end,
                     c.source_file.display()
+                ));
+            }
+        }
+        if !self.spawn_sites.is_empty() {
+            out.push_str("\nspawn_sites:\n");
+            for s in &self.spawn_sites {
+                out.push_str(&format!(
+                    "  - bytes {}..{} ({})\n",
+                    s.arg_byte_range.start,
+                    s.arg_byte_range.end,
+                    s.source_file.display()
                 ));
             }
         }

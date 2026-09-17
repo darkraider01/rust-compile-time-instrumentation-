@@ -621,6 +621,7 @@ fn test_discovery_report_format_debug() {
         has_colliding_symbols: false,
         skipped_stats: Default::default(),
         candidates: Vec::new(),
+        spawn_sites: Vec::new(),
     };
     let formatted_empty = empty_report.format_debug();
     assert!(formatted_empty.contains("crate: empty_crate"));
@@ -635,6 +636,7 @@ fn test_discovery_report_format_debug() {
         is_no_std: true,
         has_colliding_symbols: false,
         skipped_stats: Default::default(),
+        spawn_sites: Vec::new(),
         candidates: vec![Candidate {
             function_name: "compute".to_string(),
             source_file: PathBuf::from("src/main.rs"),

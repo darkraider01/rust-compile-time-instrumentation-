@@ -5,7 +5,9 @@ use syn::spanned::Spanned;
 use syn::visit::Visit;
 use thiserror::Error;
 
-use crate::candidate::{Candidate, DiscoveryReport, FunctionKind, SkippedStats, UnsafePolicy};
+use crate::candidate::{
+    Candidate, DiscoveryReport, FunctionKind, SkippedStats, SpawnSite, UnsafePolicy,
+};
 
 /// The seven runtime C-ABI symbols exported by `otel-shim`.
 pub const OTEL_ABI_SYMBOLS: &[&str] = &[
@@ -60,6 +62,7 @@ pub fn analyze_source_file(
     // 2. Discover candidates across the root file and recursively in submodules
     let mut visited = HashSet::new();
     let mut candidates = Vec::new();
+    let mut spawn_sites = Vec::new();
     let mut skipped_stats = SkippedStats::default();
     let mut has_colliding_symbols = false;
 
@@ -69,6 +72,7 @@ pub fn analyze_source_file(
         /* is_root: */ true,
         &mut visited,
         &mut candidates,
+        &mut spawn_sites,
         &mut skipped_stats,
         &mut has_colliding_symbols,
     );
@@ -81,6 +85,7 @@ pub fn analyze_source_file(
         has_colliding_symbols,
         skipped_stats,
         candidates,
+        spawn_sites,
     })
 }
 
@@ -101,6 +106,7 @@ pub fn analyze_source_str(
 
     let mut visited = HashSet::new();
     let mut candidates = Vec::new();
+    let mut spawn_sites = Vec::new();
     let mut skipped_stats = SkippedStats::default();
     let mut has_colliding_symbols = false;
 
@@ -110,6 +116,7 @@ pub fn analyze_source_str(
         /* is_root: */ true,
         &mut visited,
         &mut candidates,
+        &mut spawn_sites,
         &mut skipped_stats,
         &mut has_colliding_symbols,
     );
@@ -122,6 +129,7 @@ pub fn analyze_source_str(
         has_colliding_symbols,
         skipped_stats,
         candidates,
+        spawn_sites,
     })
 }
 
@@ -137,6 +145,7 @@ fn analyze_file_and_submodules(
     is_root: bool,
     visited: &mut HashSet<PathBuf>,
     candidates: &mut Vec<Candidate>,
+    spawn_sites: &mut Vec<SpawnSite>,
     skipped_stats: &mut SkippedStats,
     has_colliding_symbols: &mut bool,
 ) {
@@ -161,6 +170,7 @@ fn analyze_file_and_submodules(
         source_path: file_path.to_path_buf(),
         current_dir: base_dir.clone(),
         candidates: Vec::new(),
+        spawn_sites: Vec::new(),
         current_impl: None,
         inside_fn_body: false,
         file_has_otel,
@@ -169,6 +179,7 @@ fn analyze_file_and_submodules(
     };
     visitor.visit_file(syn_file);
     candidates.extend(visitor.candidates);
+    spawn_sites.extend(visitor.spawn_sites);
 
     skipped_stats.inline_attribute += visitor.skipped_stats.inline_attribute;
     skipped_stats.adapter_trait += visitor.skipped_stats.adapter_trait;
@@ -190,6 +201,7 @@ fn analyze_file_and_submodules(
         &base_dir,
         visited,
         candidates,
+        spawn_sites,
         skipped_stats,
         has_colliding_symbols,
     );
@@ -202,6 +214,7 @@ fn discover_submodules(
     current_dir: &Path,
     visited: &mut HashSet<PathBuf>,
     candidates: &mut Vec<Candidate>,
+    spawn_sites: &mut Vec<SpawnSite>,
     skipped_stats: &mut SkippedStats,
     has_colliding_symbols: &mut bool,
 ) {
@@ -228,6 +241,7 @@ fn discover_submodules(
                     &sub_dir,
                     visited,
                     candidates,
+                    spawn_sites,
                     skipped_stats,
                     has_colliding_symbols,
                 );
@@ -246,6 +260,7 @@ fn discover_submodules(
                                         /* is_root: */ false,
                                         visited,
                                         candidates,
+                                        spawn_sites,
                                         skipped_stats,
                                         has_colliding_symbols,
                                     );
@@ -778,6 +793,7 @@ struct CandidateFinder {
     source_path: PathBuf,
     current_dir: PathBuf,
     candidates: Vec<Candidate>,
+    spawn_sites: Vec<SpawnSite>,
     current_impl: Option<EnclosingImpl>,
     /// Tracks if traversal is currently inside a function body.
     /// Per §12.2 / §16.14, nested functions inside blocks are excluded.
@@ -846,6 +862,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         // If we are already inside a function body, nested functions are excluded per §12.2 / §16.14
         if self.inside_fn_body {
             self.skipped_stats.nested_function += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
@@ -928,6 +945,7 @@ impl<'ast> Visit<'ast> for CandidateFinder {
 
         if self.inside_fn_body {
             self.skipped_stats.nested_function += 1;
+            self.visit_skipped_fn_body(&i.block);
             return;
         }
 
@@ -1038,6 +1056,68 @@ impl<'ast> Visit<'ast> for CandidateFinder {
         self.inside_fn_body = true;
         syn::visit::visit_impl_item_fn(self, i);
         self.inside_fn_body = prev;
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if is_tokio_spawn_call(call) {
+            self.spawn_sites.push(SpawnSite {
+                source_file: self.source_path.clone(),
+                arg_byte_range: call.args[0].span().byte_range(),
+            });
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+}
+
+/// Check whether a call expression is syntactically an unambiguous `tokio::spawn` invocation (Issue #6).
+///
+/// Matches only:
+/// - `tokio::spawn(...)`
+/// - `tokio::task::spawn(...)`
+/// - `::tokio::spawn(...)`
+/// - `::tokio::task::spawn(...)`
+///
+/// Deliberately excludes bare `spawn(...)`, `task::spawn(...)`, `other::spawn(...)`,
+/// `std::thread::spawn(...)`, `tokio::task::spawn_blocking(...)`, and calls with != 1 argument.
+fn is_tokio_spawn_call(call: &syn::ExprCall) -> bool {
+    if call.args.len() != 1 {
+        return false;
+    }
+    if let syn::Expr::Path(ref expr_path) = *call.func {
+        let segs = &expr_path.path.segments;
+        let is_match = match segs.len() {
+            2 => segs[0].ident == "tokio" && segs[1].ident == "spawn",
+            3 => segs[0].ident == "tokio" && segs[1].ident == "task" && segs[2].ident == "spawn",
+            _ => false,
+        };
+        if is_match {
+            return !is_arg_already_context_wrapped(&call.args[0]);
+        }
+    }
+    false
+}
+
+/// Structural idempotence detector for `tokio::spawn` arguments (Issue #6 refinement 4).
+///
+/// Checks if the top-level argument expression is already wrapped with OpenTelemetry context,
+/// e.g. `FutureExt::with_context(fut, cx)` or `fut.with_context(cx)`.
+/// Does NOT check inner statements inside an async block (preventing false-positive skips).
+fn is_arg_already_context_wrapped(arg: &syn::Expr) -> bool {
+    match arg {
+        syn::Expr::Call(call) => {
+            if let syn::Expr::Path(ref p) = *call.func {
+                if let Some(last) = p.path.segments.last() {
+                    if last.ident == "with_context" {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        syn::Expr::MethodCall(method_call) => method_call.method == "with_context",
+        syn::Expr::Group(group) => is_arg_already_context_wrapped(&group.expr),
+        syn::Expr::Paren(paren) => is_arg_already_context_wrapped(&paren.expr),
+        _ => false,
     }
 }
 
