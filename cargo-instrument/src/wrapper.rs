@@ -6,7 +6,7 @@ use std::process::{Command, ExitStatus};
 use thiserror::Error;
 
 use crate::ast::{analyze_source_file, check_application_preflight};
-use crate::candidate::{Candidate, DiscoveryReport, UnsafePolicy};
+use crate::candidate::{Candidate, DiscoveryReport, SpawnSite, UnsafePolicy};
 use crate::discovery::{CrateInvocation, CrateRole, DiscoveryError};
 use crate::session::SessionPlan;
 use crate::transform::{
@@ -190,7 +190,7 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                 }
 
                                 // H1: Splicing pipeline integration
-                                if !report.candidates.is_empty() {
+                                if !report.candidates.is_empty() || !report.spawn_sites.is_empty() {
                                     let r4_native_otel_rlib = match session_plan
                                         .r4_native_otel_artifact_for(
                                             &resolved_path,
@@ -396,7 +396,7 @@ fn mirror_and_transform_crate_sources(
         ))
     };
 
-    // 2. Group candidates by their exact canonical source file path (C1)
+    // 2. Group candidates and spawn sites by their exact canonical source file path (C1)
     let mut candidates_by_file: HashMap<PathBuf, Vec<Candidate>> = HashMap::new();
     for c in &report.candidates {
         let canon = c
@@ -404,6 +404,15 @@ fn mirror_and_transform_crate_sources(
             .canonicalize()
             .unwrap_or_else(|_| c.source_file.clone());
         candidates_by_file.entry(canon).or_default().push(c.clone());
+    }
+
+    let mut spawns_by_file: HashMap<PathBuf, Vec<SpawnSite>> = HashMap::new();
+    for s in &report.spawn_sites {
+        let canon = s
+            .source_file
+            .canonicalize()
+            .unwrap_or_else(|_| s.source_file.clone());
+        spawns_by_file.entry(canon).or_default().push(s.clone());
     }
 
     // 3. Identify directory containing source tree to mirror
@@ -431,9 +440,9 @@ fn mirror_and_transform_crate_sources(
 
     let base_rel_dir = if is_in_tree { current_dir } else { &scan_dir };
 
-    // Sandboxing invariant (A16): if any candidate file escapes base_rel_dir (e.g. via #[path = "..."]),
+    // Sandboxing invariant (A16): if any candidate or spawn file escapes base_rel_dir (e.g. via #[path = "..."]),
     // fail open per S11 rather than risk out-of-sandbox writes or broken relative paths.
-    for canon_path in candidates_by_file.keys() {
+    for canon_path in candidates_by_file.keys().chain(spawns_by_file.keys()) {
         let is_inside_base = canon_path.starts_with(base_rel_dir)
             || matches!(
                 (canon_path.canonicalize(), base_rel_dir.canonicalize()),
@@ -455,14 +464,19 @@ fn mirror_and_transform_crate_sources(
             base_rel_dir,
             &mirror_base,
             &candidates_by_file,
+            &spawns_by_file,
             emitter,
             crate_name,
             debug_output,
         )?;
     }
 
-    // 4. Also mirror any candidate files that were out-of-line / outside scan_dir (e.g. #[path = "..."])
-    for (canon_path, file_candidates) in &candidates_by_file {
+    // 4. Also mirror any candidate or spawn files that were out-of-line / outside scan_dir (e.g. #[path = "..."])
+    let mut all_out_of_line_files = std::collections::BTreeSet::new();
+    all_out_of_line_files.extend(candidates_by_file.keys().cloned());
+    all_out_of_line_files.extend(spawns_by_file.keys().cloned());
+
+    for canon_path in all_out_of_line_files {
         let rel = if let Ok(rel) = canon_path.strip_prefix(base_rel_dir) {
             Some(rel.to_path_buf())
         } else if let Ok(canon_base) = base_rel_dir.canonicalize() {
@@ -479,10 +493,19 @@ fn mirror_and_transform_crate_sources(
                 if let Some(parent) = dest.parent() {
                     fs::create_dir_all(parent)?;
                 }
+                let file_candidates = candidates_by_file
+                    .get(&canon_path)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let file_spawns = spawns_by_file
+                    .get(&canon_path)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
                 let plan = transform_source_file_scoped_with_emitter(
-                    canon_path,
+                    &canon_path,
                     &dest,
                     file_candidates,
+                    file_spawns,
                     emitter,
                 )?;
                 if debug_output {
@@ -597,6 +620,7 @@ fn mirror_dir_recursive(
     base_rel_dir: &Path,
     mirror_base: &Path,
     candidates_by_file: &HashMap<PathBuf, Vec<Candidate>>,
+    spawns_by_file: &HashMap<PathBuf, Vec<SpawnSite>>,
     emitter: &dyn Emitter,
     crate_name: &str,
     debug_output: bool,
@@ -610,6 +634,7 @@ fn mirror_dir_recursive(
                 base_rel_dir,
                 mirror_base,
                 candidates_by_file,
+                spawns_by_file,
                 emitter,
                 crate_name,
                 debug_output,
@@ -633,11 +658,14 @@ fn mirror_dir_recursive(
                 fs::create_dir_all(parent)?;
             }
             let canon = path.canonicalize().unwrap_or_else(|_| path.clone());
-            if let Some(file_candidates) = candidates_by_file.get(&canon) {
+            let file_candidates = candidates_by_file.get(&canon).map(Vec::as_slice).unwrap_or(&[]);
+            let file_spawns = spawns_by_file.get(&canon).map(Vec::as_slice).unwrap_or(&[]);
+            if !file_candidates.is_empty() || !file_spawns.is_empty() {
                 let plan = transform_source_file_scoped_with_emitter(
                     &path,
                     &dest,
                     file_candidates,
+                    file_spawns,
                     emitter,
                 )?;
                 if debug_output {
