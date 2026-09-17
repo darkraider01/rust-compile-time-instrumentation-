@@ -826,6 +826,38 @@ fn file_shadows_tokio(file: &syn::File) -> bool {
             syn::visit::visit_item_mod(self, item);
         }
 
+        fn visit_item_struct(&mut self, item: &'ast syn::ItemStruct) {
+            self.found |= item.ident == "tokio";
+            syn::visit::visit_item_struct(self, item);
+        }
+
+        fn visit_item_enum(&mut self, item: &'ast syn::ItemEnum) {
+            self.found |= item.ident == "tokio";
+            syn::visit::visit_item_enum(self, item);
+        }
+
+        fn visit_item_union(&mut self, item: &'ast syn::ItemUnion) {
+            self.found |= item.ident == "tokio";
+            syn::visit::visit_item_union(self, item);
+        }
+
+        fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+            self.found |= item.ident == "tokio";
+            syn::visit::visit_item_trait(self, item);
+        }
+
+        fn visit_item_type(&mut self, item: &'ast syn::ItemType) {
+            self.found |= item.ident == "tokio";
+            syn::visit::visit_item_type(self, item);
+        }
+
+        fn visit_generics(&mut self, generics: &'ast syn::Generics) {
+            self.found |= generics.params.iter().any(
+                |parameter| matches!(parameter, syn::GenericParam::Type(ty) if ty.ident == "tokio"),
+            );
+            syn::visit::visit_generics(self, generics);
+        }
+
         fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
             self.found |= use_tree_binds_tokio(&item.tree);
             syn::visit::visit_item_use(self, item);

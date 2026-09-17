@@ -142,6 +142,29 @@ fn test_ast_tokio_shadowing_excludes_syntactic_spawn_matches() {
             extern crate something_else as tokio;
             fn run() { tokio::task::spawn(async {}); }
         "#,
+        r#"
+            struct tokio;
+            fn run() { tokio::spawn(async {}); }
+        "#,
+        r#"
+            enum tokio { Runtime }
+            fn run() { tokio::spawn(async {}); }
+        "#,
+        r#"
+            union tokio { raw: usize }
+            fn run() { tokio::spawn(async {}); }
+        "#,
+        r#"
+            trait tokio {}
+            fn run() { tokio::spawn(async {}); }
+        "#,
+        r#"
+            type tokio = usize;
+            fn run() { tokio::spawn(async {}); }
+        "#,
+        r#"
+            fn run<tokio: Runtime>() { tokio::spawn(async {}); }
+        "#,
     ] {
         let report =
             analyze_source_str("shadowed_tokio", Path::new("src/lib.rs"), source).expect("parse");
