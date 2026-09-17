@@ -3,7 +3,7 @@
 **Status:** Production-oriented artifact-resolution spike complete.
 **Recommendation:** **Use a hybrid fallback**; native injection is safe only for an explicitly resolved compatible unit.
 
-This record is the evidence for [issue #3](https://github.com/darkraider01/rust-compile-time-instrumentation-/issues/3). It does not change ADR-011 and does not remove or refactor the existing C-ABI path.
+This record is the evidence for [issue #3](https://github.com/darkraider01/rust-compile-time-instrumentation-/issues/3). [ADR-011](../../phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional) has been updated to incorporate this final Hybrid Fallback decision; the existing C-ABI path remains intact as the required fallback.
 
 ## Question
 

@@ -14,7 +14,7 @@ The format is unchanged: what was chosen, what it was chosen over, what evidence
 | [008](#adr-008---the-session-plan-is-resolved-once-and-fingerprinted) | The session plan is resolved once and fingerprinted, not re-derived per unit | **Accepted** | P2.1 |
 | [009](#adr-009---explicit-instrumentation-wins-at-whole-function-granularity) | Explicit instrumentation wins at whole-function granularity | **Accepted** | P2.2 |
 | [010](#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry) | Hybrid parenting is delegated to `tracing-opentelemetry`'s context activation | **Accepted** | P2.2 |
-| [011](#adr-011---the-tier-2-c-abi-is-provisional) | The Tier-2 C ABI is provisional, not the intended endpoint | **Accepted, provisional** | P2.2 → P2.4 |
+| [011](#adr-011---the-tier-2-c-abi-is-provisional) | Hybrid Fallback: Native `--extern` Injection with Required Tier-2 C-ABI Fallback | **Accepted (Hybrid Fallback)** | P2.2 → P2.4 |
 | [012](#adr-012---hybrid-first-partydependency-instrumentation-architecture) | Hybrid first-party/dependency instrumentation architecture | **Accepted** | P2.2 → P2.3 |
 | [013](#adr-013---p23p24-architecture-freeze-and-cargo-fix-integration) | P2.3/P2.4 architecture freeze and Cargo-fix integration | **Accepted** | P2.3 → P2.4 |
 
@@ -190,7 +190,7 @@ A caller annotated `#[tracing::instrument]` and an automatically instrumented de
 
 ### ADR-011 - The Tier-2 C ABI is provisional
 
-**Status:** Accepted, provisional, P2.2. Does not reverse [ADR-003](../research/17-decision-records.md#adr-003--extern-c-trampolines-for-dependency-coverage), but withdraws the assumption that it is the endpoint. Opened by maintainer review, 2026-09-10.
+**Status:** Accepted (Hybrid Fallback). Resolved in P2.4 via R-4 spike. Concludes that native `--extern` injection is preferred for deterministically resolved compatible units, while the Tier-2 C ABI (`otel-shim`) is retained as the required fallback.
 
 #### Context
 
@@ -210,58 +210,40 @@ The last point is the load-bearing one. ADR-003's premise was that the dependenc
 
 #### Decision
 
-**Treat the Tier-2 C ABI as a working mechanism with a known expiry, not as the architecture. Two tracks:**
+**Adopt a Hybrid Fallback architecture:**
 
 1. **Immediate mitigation (P2.2) - Landed.** Both layers implemented together:
    - `catch_unwind` inside each of the seven exported functions in `otel-shim/src/lib.rs`, swallowing panics and returning handle `0` (for `u64` handles/tokens) or `()` (for unit). Aligned with S11 (telemetry failure must degrade, not propagate into user code) and critically prevents double-panic aborts when `__OtelGuard::drop()` runs during an existing unwind.
    - `extern "C-unwind"` on all nine declarations (seven exports in `otel-shim/src/lib.rs` plus the two spliced forms in `transform.rs`), providing the ABI backstop for any unwinding across the boundary.
    - **Stated limit:** `panic = "abort"` makes both layers inert. If a user's compilation profile specifies `panic = "abort"`, unwinding never runs and the abort occurs regardless.
 
-2. **Replacement investigation (P2.4).** Spiked 2026-09-10; results below. `--extern` injection is viable. The blocker is not the one this ADR originally named. Under the hybrid architecture ([ADR-012](#adr-012---hybrid-first-partydependency-instrumentation-architecture)), dependency instrumentation is the opt-in path, so this investigation and any follow-on ABI work are scheduled in P2.4 behind the default first-party lint-apply driver (P2.3).
+2. **R-4 Replacement investigation (P2.4) - Resolved as Hybrid Fallback.**
+   Native `--extern` injection is viable and preferred when `SessionPlan` can deterministically resolve an exact Cargo-produced OpenTelemetry artifact for the dependency compilation unit. However, because shared dependencies across incompatible target roots or multiple OpenTelemetry versions cannot be safely satisfied by a single native artifact, the Tier-2 C ABI (`otel-shim`) must be preserved as the required fallback.
 
-#### Spike result (2026-09-10)
+#### Spike Results and Final Resolution (P2.4)
 
-A minimal `RUSTC_WRAPPER` was built that appends `--extern opentelemetry=<rlib>` when it sees `--crate-name dep_lib`, against a workspace where `dep_lib`'s manifest declares no `opentelemetry` dependency at all.
+The R-4 spike evaluated native `--extern` injection (`docs/phase2/p2.4/r4-extern-injection-spike.md`) across multiple iterations:
 
-- **✅ Crate-instance identity is not a problem.** The injected instance is the same one Cargo resolved. A `Context` constructed in the app was accepted by `dep_lib::takes_context(&cx)`, and a `Context` returned from `dep_lib::make_context()` bound to the app's own `opentelemetry::Context` annotation. Both directions compile, link and run. The question this ADR was blocked on is answered favourably.
-- **❌ Build ordering is the real blocker.** On a cold build `dep_lib` compiles *before* `opentelemetry` exists, because Cargo's DAG has no edge between them. The rlib is absent at injection time and the build fails hard with `E0433: cannot find module or crate opentelemetry`.
-- **✅ A pre-pass resolves the ordering problem.** Running `cargo build -p opentelemetry` into the session target directory before the main build makes the rlib present when `dep_lib` compiles. Verified on both `dev` and `release`.
-- **✅ The pre-pass is not a double compile.** The main build emits no `Compiling opentelemetry` line and the rlib hash is unchanged (`bf349e284d4db059` on dev, `ebc2fd7a58a5e107` on release). Cargo's fingerprint matches and the artifact is reused, so the cost is scheduling, not recompilation. This matters because "the double perf cost" was one of the two objections raised in review.
-- **✅ `-p` resolves features graph-wide, not to bare defaults.** The pre-pass and the full build produce the identical hash, so the feature-mismatch hazard is much narrower than assumed - Cargo unifies features across the workspace before building the single package.
+- **✅ Crate-instance identity and context sharing work.** An injected `--extern` resolves to the same instance Cargo resolved. A `Context` constructed in the application crosses cleanly into and out of dependency functions.
+- **✅ Deterministic artifact resolver via `compiler-artifact` JSON.** Filename globbing was rejected as unsound. `SessionPlan` captures authoritative artifact paths from Cargo's JSON output keyed by dependency package ID, shared OpenTelemetry package ID, target triple, and compilation profile.
+- **✅ Source and manifest immutability preserved.** Byte snapshots verify that dependency `Cargo.toml`, dependency source code, and Cargo registry source cache remain completely untouched.
+- **✅ Rebuild cycle verified.** Cold builds, repeat builds, incremental application rebuilds, and clean rebuilds all pass cleanly.
+- **❌ Structural limitation in multi-version / multi-root graphs.** If two binaries or target roots in one workspace resolve different OpenTelemetry versions, a shared dependency compilation unit cannot satisfy both natively.
+- **✅ Missing/incompatible artifacts fail open.** Missing artifacts, profile mismatches, target mismatches, and multi-version ambiguities deterministically fail open to the Tier-2 C-ABI path under S11 without breaking compilation.
+- **⚠️ `tokio::spawn` context propagation is distinct.** Native `FutureExt::with_context` preserves context across future suspension and resumption; it does not propagate context across `tokio::spawn` task-creation boundaries. This boundary belongs to Issue #6.
 
-#### Spike round 2 (2026-09-10) - the remaining cases
+#### Final Architecture: Hybrid Fallback
 
-- **✅ `opentelemetry` reachable only transitively.** An application that names `otel-shim` but never `opentelemetry` still works: `cargo build -p opentelemetry` reaches a transitive-only package, the pre-pass populates the rlib, injection succeeds and the binary runs. The feared case - the pre-pass having nothing to build - does not occur, because `otel-shim` puts `opentelemetry` in the resolved graph.
-- **✅ Cross-compilation is free.** Under an explicit `--target`, the deps directory moves to `target/<triple>/debug/deps` and the rlib hash changes, and discovery still lands because it reads `-L dependency=` out of the invocation Cargo built. That flag is inherently target-aware, so no special handling is required.
-- **❌ Two `opentelemetry` versions in one graph breaks discovery, nondeterministically.** With `0.30` and `0.32` both resolved, two rlibs exist. Which are present when the dependency compiles depends on build scheduling. In one run only the pre-passed `0.32` existed and injection picked correctly; after forcing `0.30` to build first, the wrapper saw both and bailed, and the build failed with `E0433`. **The same project can build one day and fail the next.** Filename globbing is not a sound discovery mechanism.
-- **Also:** `cargo build -p opentelemetry` is itself ambiguous in that graph - *"specification `opentelemetry` is ambiguous"* - so even the pre-pass needs a version-qualified `-p opentelemetry@0.32.0`.
-
-**The sound mechanism, if this is implemented:** do not glob. Run the pre-pass version-qualified with `--message-format=json` and capture the artifact path Cargo reports:
-
-```
-package_id : registry+...#opentelemetry@0.32.0
-filenames  : [".../target/debug/libopentelemetry.rlib", ...]
-```
-
-That path is authoritative and version-unambiguous. Store it in the `SessionPlan` alongside the existing gate, and have the wrapper inject exactly it. Discovery then never depends on what happens to be on disk at that moment, which is what makes the current approach nondeterministic.
-
-**A structural limit remains.** A dependency crate is compiled once and shared by every binary that links it. If two binaries in one workspace resolve different `opentelemetry` versions, the single shared compilation of that dependency can satisfy at most one of them - the requirement is unsatisfiable, not merely hard to discover. This is the same shape as the mixed-provider defect recorded as G7 in the [Phase 2 README](README.md#g7---mixed-provider-workspace-fails-to-link), and any implementation needs a per-target-root decision with a deliberate fail-open for the units it cannot satisfy.
-
-**Still untested:** host/build-script units, and interaction with the existing `-C metadata` unit identity from [ADR-007](#adr-007---cargo-is-the-scheduler-c-metadata-is-the-identity).
+1. **Native `--extern` Injection Preferred:** Used where `SessionPlan` deterministically resolves an exact, compatible OpenTelemetry artifact matching package identity, resolved features, target, and profile.
+2. **Tier-2 C ABI as Required Fallback:** The C-ABI implementation (`otel-shim` and trampoline emission) remains fully intact and active for units where native injection cannot be deterministically and safely resolved.
+3. **Task-Boundary Propagation Scoped to #6:** Automatic propagation across `tokio::spawn` is handled as a distinct task-creation propagation problem in Issue #6.
 
 #### Consequences
 
-- ✅ **R-1 and R-2 may become moot.** Both are limitations of the ABI's width - a hardcoded `"dependency"` scope, and discarded file/line/kind. Native calls carry all of it for free, so the P2.4 ABI-extension work should not start until the replacement question is settled.
-- ✅ **The Tier-1/Tier-2 split may collapse**, retiring what [ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls) called its *"largest unpriced consequence"*.
-- ❌ **The calling-convention cost is unmeasured.** The C ABI is forced at every instrumented dependency function. Two small lifecycle calls per span is plausibly noise against span creation itself, but that is an assumption, not a measurement, and it should be benchmarked rather than argued.
-- ⚠️ **`--extern` injection trades one unsanctioned mechanism for another.** It creates a dependency edge Cargo did not resolve, which is a stronger intervention than reading argv. If it works, its own failure modes need their own record.
-
-#### Revisit if
-
-- ~~`--extern` injection is shown to produce a single shared crate instance across the graph.~~ **Met, 2026-09-10.** It does. The remaining question is no longer identity but whether the pre-pass survives the untested cases listed above. If it does, Tier-2 is replaced and this ADR is superseded by the record of that decision.
-- ~~The pre-pass fails on cross-compilation, or a graph with no `opentelemetry` of its own.~~ **Tested 2026-09-10: it does not.** Both work.
-- Multi-version graphs cannot be made deterministic via the JSON-artifact mechanism above, or the per-target-root satisfiability limit turns out to be common rather than exotic. Then the C ABI is the architecture after all, ADR-003 stands unqualified, and R-1/R-2 proceed as planned in P2.4.
-- The calling-convention overhead is measured and turns out to be material at realistic span rates. That would raise the priority of the replacement track independently of the panic issue.
+- ✅ **Native instrumentation where compatible:** Dependency units with provably compatible artifacts emit standard OpenTelemetry calls, preserving full scope attribution, line/file info, and native performance.
+- ✅ **Guaranteed compilation safety:** Incompatible or ambiguous dependency units fail open to the C ABI rather than failing compilation.
+- ✅ **C ABI preserved:** `otel-shim` remains an essential architectural component, and earlier panic mitigations (`extern "C-unwind"` and `catch_unwind`) remain fully active.
+- ℹ️ **Next milestone:** Task-creation context propagation across `tokio::spawn` proceeds under Issue #6.
 
 ---
 
