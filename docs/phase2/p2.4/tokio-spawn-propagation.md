@@ -57,7 +57,7 @@ Because `cargo-instrument` operates via `syn` AST analysis rather than full `rus
   * `tokio::task::spawn_blocking(...)`
   * Calls with argument count $\ne 1$
 
-Before accepting those syntactic forms, the analyzer excludes an entire source file if it finds a local binding named `tokio`, including `mod tokio`, a `use` binding or alias to `tokio`, and `extern crate ... as tokio`. This deliberately under-transforms independent scopes in such a file rather than risking a rewrite of a shadowed call. At wrapper time, Cargo's `--extern tokio` input is also required; without that authoritative dependency signal, discovered spawn sites are discarded.
+Before accepting those syntactic forms, the analyzer excludes an entire source file if it finds a local binding named `tokio`, including modules, imports/aliases, extern-crate aliases, structs, enums, unions, traits, type aliases, and type parameters. This deliberately under-transforms independent scopes in such a file rather than risking a rewrite of a shadowed call. At wrapper time, Cargo's `--extern tokio` input is also required; without that authoritative dependency signal, discovered spawn sites are discarded.
 
 ### 2.2 Structural Idempotence Detection
 
