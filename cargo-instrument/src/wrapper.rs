@@ -615,6 +615,7 @@ fn mirror_and_transform_crate_sources(
 }
 
 /// Recursively mirror and transform Rust source files.
+#[allow(clippy::too_many_arguments)]
 fn mirror_dir_recursive(
     dir: &Path,
     base_rel_dir: &Path,

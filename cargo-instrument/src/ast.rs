@@ -139,6 +139,7 @@ pub fn analyze_source_str(
 /// for crate roots (e.g. `src/main.rs`, `src/lib.rs`, `src/bin/tool.rs`, `tests/integ.rs`),
 /// child modules are siblings in `current_file.parent()`. For non-root files,
 /// child modules resolve under `current_file.parent().join(file_stem)` (or parent if `mod.rs`).
+#[allow(clippy::too_many_arguments)]
 fn analyze_file_and_submodules(
     file_path: &Path,
     syn_file: &syn::File,
@@ -208,6 +209,7 @@ fn analyze_file_and_submodules(
 }
 
 /// Discover submodules declared in an item list (either in a file or inside an inline module).
+#[allow(clippy::too_many_arguments)]
 fn discover_submodules(
     current_file: &Path,
     items: &[syn::Item],

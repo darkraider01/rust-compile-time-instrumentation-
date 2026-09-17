@@ -9,7 +9,7 @@ use cargo_instrument::transform::{
     transform_source_str_with_native_otel_and_spawns, Emitter, NativeOtelEmitter, SentinelEmitter,
     TrampolineEmitter, TransformationPlan,
 };
-use opentelemetry::trace::{FutureExt as _, TraceContextExt as _, Tracer as _};
+use opentelemetry::trace::{TraceContextExt as _, Tracer as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
 /// Compile-time generic bound asserting that the future type implements Send.
@@ -43,17 +43,18 @@ async fn test_uninstrumented_tokio_spawn_loses_parent_context() {
     );
 
     // Call-site context capture wrapped with FutureExt::with_context preserves context
-    let cx_captured = opentelemetry::Context::current();
     let handle_wrapped = tokio::spawn(
         assert_is_send(
-            async {
-                let active = opentelemetry::Context::current();
-                (
-                    active.span().span_context().trace_id(),
-                    active.span().span_context().span_id(),
-                )
-            }
-            .with_context(cx_captured),
+            opentelemetry::trace::FutureExt::with_context(
+                async {
+                    let active = opentelemetry::Context::current();
+                    (
+                        active.span().span_context().trace_id(),
+                        active.span().span_context().span_id(),
+                    )
+                },
+                opentelemetry::Context::current(),
+            ),
         ),
     );
     let (wrapped_trace_id, wrapped_span_id) = handle_wrapped.await.unwrap();
@@ -273,13 +274,34 @@ fn launch_worker() {
 // 6. Multi-thread Tokio runtime execution with nested spawns and dependency spans
 // ---------------------------------------------------------------------------
 
+// Simulated dependency function instrumented with native OpenTelemetry
+async fn dependency_work() -> u32 {
+    let dep_tracer = opentelemetry::global::tracer("dep_crate");
+    let dep_span = opentelemetry::trace::Tracer::span_builder(
+        &dep_tracer,
+        "dependency_work",
+    )
+    .with_kind(opentelemetry::trace::SpanKind::Internal)
+    .start(&dep_tracer);
+    let dep_cx =
+        <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(dep_span);
+    opentelemetry::trace::FutureExt::with_context(
+        async move {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            42
+        },
+        dep_cx,
+    )
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_runtime_multi_thread_context_propagation() {
     let exporter = InMemorySpanExporter::default();
     let provider = SdkTracerProvider::builder()
         .with_simple_exporter(exporter.clone())
         .build();
-    let _scope = opentelemetry::global::set_tracer_provider(provider);
+    opentelemetry::global::set_tracer_provider(provider);
 
     let tracer = opentelemetry::global::tracer("test_app");
     let parent = tracer.start("app_parent");
@@ -292,43 +314,29 @@ async fn test_runtime_multi_thread_context_propagation() {
     let cx_for_outer = parent_cx.clone();
     let outer_guard = cx_for_outer.attach();
 
-    // Outer spawn (captures parent_cx at call site)
-    let outer_cx = opentelemetry::Context::current();
+    // Outer spawn: uses exact transformed shape emitted by cargo-instrument
     let outer_handle = tokio::spawn(
         assert_is_send(
-            async move {
-                thread_count_clone.fetch_add(1, Ordering::SeqCst);
-                tokio::time::sleep(Duration::from_millis(5)).await;
+            opentelemetry::trace::FutureExt::with_context(
+                async move {
+                    thread_count_clone.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(5)).await;
 
-                // Inner spawn inside outer task
-                let inner_cx = opentelemetry::Context::current();
-                let inner_handle = tokio::spawn(
-                    assert_is_send(
-                        async move {
-                            // Simulated dependency work that starts an internal span
-                            let dep_tracer = opentelemetry::global::tracer("dep_crate");
-                            let dep_span = opentelemetry::trace::Tracer::span_builder(
-                                &dep_tracer,
-                                "dependency_work",
-                            )
-                            .with_kind(opentelemetry::trace::SpanKind::Internal)
-                            .start(&dep_tracer);
-                            let dep_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(dep_span);
+                    // Inner spawn inside outer task: exact transformed shape
+                    let inner_handle = tokio::spawn(
+                        assert_is_send(
                             opentelemetry::trace::FutureExt::with_context(
                                 async move {
-                                    tokio::time::sleep(Duration::from_millis(5)).await;
-                                    42
+                                    dependency_work().await
                                 },
-                                dep_cx,
-                            )
-                            .await
-                        }
-                        .with_context(inner_cx),
-                    ),
-                );
-                inner_handle.await.unwrap()
-            }
-            .with_context(outer_cx),
+                                opentelemetry::Context::current(),
+                            ),
+                        ),
+                    );
+                    inner_handle.await.unwrap()
+                },
+                opentelemetry::Context::current(),
+            ),
         ),
     );
 
