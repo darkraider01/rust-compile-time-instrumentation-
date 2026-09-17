@@ -28,7 +28,16 @@ opentelemetry::trace::FutureExt::with_context(async move {
 }, __otel_cx).await
 ```
 
-The objective of Issue #5 is to prove that this structure preserves context across thread migration and satisfies all lifecycle guarantees without relying on thread-local ownership assumptions.
+### Critical Distinction: Future Creation vs. First Poll
+
+In Rust, an `async fn` is fundamentally lazy: calling an `async fn` does not immediately execute its body; it merely constructs and returns an anonymous generator / future state machine.
+Consequently, the span initialization, tracer lookup, and context capture shown above execute when the future is **first polled**, not when the function call returns the future.
+
+The Issue #5 deterministic proof remains fully valid because the future is first polled on Thread A while the application parent context is attached (`parent_guard`). When that first poll occurs, `Tracer::start` sees the ambient parent context in Thread A's thread-local storage and correctly binds `parent_span_id`. `FutureExt::with_context` then stores `__otel_cx` inside the returned `WithContext` future wrapper, guaranteeing that all subsequent polls (including resumed polls on Thread B) execute within that span's context.
+
+Understanding this distinction is critical for **Issue #6**: if an unpolled or spawned future is sent to a background runtime executor via `tokio::spawn`, its first poll occurs on an executor worker thread where the caller's TLS context is *not* active. Therefore, context must be captured synchronously at the `tokio::spawn` task-creation boundary before scheduling.
+
+The objective of Issue #5 is to prove that once a future is created and instrumented, `FutureExt::with_context` preserves context across thread migration and satisfies all lifecycle guarantees without relying on thread-local ownership assumptions.
 
 ---
 
@@ -176,6 +185,8 @@ Test result: `test r4_extern_injection_path_dependency_proof ... ok (52.83s)`.
 
 ## 5. Scope Boundary: `tokio::spawn` (Issue #6)
 
-In this test, `tokio::spawn(async { dep_r4::async_work().await })` produces a span parented by `SpanId::INVALID`. This confirms that while `FutureExt::with_context` successfully propagates context across `.await` suspension and thread migration of an existing future, task-creation boundaries (`tokio::spawn`) do not inherit ambient context without explicit task instrumentation.
+In this test, `tokio::spawn(async { dep_r4::async_work().await })` produces a span parented by `SpanId::INVALID`. This confirms that while `FutureExt::with_context` successfully propagates context across `.await` suspension and thread migration of an already-instrumented future, task-creation boundaries (`tokio::spawn`) do not inherit ambient context without explicit task instrumentation.
+
+Because the spawned future's first poll happens asynchronously on a Tokio executor worker thread rather than on the calling thread, ambient caller context in thread-local storage is not active at first poll time. The parent context must therefore be captured synchronously at the `tokio::spawn` call site before scheduling the task.
 
 Preserving context across `tokio::spawn` is a distinct problem scheduled for **Issue #6**.

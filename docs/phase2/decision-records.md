@@ -188,7 +188,8 @@ A caller annotated `#[tracing::instrument]` and an automatically instrumented de
 
 ---
 
-### ADR-011 - The Tier-2 C ABI is provisional
+<a id="adr-011---the-tier-2-c-abi-is-provisional"></a>
+### ADR-011 — Hybrid Native Injection with Required Tier-2 C-ABI Fallback
 
 **Status:** Accepted (Hybrid Fallback). Resolved in P2.4 via R-4 spike. Concludes that native `--extern` injection is preferred for deterministically resolved compatible units, while the Tier-2 C ABI (`otel-shim`) is retained as the required fallback.
 
