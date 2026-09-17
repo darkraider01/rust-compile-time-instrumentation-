@@ -33,7 +33,10 @@ async fn test_uninstrumented_tokio_spawn_loses_parent_context() {
 
     // Plain, uninstrumented tokio::spawn loses caller TLS context at first poll
     let handle_unwrapped = tokio::spawn(async {
-        opentelemetry::Context::current().span().span_context().span_id()
+        opentelemetry::Context::current()
+            .span()
+            .span_context()
+            .span_id()
     });
     let unwrapped_span_id = handle_unwrapped.await.unwrap();
     assert_eq!(
@@ -43,20 +46,18 @@ async fn test_uninstrumented_tokio_spawn_loses_parent_context() {
     );
 
     // Call-site context capture wrapped with FutureExt::with_context preserves context
-    let handle_wrapped = tokio::spawn(
-        assert_is_send(
-            opentelemetry::trace::FutureExt::with_context(
-                async {
-                    let active = opentelemetry::Context::current();
-                    (
-                        active.span().span_context().trace_id(),
-                        active.span().span_context().span_id(),
-                    )
-                },
-                opentelemetry::Context::current(),
-            ),
+    let handle_wrapped = tokio::spawn(assert_is_send(
+        opentelemetry::trace::FutureExt::with_context(
+            async {
+                let active = opentelemetry::Context::current();
+                (
+                    active.span().span_context().trace_id(),
+                    active.span().span_context().span_id(),
+                )
+            },
+            opentelemetry::Context::current(),
         ),
-    );
+    ));
     let (wrapped_trace_id, wrapped_span_id) = handle_wrapped.await.unwrap();
     assert_eq!(wrapped_trace_id, parent_trace_id);
     assert_eq!(wrapped_span_id, parent_span_id);
@@ -85,8 +86,8 @@ fn test_calls() {
 }
 "#;
 
-    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), source)
-        .expect("analyze source");
+    let report =
+        analyze_source_str("test_crate", Path::new("src/lib.rs"), source).expect("analyze source");
 
     // Exactly 4 unambiguous tokio spawn calls must be discovered
     assert_eq!(
@@ -133,8 +134,8 @@ fn test_idempotence() {
 }
 "#;
 
-    let report = analyze_source_str("test_crate", Path::new("src/lib.rs"), source)
-        .expect("analyze source");
+    let report =
+        analyze_source_str("test_crate", Path::new("src/lib.rs"), source).expect("analyze source");
 
     // Only the 3rd spawn call must be discovered; the first two are structurally already wrapped
     assert_eq!(
@@ -187,8 +188,8 @@ pub async fn parent_job() {
 }
 "#;
 
-    let report = analyze_source_str("my_crate", Path::new("src/lib.rs"), source)
-        .expect("analyze source");
+    let report =
+        analyze_source_str("my_crate", Path::new("src/lib.rs"), source).expect("analyze source");
     assert_eq!(report.candidates.len(), 1);
     assert_eq!(report.spawn_sites.len(), 1);
 
@@ -224,9 +225,13 @@ fn run() {
 }
 "#;
 
-    let report = analyze_source_str("my_crate", Path::new("src/lib.rs"), source)
-        .expect("analyze source");
-    assert_eq!(report.spawn_sites.len(), 2, "must discover both outer and inner spawn");
+    let report =
+        analyze_source_str("my_crate", Path::new("src/lib.rs"), source).expect("analyze source");
+    assert_eq!(
+        report.spawn_sites.len(),
+        2,
+        "must discover both outer and inner spawn"
+    );
 
     let plan = TransformationPlan::build_with_emitter_and_spawns(
         source,
@@ -239,8 +244,12 @@ fn run() {
     let transformed = plan.apply(source).expect("apply plan");
 
     // Both spawns must be wrapped cleanly
-    assert!(transformed.contains("tokio::spawn(opentelemetry::trace::FutureExt::with_context(async {"));
-    assert!(transformed.contains("deep_work().await;\n        }, opentelemetry::Context::current())).await.unwrap();"));
+    assert!(
+        transformed.contains("tokio::spawn(opentelemetry::trace::FutureExt::with_context(async {")
+    );
+    assert!(transformed.contains(
+        "deep_work().await;\n        }, opentelemetry::Context::current())).await.unwrap();"
+    ));
 }
 
 #[test]
@@ -255,10 +264,18 @@ fn launch_worker() {
 }
 "#;
 
-    let report = analyze_source_str("my_crate", Path::new("src/lib.rs"), source)
-        .expect("analyze source");
-    assert_eq!(report.candidates.len(), 0, "inline function must be skipped from function instrumentation");
-    assert_eq!(report.spawn_sites.len(), 1, "spawn site must still be discovered");
+    let report =
+        analyze_source_str("my_crate", Path::new("src/lib.rs"), source).expect("analyze source");
+    assert_eq!(
+        report.candidates.len(),
+        0,
+        "inline function must be skipped from function instrumentation"
+    );
+    assert_eq!(
+        report.spawn_sites.len(),
+        1,
+        "spawn site must still be discovered"
+    );
 
     let transformed = transform_source_str_with_native_otel_and_spawns(
         source,
@@ -267,7 +284,9 @@ fn launch_worker() {
         &report.spawn_sites,
     )
     .expect("transform source");
-    assert!(transformed.contains("tokio::spawn(opentelemetry::trace::FutureExt::with_context(async {"));
+    assert!(
+        transformed.contains("tokio::spawn(opentelemetry::trace::FutureExt::with_context(async {")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -277,14 +296,13 @@ fn launch_worker() {
 // Simulated dependency function instrumented with native OpenTelemetry
 async fn dependency_work() -> u32 {
     let dep_tracer = opentelemetry::global::tracer("dep_crate");
-    let dep_span = opentelemetry::trace::Tracer::span_builder(
-        &dep_tracer,
-        "dependency_work",
-    )
-    .with_kind(opentelemetry::trace::SpanKind::Internal)
-    .start(&dep_tracer);
+    let dep_span = opentelemetry::trace::Tracer::span_builder(&dep_tracer, "dependency_work")
+        .with_kind(opentelemetry::trace::SpanKind::Internal)
+        .start(&dep_tracer);
     let dep_cx =
-        <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(dep_span);
+        <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(
+            dep_span,
+        );
     opentelemetry::trace::FutureExt::with_context(
         async move {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -315,30 +333,24 @@ async fn test_runtime_multi_thread_context_propagation() {
     let outer_guard = cx_for_outer.attach();
 
     // Outer spawn: uses exact transformed shape emitted by cargo-instrument
-    let outer_handle = tokio::spawn(
-        assert_is_send(
-            opentelemetry::trace::FutureExt::with_context(
-                async move {
-                    thread_count_clone.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(5)).await;
+    let outer_handle = tokio::spawn(assert_is_send(
+        opentelemetry::trace::FutureExt::with_context(
+            async move {
+                thread_count_clone.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(5)).await;
 
-                    // Inner spawn inside outer task: exact transformed shape
-                    let inner_handle = tokio::spawn(
-                        assert_is_send(
-                            opentelemetry::trace::FutureExt::with_context(
-                                async move {
-                                    dependency_work().await
-                                },
-                                opentelemetry::Context::current(),
-                            ),
-                        ),
-                    );
-                    inner_handle.await.unwrap()
-                },
-                opentelemetry::Context::current(),
-            ),
+                // Inner spawn inside outer task: exact transformed shape
+                let inner_handle = tokio::spawn(assert_is_send(
+                    opentelemetry::trace::FutureExt::with_context(
+                        async move { dependency_work().await },
+                        opentelemetry::Context::current(),
+                    ),
+                ));
+                inner_handle.await.unwrap()
+            },
+            opentelemetry::Context::current(),
         ),
-    );
+    ));
 
     let res = outer_handle.await.unwrap();
     assert_eq!(res, 42);
@@ -348,8 +360,14 @@ async fn test_runtime_multi_thread_context_propagation() {
 
     // Check exported spans
     let spans = exporter.get_finished_spans().expect("get spans");
-    let parent_span = spans.iter().find(|s| s.name == "app_parent").expect("parent span");
-    let dep_span = spans.iter().find(|s| s.name == "dependency_work").expect("dep span");
+    let parent_span = spans
+        .iter()
+        .find(|s| s.name == "app_parent")
+        .expect("parent span");
+    let dep_span = spans
+        .iter()
+        .find(|s| s.name == "dependency_work")
+        .expect("dep span");
 
     assert_eq!(
         dep_span.span_context.trace_id(),
@@ -371,7 +389,10 @@ async fn test_runtime_multi_thread_context_propagation() {
 
     // Assert no active context leak after completion
     assert_eq!(
-        opentelemetry::Context::current().span().span_context().span_id(),
+        opentelemetry::Context::current()
+            .span()
+            .span_context()
+            .span_id(),
         opentelemetry::trace::SpanId::INVALID,
         "no active context leak on caller thread"
     );
