@@ -424,7 +424,7 @@ fn main() {
         .expect("direct async dependency span parented by r4_parent");
     assert_eq!(direct_async.span_context.trace_id(), parent.span_context.trace_id());
 
-    // Assert tokio::spawn observation (#6 boundary)
+    // Assert tokio::spawn context propagation (#6 task-creation boundary)
     let spawned_async = spans
         .iter()
         .find(|span| span.name == "async_work" && span.span_context.span_id() != direct_async.span_context.span_id() && span.parent_span_id != plain_parent_id)
@@ -432,8 +432,13 @@ fn main() {
     println!("SPAWN_PARENT={:?}", spawned_async.parent_span_id);
     assert_eq!(
         spawned_async.parent_span_id,
-        opentelemetry::trace::SpanId::INVALID,
-        "native FutureExt propagation alone must not claim to preserve context across tokio::spawn"
+        parent.span_context.span_id(),
+        "tokio::spawn must preserve parent SpanId across task boundary via call-site context capture"
+    );
+    assert_eq!(
+        spawned_async.span_context.trace_id(),
+        parent.span_context.trace_id(),
+        "tokio::spawn must preserve TraceId across task boundary"
     );
 
     // Assert cross-thread migration for plain async future
@@ -475,7 +480,8 @@ async fn run_probe() {
     opentelemetry::trace::FutureExt::with_context(async move {
         assert_eq!(dep_r4::sync_work(), 7);
         assert_eq!(dep_r4::async_work().await, 11);
-        assert_eq!(tokio::spawn(async { dep_r4::async_work().await }).await.unwrap(), 11);
+        let spawned_res = tokio::spawn(async { dep_r4::async_work().await }).await.unwrap();
+        assert_eq!(spawned_res, 11);
     }, cx).await;
 }
 "#,
