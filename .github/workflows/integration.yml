@@ -61,6 +61,11 @@ jobs:
       - name: Run Phase 2 scale fixture tests (>=100 units)
         run: cargo test --test graph_scale_tests -- --nocapture
 
+      - name: Run P2.4 R-4 / #5 deterministic cross-thread proof (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --nocapture
+
+
       # Documents precisely what the tests above do and do not prove.
       # Written per-matrix-leg deliberately: process spawning, path
       # resolution (Path::is_absolute()/join() in wrapper.rs), and
