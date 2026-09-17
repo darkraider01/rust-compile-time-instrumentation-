@@ -304,17 +304,15 @@ $16 + 16 = 32$ to $18 + 14 = 32$. Phase 1 documents record the pre-fix split as 
 
 Four risks in the Tier-2 C ABI. Under the hybrid architecture ([ADR-012](decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture)), dependency instrumentation is the opt-in path, so these risks and their resolution are scheduled in P2.4 behind the default first-party lint-apply driver (P2.3).
 
-R-1 and R-2 are limitations of the ABI's width and were originally scheduled as an ABI extension. R-3 and R-4 came out of maintainer review on 2026-09-10 and question whether the ABI should exist at all - see [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional). **R-1 and R-2 are now blocked on R-4:** if `--extern` injection replaces the tier, native calls carry scope, file, line and kind for free and both risks disappear rather than being fixed.
-
-R-3 is independent of that outcome and was resolved in P2.2 (commit [`6bf0880`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/6bf0880)).
+R-1 and R-2 are limitations of the ABI's width and were originally scheduled as an ABI extension. R-3 was resolved in P2.2 via panic containment (commit [`6bf0880`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/6bf0880)). R-4 evaluated native `--extern` injection and established the **Hybrid Fallback** architecture ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)): native injection is preferred for deterministically resolved compatible units, while the Tier-2 C ABI is retained as the required fallback for units where native injection cannot be safely resolved (e.g. shared multi-version graphs). R-1 and R-2 remain relevant for the C-ABI fallback path.
 
 #### R-1: Dependency spans share hardcoded instrumentation scope
 
-`otel-shim/src/lib.rs:119` uses `global::tracer("dependency")` as a literal string for all third-party crates, whereas Tier-1 uses `global::tracer(crate_name)`. Per-crate `InstrumentationScope` attribution is lost in Tier-2. Passing crate name across the ABI will be batched into P2.4 if the C ABI is retained.
+`otel-shim/src/lib.rs:119` uses `global::tracer("dependency")` as a literal string for all third-party crates, whereas Tier-1 uses `global::tracer(crate_name)`. Per-crate `InstrumentationScope` attribution is lost in Tier-2. Passing crate name across the ABI will be batched into P2.4 for units using the C-ABI fallback.
 
 #### R-2: File, line, and kind transmitted across ABI and discarded
 
-`__otel_span_enter(name, name_len, _file, _file_len, _line, _kind)` in `otel-shim/src/lib.rs:87-137` leaves file, line, and kind underscore-prefixed and unused, hardcoding `SpanKind::Internal`. Semantic convention attributes (`code.function.name`, `code.file.path`, `code.line.number` per §16.14) will be wired into the span builder during P2.4 if the C ABI is retained.
+`__otel_span_enter(name, name_len, _file, _file_len, _line, _kind)` in `otel-shim/src/lib.rs:87-137` leaves file, line, and kind underscore-prefixed and unused, hardcoding `SpanKind::Internal`. Semantic convention attributes (`code.function.name`, `code.file.path`, `code.line.number` per §16.14) will be wired into the span builder during P2.4 for units using the C-ABI fallback.
 
 #### R-3: A panic inside the shim aborts the host process
 
@@ -351,21 +349,18 @@ argv, and `--extern <name>=<path>` creates the dependency edge directly, with no
 Cargo resolution. If that holds, dependency crates emit the same native calls Tier-1 does and the
 tier collapses.
 
-**Spiked 2026-09-10 - viable.** Crate-instance identity, the unknown this risk was originally
-blocked on, is not a problem: an injected `--extern` resolves to the same instance Cargo did, and a
-`Context` crosses the boundary in both directions. The real blocker is build ordering - on a cold
-build the dependency compiles before `opentelemetry` exists, since Cargo's DAG has no edge between
-them, and injection fails with `E0433`. A pre-pass (`cargo build -p opentelemetry` into the session
-target directory before the main build) resolves it on both `dev` and `release`, and Cargo reuses
-the artifact rather than rebuilding it, so the cost is scheduling rather than a second compile.
-
-**Round 2 (2026-09-10).** Cross-compilation works for free - discovery reads `-L dependency=`, which
-is already target-aware. A graph where the app reaches `opentelemetry` only through `otel-shim` also
-works, so the feared "pre-pass has nothing to build" case does not arise. Two `opentelemetry`
-versions in one graph does break it, and nondeterministically: which rlibs exist when the dependency
-compiles depends on scheduling, so the same project can build one run and fail the next with
-`E0433`. Filename globbing is unsound; the fix is to capture the authoritative path from a
-version-qualified pre-pass with `--message-format=json` and store it in the `SessionPlan`.
+**Resolution (P2.4 - Hybrid Fallback):** The completed R-4 spike
+([`r4-extern-injection-spike.md`](p2.4/r4-extern-injection-spike.md) and
+[ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)) evaluated native `--extern`
+injection and established that:
+1. Deterministic resolution of Cargo's exact `compiler-artifact` JSON rlib path keyed by package ID,
+   target, and profile makes native injection safe and reliable for compatible dependency units.
+2. However, shared dependencies reached by target roots resolving conflicting OpenTelemetry versions
+   cannot be safely satisfied by a single native compilation unit, and missing or ambiguous artifacts
+   must fail open.
+3. Therefore, the architecture is **Hybrid Fallback**: native injection is preferred for deterministically
+   resolved compatible units; the Tier-2 C ABI (`otel-shim`) remains intact as the required fallback.
+4. Automatic `tokio::spawn` task-boundary context propagation is distinct and scheduled in P2.4.
 
 A structural limit survives that fix: a dependency is compiled once and shared, so if two binaries
 resolve different `opentelemetry` versions, the single shared compilation can satisfy at most one -
@@ -554,9 +549,10 @@ Not all Rust function forms are automatically instrumented. The semantic boundar
 
 #### Key Focus Areas
 
-1. **R-4 Resolution ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)):** Evaluate `--extern` injection with version-qualified pre-pass artifact capture (`--message-format=json`). If viable, collapse Tier-2 into native calls (retiring R-1 scope attribution and R-2 file/line/kind limits). If multi-version satisfiability prevents full adoption, extend the C ABI for R-1 and R-2.
-2. **Async Dependency Trampolines:**
-   - `tokio::spawn` context propagation via spawn-site context capture and span links ([ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls)).
+1. **R-4 Resolution ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)):** Resolved (**Hybrid Fallback**). Native `--extern` injection is adopted for deterministically resolved compatible units, while the Tier-2 C ABI (`otel-shim`) is retained as the required fallback for multi-version or ambiguous units. Full evidence in [`r4-extern-injection-spike.md`](p2.4/r4-extern-injection-spike.md).
+2. **Async Dependency Context Propagation & Trampolines:**
+   - **Future Suspension & Thread Migration:** Verified. Native `FutureExt::with_context` deterministically preserves OpenTelemetry context across suspension, resumption, and cross-thread migration ([`async-context-propagation.md`](p2.4/async-context-propagation.md)).
+   - `tokio::spawn` context propagation via spawn-site context capture and span links ([ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls)) — Issue #6.
    - Stream / Sink poll-boundary instrumentation.
    - Cancelled-vs-completed span status tracking across task lifecycles.
 3. **Opt-In CLI Integration:** Seamless orchestration connecting first-party lint-applied crates with dependency wrapper builds.
