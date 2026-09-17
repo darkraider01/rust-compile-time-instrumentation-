@@ -3,7 +3,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-use crate::candidate::Candidate;
+use crate::candidate::{Candidate, SpawnSite};
 
 /// Hard errors that prevent processing an entire file.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -82,6 +82,14 @@ pub trait Emitter: Send + Sync {
     /// `NativeOtelEmitter` returns `true` as implemented in Milestone P1.6.
     fn handles_async(&self) -> bool {
         true
+    }
+
+    /// Whether this emitter supports task-boundary context propagation across Tokio spawn calls (Issue #6).
+    ///
+    /// Defaults to `false` so generic and C-ABI emitters (e.g. `SentinelEmitter`, `TrampolineEmitter`)
+    /// never emit native OpenTelemetry calls. `NativeOtelEmitter` returns `true`.
+    fn handles_tokio_spawn(&self) -> bool {
+        false
     }
 }
 
@@ -174,6 +182,26 @@ impl TransformationPlan {
     pub fn build_with_emitter<E: Emitter + ?Sized>(
         source: &str,
         candidates: &[Candidate],
+        emitter: &E,
+    ) -> Result<Self, TransformError> {
+        Self::build_with_emitter_and_spawns(source, candidates, &[], emitter)
+    }
+
+    /// Build and validate a transformation plan using a pluggable `Emitter` (ADR-006)
+    /// and Tokio spawn sites (Issue #6).
+    ///
+    /// Architectural guarantees:
+    /// 1. Every edit offset references the original, immutable `source` buffer.
+    /// 2. Candidate ordering is normalized deterministically.
+    /// 3. Spawn edits are pure insertions around the spawn argument and merge safely
+    ///    with candidate edits via global offset sorting.
+    /// 4. H2 Fail-Open: Malformed individual candidates or spawn sites are safely skipped.
+    /// 5. M1: Uses the detected line ending (`\r\n` vs `\n`) for all emitted text.
+    /// 6. M3: Uses structurally constrained idempotence detection.
+    pub fn build_with_emitter_and_spawns<E: Emitter + ?Sized>(
+        source: &str,
+        candidates: &[Candidate],
+        spawn_sites: &[SpawnSite],
         emitter: &E,
     ) -> Result<Self, TransformError> {
         let source_len = source.len();
@@ -339,6 +367,46 @@ impl TransformationPlan {
             last_valid_range = Some(r.clone());
         }
 
+        // 2. Tokio spawn edits (Issue #6)
+        if emitter.handles_tokio_spawn() {
+            for spawn in spawn_sites {
+                let r = &spawn.arg_byte_range;
+                if r.start >= r.end || r.end > source_len {
+                    continue;
+                }
+                if !source.is_char_boundary(r.start) || !source.is_char_boundary(r.end) {
+                    continue;
+                }
+
+                edits.push(ByteEdit {
+                    start: r.start,
+                    end: r.start,
+                    replacement: "opentelemetry::trace::FutureExt::with_context(".to_string(),
+                });
+                edits.push(ByteEdit {
+                    start: r.end,
+                    end: r.end,
+                    replacement: ", opentelemetry::Context::current())".to_string(),
+                });
+            }
+        }
+
+        // 3. Global sort and validation of all edits (Refinements 1, 3)
+        edits.sort_by(|a, b| {
+            a.start
+                .cmp(&b.start)
+                .then_with(|| a.end.cmp(&b.end))
+        });
+
+        for window in edits.windows(2) {
+            if window[0].end > window[1].start {
+                return Err(TransformError::OutOfBounds {
+                    range: window[0].start..window[1].end,
+                    source_len,
+                });
+            }
+        }
+
         Ok(TransformationPlan { edits, skipped })
     }
 
@@ -446,6 +514,23 @@ pub fn transform_source_str_with_native_otel(
     plan.apply(source)
 }
 
+/// Convenience helper: create plan and transform source text using native OpenTelemetry emitter and spawn sites.
+pub fn transform_source_str_with_native_otel_and_spawns(
+    source: &str,
+    crate_name: &str,
+    candidates: &[Candidate],
+    spawn_sites: &[SpawnSite],
+) -> Result<String, TransformError> {
+    let emitter = NativeOtelEmitter::new(crate_name);
+    let plan = TransformationPlan::build_with_emitter_and_spawns(
+        source,
+        candidates,
+        spawn_sites,
+        &emitter,
+    )?;
+    plan.apply(source)
+}
+
 /// Transform a source file from disk using candidates that have already been scoped to this file.
 ///
 /// NON-NEGOTIABLE INVARIANT:
@@ -460,11 +545,12 @@ pub fn transform_source_file_scoped(
         input_path,
         output_path,
         scoped_candidates,
+        &[],
         &SentinelEmitter,
     )
 }
 
-/// Transform a source file from disk using a custom emitter and scoped candidates.
+/// Transform a source file from disk using a custom emitter and scoped candidates and spawn sites.
 ///
 /// NON-NEGOTIABLE INVARIANT:
 /// The input source file must NEVER be modified in-place. If `input_path` and `output_path`
@@ -473,6 +559,7 @@ pub fn transform_source_file_scoped_with_emitter<E: Emitter + ?Sized>(
     input_path: &Path,
     output_path: &Path,
     scoped_candidates: &[Candidate],
+    scoped_spawns: &[SpawnSite],
     emitter: &E,
 ) -> Result<TransformationPlan, TransformError> {
     // 1. Guard against in-place modification
@@ -494,7 +581,12 @@ pub fn transform_source_file_scoped_with_emitter<E: Emitter + ?Sized>(
     })?;
 
     // 3. Perform transformation
-    let plan = TransformationPlan::build_with_emitter(&source_text, scoped_candidates, emitter)?;
+    let plan = TransformationPlan::build_with_emitter_and_spawns(
+        &source_text,
+        scoped_candidates,
+        scoped_spawns,
+        emitter,
+    )?;
     let transformed = plan.apply(&source_text)?;
 
     // 4. Ensure parent directories exist for output path
@@ -729,6 +821,10 @@ impl Emitter for NativeOtelEmitter {
     }
 
     fn handles_async(&self) -> bool {
+        true
+    }
+
+    fn handles_tokio_spawn(&self) -> bool {
         true
     }
 }
