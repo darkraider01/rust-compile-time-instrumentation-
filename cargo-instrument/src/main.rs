@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
 use cargo_instrument::{
-    analyze_source_file, run_wrapper, transform_source_file, transform_source_str, SessionPlan,
-    UnitId, WrapperConfig, DEBUG_ENV, SESSION_ENV,
+    analyze_source_file, resolve_package_spec, run_wrapper, transform_source_file,
+    transform_source_str, SessionPlan, UnitId, WrapperConfig, DEBUG_ENV, SESSION_ENV,
 };
 
 const WRAPPER_MODE_ENV: &str = "CARGO_INSTRUMENT_WRAPPER_MODE";
@@ -428,7 +428,46 @@ fn acquire_native_artifacts(
     } else {
         std::collections::HashSet::new()
     };
-    let instrumented_ids = instrumented_package_ids(plan, &metadata, &retained_ids);
+    let desired_instrumented_ids = desired_instrumented_package_ids(plan, &metadata);
+    let retained_overlap: std::collections::HashSet<String> = desired_instrumented_ids
+        .intersection(&retained_ids)
+        .cloned()
+        .collect();
+    if !retained_overlap.is_empty() {
+        // Abandon native orchestration for this invocation
+        plan.r4_native_otel_artifacts.clear();
+        // Invalidation must consider the complete desired instrumentation set, including any
+        // units not represented in the successful portion of the pre-pass output, so no
+        // uninstrumented artifact silently bypasses the wrapper.
+        let freshly_compiled = freshly_compiled_package_ids(&output.stdout);
+        let uninstrumented_fresh = uninstrumented_fresh_package_ids(
+            &output.stdout,
+            &desired_instrumented_ids,
+            invocation_dir,
+        );
+        let dirty_instrumented_ids: std::collections::HashSet<String> = match &freshly_compiled {
+            Ok(ids) => desired_instrumented_ids
+                .intersection(ids)
+                .cloned()
+                .chain(uninstrumented_fresh)
+                .collect(),
+            Err(_) => desired_instrumented_ids.clone(),
+        };
+        let empty_retained = std::collections::HashSet::new();
+        invalidate_packages(
+            &dirty_instrumented_ids,
+            &empty_retained,
+            &metadata,
+            cargo_args,
+            target_dir,
+            invocation_dir,
+        )?;
+        return Ok(NativeAcquisition::Tier2Only(
+            "the OpenTelemetry artifact dependency closure overlaps a unit selected for wrapper instrumentation".into(),
+        ));
+    }
+
+    let instrumented_ids = desired_instrumented_ids;
     let freshly_compiled = freshly_compiled_package_ids(&output.stdout);
     let uninstrumented_fresh =
         uninstrumented_fresh_package_ids(&output.stdout, &instrumented_ids, invocation_dir);
@@ -440,21 +479,6 @@ fn acquire_native_artifacts(
             .collect(),
         Err(_) => instrumented_ids.clone(),
     };
-    if !retained_ids.is_disjoint(&dirty_instrumented_ids) {
-        plan.r4_native_otel_artifacts.clear();
-        invalidate_packages(
-            &dirty_instrumented_ids,
-            &retained_ids,
-            &metadata,
-            cargo_args,
-            target_dir,
-            invocation_dir,
-        )?;
-        return Ok(NativeAcquisition::Tier2Only(
-            "the OpenTelemetry artifact dependency closure overlaps a unit selected for wrapper instrumentation".into(),
-        ));
-    }
-
     let clean_ids: std::collections::HashSet<String> = dirty_instrumented_ids
         .difference(&retained_ids)
         .cloned()
@@ -484,9 +508,10 @@ fn acquire_native_artifacts(
         .map(|artifact| artifact.rlib_path.clone())
     {
         plan.r4_native_otel_artifacts.clear();
+        let empty_retained = std::collections::HashSet::new();
         invalidate_packages(
             &instrumented_ids,
-            &retained_ids,
+            &empty_retained,
             &metadata,
             cargo_args,
             target_dir,
@@ -522,6 +547,26 @@ fn freshly_compiled_package_ids(
     Ok(ids)
 }
 
+fn extract_package_specs(args: &[String]) -> Vec<String> {
+    let mut specs = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-p" || arg == "--package" {
+            if let Some(next) = args.get(i + 1) {
+                specs.push(next.clone());
+                i += 1;
+            }
+        } else if let Some(stripped) = arg.strip_prefix("--package=") {
+            specs.push(stripped.to_string());
+        } else if let Some(stripped) = arg.strip_prefix("-p=") {
+            specs.push(stripped.to_string());
+        }
+        i += 1;
+    }
+    specs
+}
+
 fn build_session_plan(cargo_args: &[String], invocation_dir: &Path) -> Result<SessionPlan, String> {
     let output = cargo_metadata_output(cargo_args, invocation_dir)?;
     if !output.status.success() {
@@ -532,7 +577,40 @@ fn build_session_plan(cargo_args: &[String], invocation_dir: &Path) -> Result<Se
     }
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("cargo metadata output was malformed: {error}"))?;
-    SessionPlan::from_metadata_json(&metadata).map_err(|error| error.to_string())
+
+    let specs = extract_package_specs(cargo_args);
+    let selected_ids = if !specs.is_empty() {
+        if let Some(packages) = metadata["packages"].as_array() {
+            let mut resolved = std::collections::HashSet::new();
+            let mut all_resolved = true;
+            for spec in &specs {
+                match resolve_package_spec(spec, packages) {
+                    Ok(id) => {
+                        resolved.insert(id);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "warning: cargo-instrument: unable to confidently resolve package specification '{spec}' ({e}); retaining safe unscoped target roots"
+                        );
+                        all_resolved = false;
+                        break;
+                    }
+                }
+            }
+            if all_resolved && !resolved.is_empty() {
+                Some(resolved)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    SessionPlan::from_metadata_json_scoped(&metadata, selected_ids.as_ref())
+        .map_err(|error| error.to_string())
 }
 
 fn cargo_metadata_output(
@@ -705,10 +783,9 @@ fn artifact_stamp_name(normalized_target: &str, artifact: &Path) -> Option<Strin
     }
 }
 
-fn instrumented_package_ids(
+fn desired_instrumented_package_ids(
     plan: &SessionPlan,
     metadata: &serde_json::Value,
-    retained_ids: &std::collections::HashSet<String>,
 ) -> std::collections::HashSet<String> {
     let registry_enabled = env::var("CARGO_INSTRUMENT_REGISTRY")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
@@ -721,7 +798,6 @@ fn instrumented_package_ids(
             let id = package["id"].as_str()?;
             let name = package["name"].as_str()?;
             if !plan.target_reachable_package_ids.contains(id)
-                || retained_ids.contains(id)
                 || name == "opentelemetry"
                 || name.starts_with("opentelemetry_")
                 || name == "otel-shim"

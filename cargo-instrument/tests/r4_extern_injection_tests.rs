@@ -727,20 +727,19 @@ fn h1_cli_automatically_acquires_and_injects_native_otel() {
 fn write_mixed_fixture(workspace: &Path, otel_shim: &Path) {
     fs::write(
         workspace.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"app\", \"app_tier2\", \"dep_native\", \"dep_tier2\", \"otel_conflict\"]\nresolver = \"2\"\n",
-    ).unwrap();
-    let otel_conflict = workspace.join("otel_conflict");
-    fs::create_dir_all(otel_conflict.join("src")).unwrap();
-    fs::write(
-        otel_conflict.join("Cargo.toml"),
-        "[package]\nname = \"opentelemetry\"\nversion = \"0.31.0\"\nedition = \"2021\"\n",
+        r#"[workspace]
+members = ["app", "dep_native", "dep_tier2"]
+resolver = "2"
+
+[profile.dev.package.dep_tier2]
+opt-level = 2
+"#,
     )
     .unwrap();
-    fs::write(otel_conflict.join("src/lib.rs"), "").unwrap();
 
-    for (name, source) in [
-        ("dep_native", "pub fn native_work() -> u32 { 7 }\n"),
-        ("dep_tier2", "pub fn tier2_work() -> u32 { 11 }\n"),
+    for (name, fn_name, val) in [
+        ("dep_native", "native_work", 7u32),
+        ("dep_tier2", "tier2_work", 11u32),
     ] {
         let dir = workspace.join(name);
         fs::create_dir_all(dir.join("src")).unwrap();
@@ -749,8 +748,13 @@ fn write_mixed_fixture(workspace: &Path, otel_shim: &Path) {
             format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
         )
         .unwrap();
-        fs::write(dir.join("src/lib.rs"), source).unwrap();
+        fs::write(
+            dir.join("src/lib.rs"),
+            format!("pub fn {fn_name}() -> u32 {{ {val} }}\n"),
+        )
+        .unwrap();
     }
+
     let shim = otel_shim.to_string_lossy().replace('\\', "/");
     let app = workspace.join("app");
     fs::create_dir_all(app.join("src")).unwrap();
@@ -772,7 +776,9 @@ opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
         ),
     )
     .unwrap();
-    fs::write(app.join("src/main.rs"), r#"use opentelemetry::trace::{TraceContextExt as _, Tracer as _};
+    fs::write(
+        app.join("src/main.rs"),
+        r#"use opentelemetry::trace::{TraceContextExt as _, Tracer as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
 fn main() {
@@ -794,27 +800,7 @@ fn main() {
     }
     println!("H1_MIXED_NATIVE_TIER2_VERIFIED");
 }
-"#).unwrap();
-    let tier2_app = workspace.join("app_tier2");
-    fs::create_dir_all(tier2_app.join("src")).unwrap();
-    fs::write(
-        tier2_app.join("Cargo.toml"),
-        format!(
-            r#"[package]
-name = "app_tier2"
-version = "0.1.0"
-edition = "2021"
-[dependencies]
-dep_tier2 = {{ path = "../dep_tier2" }}
-otel-shim = {{ path = "{shim}" }}
-opentelemetry = {{ path = "../otel_conflict" }}
-"#
-        ),
-    )
-    .unwrap();
-    fs::write(
-        tier2_app.join("src/main.rs"),
-        "fn main() { otel_shim::init(); assert_eq!(dep_tier2::tier2_work(), 11); }\n",
+"#,
     )
     .unwrap();
 }
