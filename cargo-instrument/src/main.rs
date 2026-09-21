@@ -271,46 +271,31 @@ fn execute_cargo_with_wrapper(args: &[String]) {
         current_dir.join(target_dir)
     };
 
-    // Extract manifest directory from --manifest-path if specified (D3)
-    let manifest_dir = args
-        .iter()
-        .position(|a| a == "--manifest-path")
-        .and_then(|idx| args.get(idx + 1).cloned())
-        .or_else(|| {
-            args.iter()
-                .find(|a| a.starts_with("--manifest-path="))
-                .map(|a| a.trim_start_matches("--manifest-path=").to_string())
-        })
-        .map(PathBuf::from)
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .map(|p| {
-            if p.is_absolute() {
-                p
-            } else {
-                current_dir.join(p)
-            }
-        })
-        .unwrap_or_else(|| current_dir.clone());
-
-    // Precompute SessionPlan once in manifest_dir (unambiguous user invocation or manifest directory)
+    // Precompute SessionPlan once using the invocation's resolution flags.  In particular, an
+    // offline Cargo command must never have its orchestration metadata probe reach the network.
     // and export via CARGO_INSTRUMENT_SESSION for all wrapper child processes (D3 / D4).
     let session_file = resolved_target_dir.join("cargo_instrument_session.json");
-    match SessionPlan::build_from_metadata(&manifest_dir) {
+    match build_session_plan(&cargo_args, &current_dir) {
         Ok(mut plan) => {
             // Native R-4 acquisition is deliberately limited to ordinary build/run.  The
             // pre-pass uses this exact target directory so Cargo's crate identities remain
             // compatible with the final wrapper-enabled build.  Unsupported commands retain
             // the established wrapper-only behavior.
             if supports_native_orchestration(&cargo_args) {
-                if let Err(e) = acquire_native_artifacts(
+                match acquire_native_artifacts(
                     &cargo_args,
                     &resolved_target_dir,
-                    &manifest_dir,
                     &current_dir,
                     &mut plan,
                 ) {
-                    eprintln!("warning: cargo-instrument: native orchestration disabled: {e}. Tier-2/fail-open policy remains active.");
-                    plan.r4_native_otel_artifacts.clear();
+                    Ok(NativeAcquisition::Available) => {}
+                    Ok(NativeAcquisition::Tier2Only(reason)) => {
+                        eprintln!("warning: cargo-instrument: native orchestration disabled: {reason}. Tier-2/fail-open policy remains active.");
+                    }
+                    Err(e) => {
+                        eprintln!("cargo-instrument orchestration error: {e}");
+                        process::exit(1);
+                    }
                 }
             }
             if let Err(e) = plan.save_to_file(&session_file) {
@@ -342,19 +327,32 @@ fn execute_cargo_with_wrapper(args: &[String]) {
 fn supports_native_orchestration(args: &[String]) -> bool {
     matches!(args.first().map(String::as_str), Some("build" | "run"))
         && !args.iter().any(|arg| {
-            arg == "--release" || arg == "--all-targets" || arg == "--tests" || arg == "--benches"
+            arg == "--target"
+                || arg.starts_with("--target=")
+                || arg == "--all-targets"
+                || arg == "--tests"
+                || arg == "--benches"
         })
+}
+
+enum NativeAcquisition {
+    Available,
+    Tier2Only(String),
 }
 
 fn acquire_native_artifacts(
     cargo_args: &[String],
     target_dir: &Path,
-    manifest_dir: &Path,
     invocation_dir: &Path,
     plan: &mut SessionPlan,
-) -> Result<(), String> {
-    let mut prepass_args = cargo_args.to_vec();
-    prepass_args.retain(|arg| arg != "--message-format" && !arg.starts_with("--message-format="));
+) -> Result<NativeAcquisition, String> {
+    let mut prepass_args = without_message_format(cargo_args);
+    if prepass_args.first().is_some_and(|arg| arg == "run") {
+        // `cargo run` has no `--message-format` flag.  Its build graph is the ordinary
+        // `cargo build` graph for the selected executable, so capture artifacts through the
+        // supported build command and leave program execution for the final invocation.
+        prepass_args[0] = "build".to_string();
+    }
     prepass_args.push("--message-format=json-render-diagnostics".into());
     if !prepass_args
         .iter()
@@ -371,51 +369,287 @@ fn acquire_native_artifacts(
         .env_remove(WRAPPER_MODE_ENV)
         .output()
         .map_err(|e| format!("failed to run same-target artifact pre-pass: {e}"))?;
-    let metadata_output = Command::new("cargo")
-        .current_dir(invocation_dir)
-        .args(["metadata", "--format-version", "1"])
-        .output()
-        .map_err(|e| format!("failed to query Cargo metadata: {e}"))?;
+    let metadata_output = cargo_metadata_output(cargo_args, invocation_dir)?;
+    if !metadata_output.status.success() {
+        return Err(format!(
+            "Cargo metadata failed while preparing recovery: {}",
+            String::from_utf8_lossy(&metadata_output.stderr)
+        ));
+    }
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_output.stdout)
         .map_err(|e| format!("metadata for pre-pass recovery is invalid: {e}"))?;
-    plan.add_r4_artifacts_from_cargo_json(&metadata, &output.stdout, None)
-        .map_err(|e| format!("pre-pass artifact output was incomplete: {e}"))?;
-    if !output.status.success() {
-        return Err(format!("pre-pass exited with {}", output.status));
+
+    let freshly_compiled = freshly_compiled_package_ids(&output.stdout);
+    let capture_error = if output.status.success() {
+        plan.add_r4_artifacts_from_cargo_json(&metadata, &output.stdout, None)
+            .err()
+            .map(|e| format!("pre-pass artifact output was incomplete: {e}"))
+    } else {
+        Some(format!(
+            "pre-pass exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    };
+
+    let instrumented_ids = instrumented_package_ids(plan, &metadata);
+    // Cargo only poisons freshness for units that this pre-pass actually rebuilt. Fresh
+    // artifacts in the isolated target directory are prior wrapper output. If JSON is not
+    // trustworthy, invalidate the whole selected set rather than relying on that distinction.
+    let dirty_instrumented_ids: std::collections::HashSet<String> = match &freshly_compiled {
+        Ok(ids) => instrumented_ids.intersection(ids).cloned().collect(),
+        Err(_) => instrumented_ids.clone(),
+    };
+    let retained_ids = if capture_error.is_none() {
+        retained_artifact_closure(plan, &metadata)
+    } else {
+        std::collections::HashSet::new()
+    };
+    if !retained_ids.is_disjoint(&dirty_instrumented_ids) {
+        plan.r4_native_otel_artifacts.clear();
+        invalidate_packages(
+            &dirty_instrumented_ids,
+            &metadata,
+            target_dir,
+            invocation_dir,
+        )?;
+        return Ok(NativeAcquisition::Tier2Only(
+            "the OpenTelemetry artifact dependency closure overlaps a unit selected for wrapper instrumentation".into(),
+        ));
     }
 
-    // Invalidate every target dependency that the wrapper may instrument, not just native
-    // R-4 consumers. Cargo package cleaning is supported and avoids fingerprint surgery.
-    let selected_artifacts: std::collections::HashSet<String> = plan
+    let clean_ids: std::collections::HashSet<String> = dirty_instrumented_ids
+        .difference(&retained_ids)
+        .cloned()
+        .collect();
+    invalidate_packages(&clean_ids, &metadata, target_dir, invocation_dir)?;
+
+    if let Some(reason) = capture_error {
+        plan.r4_native_otel_artifacts.clear();
+        return Ok(NativeAcquisition::Tier2Only(reason));
+    }
+    if plan.r4_native_otel_artifacts.is_empty() {
+        return Ok(NativeAcquisition::Tier2Only(
+            "the pre-pass produced no eligible OpenTelemetry artifact".into(),
+        ));
+    }
+    if let Some(missing) = plan
         .r4_native_otel_artifacts
         .iter()
-        .map(|artifact| artifact.package_id.clone())
-        .collect();
-    let selected_ids: std::collections::HashSet<String> =
-        plan.r4_otel_package_by_dependency.keys().cloned().collect();
-    let workspace_ids: std::collections::HashSet<String> = metadata["workspace_members"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|id| id.as_str().map(String::from))
-        .collect();
-    let packages: Vec<String> = metadata["packages"]
+        .find(|artifact| !artifact.rlib_path.is_file())
+        .map(|artifact| artifact.rlib_path.clone())
+    {
+        plan.r4_native_otel_artifacts.clear();
+        invalidate_packages(&instrumented_ids, &metadata, target_dir, invocation_dir)?;
+        return Ok(NativeAcquisition::Tier2Only(format!(
+            "selective invalidation removed the retained OpenTelemetry artifact '{}'",
+            missing.display()
+        )));
+    }
+    Ok(NativeAcquisition::Available)
+}
+
+fn freshly_compiled_package_ids(
+    cargo_messages: &[u8],
+) -> Result<std::collections::HashSet<String>, String> {
+    let mut ids = std::collections::HashSet::new();
+    for line in cargo_messages
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let message: serde_json::Value = serde_json::from_slice(line)
+            .map_err(|error| format!("malformed Cargo JSON artifact message: {error}"))?;
+        if message["reason"].as_str() == Some("compiler-artifact")
+            && !message["fresh"].as_bool().unwrap_or(false)
+        {
+            let id = message["package_id"]
+                .as_str()
+                .ok_or("Cargo compiler-artifact message has no package_id")?;
+            ids.insert(id.to_string());
+        }
+    }
+    Ok(ids)
+}
+
+fn build_session_plan(cargo_args: &[String], invocation_dir: &Path) -> Result<SessionPlan, String> {
+    let output = cargo_metadata_output(cargo_args, invocation_dir)?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo metadata failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("cargo metadata output was malformed: {error}"))?;
+    SessionPlan::from_metadata_json(&metadata).map_err(|error| error.to_string())
+}
+
+fn cargo_metadata_output(
+    cargo_args: &[String],
+    invocation_dir: &Path,
+) -> Result<std::process::Output, String> {
+    let mut metadata_args = vec![
+        "metadata".to_string(),
+        "--format-version".to_string(),
+        "1".to_string(),
+    ];
+    let mut index = 0;
+    while index < cargo_args.len() {
+        let arg = &cargo_args[index];
+        let takes_value = matches!(
+            arg.as_str(),
+            "--manifest-path" | "--features" | "--config" | "--filter-platform"
+        );
+        if takes_value {
+            metadata_args.push(arg.clone());
+            if let Some(value) = cargo_args.get(index + 1) {
+                metadata_args.push(value.clone());
+                index += 1;
+            }
+        } else if arg.starts_with("--manifest-path=")
+            || arg.starts_with("--features=")
+            || arg.starts_with("--config=")
+            || arg.starts_with("--filter-platform=")
+            || matches!(
+                arg.as_str(),
+                "--offline" | "--locked" | "--frozen" | "--all-features" | "--no-default-features"
+            )
+        {
+            metadata_args.push(arg.clone());
+        }
+        index += 1;
+    }
+    Command::new("cargo")
+        .current_dir(invocation_dir)
+        .args(metadata_args)
+        .output()
+        .map_err(|error| format!("failed to query Cargo metadata: {error}"))
+}
+
+fn without_message_format(args: &[String]) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+        } else if arg == "--message-format" {
+            skip_next = true;
+        } else if !arg.starts_with("--message-format=") {
+            result.push(arg.clone());
+        }
+    }
+    result
+}
+
+fn instrumented_package_ids(
+    plan: &SessionPlan,
+    metadata: &serde_json::Value,
+) -> std::collections::HashSet<String> {
+    let registry_enabled = env::var("CARGO_INSTRUMENT_REGISTRY")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    metadata["packages"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|package| {
-            let id = package["id"].as_str()?.to_string();
-            if selected_artifacts.contains(&id)
-                || (!selected_ids.contains(&id) && !workspace_ids.contains(&id))
+            let id = package["id"].as_str()?;
+            let name = package["name"].as_str()?;
+            if !plan.target_reachable_package_ids.contains(id)
+                || name == "opentelemetry"
+                || name.starts_with("opentelemetry_")
+                || name == "otel-shim"
+                || name == "otel_shim"
+                || name == "cargo-instrument"
             {
                 return None;
             }
-            package["name"].as_str().map(String::from)
+            if package["source"].is_null() || registry_enabled {
+                Some(id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn retained_artifact_closure(
+    plan: &SessionPlan,
+    metadata: &serde_json::Value,
+) -> std::collections::HashSet<String> {
+    let mut edges: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for node in metadata["resolve"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(id) = node["id"].as_str() {
+            edges.insert(
+                id.to_string(),
+                node["deps"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|dep| dep["pkg"].as_str().map(String::from))
+                    .collect(),
+            );
+        }
+    }
+    let mut retained: std::collections::HashSet<String> = plan
+        .r4_native_otel_artifacts
+        .iter()
+        .map(|artifact| artifact.package_id.clone())
+        .collect();
+    let mut queue: std::collections::VecDeque<String> = retained.iter().cloned().collect();
+    while let Some(id) = queue.pop_front() {
+        if let Some(deps) = edges.get(&id) {
+            for dep in deps {
+                if retained.insert(dep.clone()) {
+                    queue.push_back(dep.clone());
+                }
+            }
+        }
+    }
+    retained
+}
+
+fn invalidate_packages(
+    package_ids: &std::collections::HashSet<String>,
+    metadata: &serde_json::Value,
+    target_dir: &Path,
+    invocation_dir: &Path,
+) -> Result<(), String> {
+    let names: std::collections::HashMap<String, String> = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|package| {
+            Some((
+                package["id"].as_str()?.to_string(),
+                package["name"].as_str()?.to_string(),
+            ))
         })
         .collect();
-    for package in packages {
+    let mut packages_by_name: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for id in package_ids {
+        let name = names
+            .get(id)
+            .ok_or_else(|| format!("Cargo metadata has no package name for '{id}'"))?;
+        packages_by_name
+            .entry(name.clone())
+            .or_default()
+            .push(id.clone());
+    }
+    if let Some((name, ids)) = packages_by_name.iter().find(|(_, ids)| ids.len() > 1) {
+        return Err(format!(
+            "cannot safely selectively invalidate multiple selected packages named '{name}' because this Cargo version does not honor source-qualified clean package IDs: {ids:?}"
+        ));
+    }
+    for (package, _) in packages_by_name {
         let status = Command::new("cargo")
-            .current_dir(manifest_dir)
+            .current_dir(invocation_dir)
             .args([
                 "clean",
                 "--package",

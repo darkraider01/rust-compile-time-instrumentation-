@@ -252,6 +252,12 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                         // R-4 spike only: the SessionPlan supplies an exact Cargo JSON artifact.
                                         // The wrapper never searches a dependency directory by filename.
                                         if r4_native_otel_rlib.is_some() {
+                                            if config.debug_output {
+                                                eprintln!(
+                                                    "[cargo-instrument PID={} crate={crate_name}] selecting native R-4 emitter",
+                                                    std::process::id()
+                                                );
+                                            }
                                             Some(Box::new(NativeOtelEmitter::new(crate_name)))
                                         // G4 / G7 link provider gate: verify otel-shim is reachable in the build graph
                                         // and that no target root reaching this crate lacks otel-shim.
@@ -268,6 +274,12 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                 );
                                             None
                                         } else {
+                                            if config.debug_output {
+                                                eprintln!(
+                                                    "[cargo-instrument PID={} crate={crate_name}] selecting Tier-2 C-ABI emitter",
+                                                    std::process::id()
+                                                );
+                                            }
                                             Some(Box::new(TrampolineEmitter::new(
                                                 crate_name,
                                                 invocation.unit.edition().map(String::from),
@@ -278,6 +290,13 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
 
                                     if let Some(emitter) = emitter {
                                         if let Some(otel_rlib) = r4_native_otel_rlib {
+                                            if config.debug_output {
+                                                eprintln!(
+                                                    "[cargo-instrument PID={} crate={crate_name}] injecting --extern opentelemetry={}",
+                                                    std::process::id(),
+                                                    otel_rlib.display()
+                                                );
+                                            }
                                             args_to_run.push("--extern".to_string());
                                             args_to_run.push(format!(
                                                 "opentelemetry={}",

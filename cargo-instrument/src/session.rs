@@ -97,6 +97,11 @@ pub struct SessionPlan {
     /// Cargo package id -> manifest directory, used to identify a wrapped dependency exactly.
     #[serde(default)]
     pub package_manifest_dirs: HashMap<String, PathBuf>,
+    /// All non-host Cargo package IDs reachable from at least one target root.  H1 uses this
+    /// authoritative set to invalidate units which may be handled by either native R-4 or the
+    /// Tier-2 wrapper path after an uninstrumented pre-pass.
+    #[serde(default)]
+    pub target_reachable_package_ids: HashSet<String>,
     /// Dependency package id -> the sole OpenTelemetry package id shared by every target root
     /// that reaches it. Omitted when roots disagree or no target-safe choice exists.
     #[serde(default)]
@@ -210,10 +215,8 @@ impl SessionPlan {
             if line.is_empty() {
                 continue;
             }
-            let message: serde_json::Value = match serde_json::from_slice(line) {
-                Ok(message) => message,
-                Err(_) => continue,
-            };
+            let message: serde_json::Value = serde_json::from_slice(line)
+                .map_err(|error| format!("malformed Cargo JSON artifact message: {error}"))?;
             if message["reason"].as_str() != Some("compiler-artifact") {
                 continue;
             }
@@ -673,6 +676,7 @@ impl SessionPlan {
                     manifest_paths,
                     workspace_root: Some(workspace_root),
                     package_manifest_dirs,
+                    target_reachable_package_ids: HashSet::new(),
                     r4_otel_package_by_dependency: HashMap::new(),
                     r4_native_otel_artifacts: Vec::new(),
                 });
@@ -874,6 +878,7 @@ impl SessionPlan {
             manifest_paths,
             workspace_root: Some(workspace_root),
             package_manifest_dirs,
+            target_reachable_package_ids: target_reachable_ids,
             r4_otel_package_by_dependency,
             r4_native_otel_artifacts: Vec::new(),
         })
