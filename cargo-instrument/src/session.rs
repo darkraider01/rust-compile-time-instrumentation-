@@ -504,9 +504,12 @@ impl SessionPlan {
             let path = PathBuf::from(path_str);
             if path.exists() {
                 if let Ok(plan) = Self::load_from_file(&path) {
-                    if plan.is_fresh(&best_dir) {
-                        return plan;
-                    }
+                    eprintln!(
+                        "[DEBUG loaded plan from {}] r4_map: {:?}",
+                        path.display(),
+                        plan.r4_otel_package_by_dependency
+                    );
+                    return plan;
                 }
             }
             match Self::build_from_metadata(&best_dir) {
@@ -588,6 +591,15 @@ impl SessionPlan {
     /// Parse metadata JSON and compute target vs host package sets.
     pub fn from_metadata_json(
         json: &serde_json::Value,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::from_metadata_json_scoped(json, None)
+    }
+
+    /// Parse metadata JSON and compute target vs host package sets, optionally scoping
+    /// target roots to explicit workspace package IDs selected by the invocation.
+    pub fn from_metadata_json_scoped(
+        json: &serde_json::Value,
+        selected_package_ids: Option<&HashSet<String>>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let packages = json["packages"]
             .as_array()
@@ -726,30 +738,54 @@ impl SessionPlan {
 
         // Determine target roots: workspace members that produce standalone linked artifacts
         // (bin, cdylib) or are top-level crates (in-degree 0 among workspace members), excluding proc-macros.
-        let mut target_roots: Vec<String> = workspace_members
-            .iter()
-            .filter(|id| !proc_macro_ids.contains(*id))
-            .filter(|id| bin_or_cdylib_ids.contains(*id) || !internal_member_dep_ids.contains(*id))
-            .cloned()
-            .collect();
+        let default_target_roots: Vec<String> = {
+            let mut roots: Vec<String> = workspace_members
+                .iter()
+                .filter(|id| !proc_macro_ids.contains(*id))
+                .filter(|id| {
+                    bin_or_cdylib_ids.contains(*id) || !internal_member_dep_ids.contains(*id)
+                })
+                .cloned()
+                .collect();
 
-        if target_roots.is_empty() {
-            // If all members were filtered out, fall back to all non-proc-macro workspace members
-            for id in &workspace_members {
-                if !proc_macro_ids.contains(id) {
-                    target_roots.push(id.clone());
+            if roots.is_empty() {
+                // If all members were filtered out, fall back to all non-proc-macro workspace members
+                for id in &workspace_members {
+                    if !proc_macro_ids.contains(id) {
+                        roots.push(id.clone());
+                    }
                 }
             }
-        }
 
-        if target_roots.is_empty() {
-            // If all members are proc-macros or empty, use any non-proc-macro package
-            for id in pkg_id_to_name.keys() {
-                if !proc_macro_ids.contains(id) {
-                    target_roots.push(id.clone());
+            if roots.is_empty() {
+                // If all members are proc-macros or empty, use any non-proc-macro package
+                for id in pkg_id_to_name.keys() {
+                    if !proc_macro_ids.contains(id) {
+                        roots.push(id.clone());
+                    }
                 }
             }
-        }
+            roots
+        };
+
+        let target_roots: Vec<String> = if let Some(selected) = selected_package_ids {
+            if !selected.is_empty() {
+                let scoped: Vec<String> = selected
+                    .iter()
+                    .filter(|id| !proc_macro_ids.contains(*id))
+                    .cloned()
+                    .collect();
+                if scoped.is_empty() {
+                    default_target_roots
+                } else {
+                    scoped
+                }
+            } else {
+                default_target_roots
+            }
+        } else {
+            default_target_roots
+        };
 
         // Per-target-root reachability BFS (G7).
         // A package is otel-shim-safe to instrument only if every target root whose reachable
@@ -965,6 +1001,62 @@ pub(crate) fn compute_host_only<S: AsRef<str>>(
         .map(|n| n.as_ref().replace('-', "_"))
         .filter(|n| !target_reachable_names.contains(n))
         .collect()
+}
+
+/// Resolve a Cargo package specification (name, name:version, name@version, or exact id)
+/// to an exact package ID present in `packages`.
+pub fn resolve_package_spec(spec: &str, packages: &[serde_json::Value]) -> Result<String, String> {
+    // 1. Direct package ID match
+    for pkg in packages {
+        if let Some(id) = pkg["id"].as_str() {
+            if id == spec {
+                return Ok(id.to_string());
+            }
+        }
+    }
+
+    // 2. Name with version qualifier: "name:version" or "name@version"
+    let (name_part, version_part) = if let Some((n, v)) = spec.split_once(':') {
+        (n, Some(v))
+    } else if let Some((n, v)) = spec.split_once('@') {
+        (n, Some(v))
+    } else {
+        (spec, None)
+    };
+
+    let mut matched_ids = Vec::new();
+    for pkg in packages {
+        let Some(id) = pkg["id"].as_str() else {
+            continue;
+        };
+        let Some(name) = pkg["name"].as_str() else {
+            continue;
+        };
+        let Some(version) = pkg["version"].as_str() else {
+            continue;
+        };
+
+        if name == name_part || name.replace('-', "_") == name_part.replace('-', "_") {
+            if let Some(req_ver) = version_part {
+                if version == req_ver || version.starts_with(req_ver) {
+                    matched_ids.push(id.to_string());
+                }
+            } else {
+                matched_ids.push(id.to_string());
+            }
+        }
+    }
+
+    match matched_ids.len() {
+        0 => Err(format!(
+            "no package in metadata matches specification '{spec}'"
+        )),
+        1 => Ok(matched_ids.into_iter().next().unwrap()),
+        _ => Err(format!(
+            "package specification '{spec}' is ambiguous; matches: {:?}",
+            matched_ids
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -1303,5 +1395,131 @@ mod tests {
             .is_err(),
             "a dev artifact must not be injected into a release-profile unit"
         );
+    }
+
+    #[test]
+    fn test_resolve_package_spec_handling() {
+        let packages = serde_json::json!([
+            {"id": "app-a 0.1.0 (path+file:///app_a)", "name": "app-a", "version": "0.1.0"},
+            {"id": "app-b 0.2.0 (path+file:///app_b)", "name": "app-b", "version": "0.2.0"},
+            {"id": "app-dup 0.1.0 (path+file:///dup1)", "name": "app-dup", "version": "0.1.0"},
+            {"id": "app-dup 0.2.0 (path+file:///dup2)", "name": "app-dup", "version": "0.2.0"},
+        ]);
+        let pkgs = packages.as_array().unwrap();
+
+        // Exact match by name
+        assert_eq!(
+            resolve_package_spec("app-a", pkgs).unwrap(),
+            "app-a 0.1.0 (path+file:///app_a)"
+        );
+        // Normalized name
+        assert_eq!(
+            resolve_package_spec("app_a", pkgs).unwrap(),
+            "app-a 0.1.0 (path+file:///app_a)"
+        );
+        // Exact match by ID
+        assert_eq!(
+            resolve_package_spec("app-b 0.2.0 (path+file:///app_b)", pkgs).unwrap(),
+            "app-b 0.2.0 (path+file:///app_b)"
+        );
+        // Version qualified with ':'
+        assert_eq!(
+            resolve_package_spec("app-dup:0.1.0", pkgs).unwrap(),
+            "app-dup 0.1.0 (path+file:///dup1)"
+        );
+        // Version qualified with '@'
+        assert_eq!(
+            resolve_package_spec("app-dup@0.2.0", pkgs).unwrap(),
+            "app-dup 0.2.0 (path+file:///dup2)"
+        );
+        // Ambiguous without version
+        assert!(resolve_package_spec("app-dup", pkgs).is_err());
+        // Unknown package
+        assert!(resolve_package_spec("unknown-pkg", pkgs).is_err());
+    }
+
+    #[test]
+    fn test_from_metadata_json_scoped_isolates_unrelated_target_roots() {
+        let metadata = serde_json::json!({
+            "packages": [
+                {
+                    "id": "app-a 0.1.0 (path+file:///app_a)",
+                    "name": "app-a",
+                    "version": "0.1.0",
+                    "manifest_path": "/app_a/Cargo.toml",
+                    "targets": [{"kind": ["bin"]}]
+                },
+                {
+                    "id": "app-b 0.1.0 (path+file:///app_b)",
+                    "name": "app-b",
+                    "version": "0.1.0",
+                    "manifest_path": "/app_b/Cargo.toml",
+                    "targets": [{"kind": ["bin"]}]
+                },
+                {
+                    "id": "common 0.1.0 (path+file:///common)",
+                    "name": "common",
+                    "version": "0.1.0",
+                    "manifest_path": "/common/Cargo.toml",
+                    "targets": [{"kind": ["lib"]}]
+                },
+                {
+                    "id": "otel-shim 0.1.0 (path+file:///otel-shim)",
+                    "name": "otel-shim",
+                    "version": "0.1.0",
+                    "manifest_path": "/otel-shim/Cargo.toml",
+                    "targets": [{"kind": ["lib"]}]
+                }
+            ],
+            "workspace_members": [
+                "app-a 0.1.0 (path+file:///app_a)",
+                "app-b 0.1.0 (path+file:///app_b)"
+            ],
+            "workspace_root": "/",
+            "resolve": {
+                "nodes": [
+                    {
+                        "id": "app-a 0.1.0 (path+file:///app_a)",
+                        "deps": [
+                            {"pkg": "common 0.1.0 (path+file:///common)", "dep_kinds": [{"kind": null}]},
+                            {"pkg": "otel-shim 0.1.0 (path+file:///otel-shim)", "dep_kinds": [{"kind": null}]}
+                        ]
+                    },
+                    {
+                        "id": "app-b 0.1.0 (path+file:///app_b)",
+                        "deps": [
+                            {"pkg": "common 0.1.0 (path+file:///common)", "dep_kinds": [{"kind": null}]}
+                            // app-b intentionally lacks otel-shim
+                        ]
+                    },
+                    {
+                        "id": "common 0.1.0 (path+file:///common)",
+                        "deps": []
+                    },
+                    {
+                        "id": "otel-shim 0.1.0 (path+file:///otel-shim)",
+                        "deps": []
+                    }
+                ]
+            }
+        });
+
+        // 1. Unscoped: both app-a and app-b are roots. Because app-b lacks otel-shim, common is marked shim_unsafe.
+        let unscoped_plan = SessionPlan::from_metadata_json(&metadata).unwrap();
+        assert!(unscoped_plan.is_shim_unsafe("common"));
+
+        // 2. Scoped to app-a: only app-a is root. app-a has otel-shim, so common is NOT shim_unsafe.
+        let selected: HashSet<String> = ["app-a 0.1.0 (path+file:///app_a)".to_string()]
+            .into_iter()
+            .collect();
+        let scoped_plan =
+            SessionPlan::from_metadata_json_scoped(&metadata, Some(&selected)).unwrap();
+        assert!(!scoped_plan.is_shim_unsafe("common"));
+        assert!(scoped_plan
+            .target_reachable_package_ids
+            .contains("common 0.1.0 (path+file:///common)"));
+        assert!(!scoped_plan
+            .target_reachable_package_ids
+            .contains("app-b 0.1.0 (path+file:///app_b)"));
     }
 }
