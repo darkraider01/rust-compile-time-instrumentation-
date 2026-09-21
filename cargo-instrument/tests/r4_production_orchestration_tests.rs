@@ -640,14 +640,420 @@ shared_leaf = { path = "../shared_leaf" }
     );
 }
 
-/// 5. Failure paths and recovery.
-///
-/// Verifies:
-/// - Pre-pass exit error handling
-/// - Selective clean OS error injection via `__CARGO_INSTRUMENT_FAULT_INJECT_CLEAN_FAIL`
-/// - No uninstrumented artifact silently bypasses wrapper.
+// 5. Failure paths and recovery matrix.
+//
+// Covers:
+// - Scenario 1 (Section 3): Pre-pass exits unsuccessfully after partial compilation with an absent dependency.
+// - Scenario 1 (Part B): Partial pre-pass failure where shim provider is unavailable, verifying S11 fail-open.
+// - Scenario 1 (Part C): Real (non-simulated) Cargo pre-pass syntax failure recompiles dependencies.
+// - Scenario 2: Malformed or truncated Cargo JSON.
+// - Scenario 3: No eligible OpenTelemetry artifact captured.
+// - Scenario 4: Retained artifact disappears before final build.
+// - Scenario 5: Selective cargo clean failure with OS error.
+// - Scenario 6: Ambiguous package name prevents unsafe clean.
+
+// Scenario 1 (Section 3):
+// Partial pre-pass failure where an existing uninstrumented dependency artifact is in target-dir,
+// and the pre-pass fails/terminates before reporting that dependency (absent from JSON messages).
+// Verifies:
+// - Missing dependency is invalidated and recompiled through RUSTC_WRAPPER.
+// - Tier-2 instrumentation is actually applied (since otel-shim is available).
+// - Spans are exported and app succeeds.
 #[test]
-fn test_h1_failure_paths_and_recovery() {
+fn test_h1_partial_prepass_failure_missing_dep_invalidated_and_recompiled() {
+    let temp = tempfile::tempdir().expect("create partial prepass workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    write_e2e_fixture(workspace, &repo_root.join("otel-shim"));
+
+    let target_dir = workspace.join("target/instrumented");
+
+    // 1. Prepopulate target directory with an uninstrumented artifact for dep_r4
+    let prepopulate = Command::new("cargo")
+        .args(["build", "--package", "dep_r4", "--offline", "--target-dir"])
+        .arg(&target_dir)
+        .current_dir(workspace)
+        .output()
+        .expect("prepopulate uninstrumented dep_r4");
+    assert_success(&prepopulate, "prepopulate dep_r4");
+
+    // Verify uninstrumented artifact exists
+    assert!(target_dir.join("debug").exists());
+
+    // 2. Invoke cargo-instrument with simulated pre-pass failure and dep_r4 omitted from pre-pass JSON stream
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .env("__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_FAIL", "1")
+        .env("__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_OMIT_PKG", "dep_r4")
+        .output()
+        .expect("run CLI with partial pre-pass failure");
+
+    assert_success(&output, "partial prepass recovery run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("H1_PRODUCTION_CLI_E2E_VERIFIED"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .contains("native orchestration disabled: fault injection: pre-pass exited with error"),
+        "expected native orchestration disabled warning:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_r4"),
+        "dep_r4 must pass through RUSTC_WRAPPER instead of reusing uninstrumented artifact:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_r4] selecting Tier-2 C-ABI emitter"),
+        "dep_r4 must select Tier-2 emitter:\n{stderr}"
+    );
+
+    // Verify mirrored source has Tier-2 C-ABI instrumentation (__otel_span_enter)
+    let mirrors = find_mirrored_sources(&target_dir, "__cargo_instrument_anchor");
+    let dep_mirror = mirrors
+        .iter()
+        .find(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("pub fn sync_work")
+        })
+        .expect("find dep_r4 mirror");
+    let content = fs::read_to_string(dep_mirror).unwrap();
+    assert!(
+        content.contains("__otel_span_enter"),
+        "dep_r4 must contain __otel_span_enter:\n{content}"
+    );
+}
+
+// Scenario 1 (Part B):
+// Partial pre-pass failure where shim provider is NOT available.
+// Verifies:
+// - Missing dependency is invalidated and recompiled through RUSTC_WRAPPER.
+// - S11 fail-open is applied (skipped rather than given unresolved C-ABI dependency).
+#[test]
+fn test_h1_partial_prepass_failure_missing_shim_fails_open() {
+    let temp = tempfile::tempdir().expect("create partial prepass no shim workspace");
+    let workspace = temp.path();
+
+    fs::write(
+        workspace.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "dep_leaf"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+
+    let dep = workspace.join("dep_leaf");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("Cargo.toml"),
+        "[package]\nname = \"dep_leaf\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(dep.join("src/lib.rs"), "pub fn leaf() -> u32 { 101 }\n").unwrap();
+
+    let app = workspace.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_leaf = { path = "../dep_leaf" }
+# Intentionally no opentelemetry and no otel-shim
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        "fn main() { assert_eq!(dep_leaf::leaf(), 101); }\n",
+    )
+    .unwrap();
+
+    let target_dir = workspace.join("target/instrumented");
+
+    // 1. Prepopulate uninstrumented dep_leaf
+    let prepopulate = Command::new("cargo")
+        .args([
+            "build",
+            "--package",
+            "dep_leaf",
+            "--offline",
+            "--target-dir",
+        ])
+        .arg(&target_dir)
+        .current_dir(workspace)
+        .output()
+        .expect("prepopulate uninstrumented dep_leaf");
+    assert_success(&prepopulate, "prepopulate dep_leaf");
+
+    // 2. Invoke cargo-instrument with simulated prepass failure and omit dep_leaf
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .env("__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_FAIL", "1")
+        .env(
+            "__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_OMIT_PKG",
+            "dep_leaf",
+        )
+        .output()
+        .expect("run CLI with partial pre-pass failure without shim");
+
+    assert_success(&output, "missing shim run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("crate=dep_leaf"),
+        "dep_leaf must pass through RUSTC_WRAPPER:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no otel-shim provider found in build graph for 'dep_leaf'. Skipping instrumentation per S11 fail-open."),
+        "dep_leaf must fail-open per S11 when no shim provider:\n{stderr}"
+    );
+}
+
+// Scenario 1 (Part C):
+// Real (non-simulated) Cargo pre-pass failure where the application contains a syntax/compile error.
+// Verifies:
+// - Pre-pass exits non-zero with compiler error.
+// - Complete safe invalidation wipes dependencies before final build.
+// - Dependencies pass through RUSTC_WRAPPER before final build fails on the intentional error.
+#[test]
+fn test_h1_real_cargo_prepass_failure_recompiles_dependencies() {
+    let temp = tempfile::tempdir().expect("create real prepass failure workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    write_e2e_fixture(workspace, &repo_root.join("otel-shim"));
+
+    // Introduce a compile error in app/src/main.rs
+    let app_main = workspace.join("app/src/main.rs");
+    let mut app_src = fs::read_to_string(&app_main).unwrap();
+    app_src.push_str("\ncompile_error!(\"intentional pre-pass compile failure\");\n");
+    fs::write(&app_main, &app_src).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "build", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("run with real pre-pass failure");
+
+    assert!(
+        !output.status.success(),
+        "real compile error must fail the build"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pre-pass exited"),
+        "failed pre-pass must be diagnosed:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_r4"),
+        "dep_r4 must pass through RUSTC_WRAPPER during final build:\n{stderr}"
+    );
+}
+
+// Scenario 2:
+// Pre-pass output contains malformed or truncated Cargo JSON.
+// Verifies:
+// - Native is abandoned, complete desired instrumentation set is invalidated.
+// - No dependency is silently reused uninstrumented.
+// - dep_r4 passes through RUSTC_WRAPPER and is recompiled through Tier-2.
+#[test]
+fn test_h1_malformed_cargo_json_recovery() {
+    let temp = tempfile::tempdir().expect("create malformed json workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    write_e2e_fixture(workspace, &repo_root.join("otel-shim"));
+
+    let target_dir = workspace.join("target/instrumented");
+
+    // 1. Prepopulate uninstrumented dep_r4
+    let prepopulate = Command::new("cargo")
+        .args(["build", "--package", "dep_r4", "--offline", "--target-dir"])
+        .arg(&target_dir)
+        .current_dir(workspace)
+        .output()
+        .expect("prepopulate uninstrumented dep_r4");
+    assert_success(&prepopulate, "prepopulate dep_r4");
+
+    // 2. Invoke cargo-instrument with simulated corrupt JSON
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .env("__CARGO_INSTRUMENT_FAULT_INJECT_CORRUPT_JSON", "1")
+        .output()
+        .expect("run CLI with corrupt json");
+
+    assert_success(&output, "corrupt json recovery run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("H1_PRODUCTION_CLI_E2E_VERIFIED"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("native orchestration disabled: pre-pass Cargo JSON output was malformed"),
+        "expected malformed JSON warning:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_r4"),
+        "dep_r4 must pass through RUSTC_WRAPPER instead of being reused:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_r4] selecting Tier-2 C-ABI emitter"),
+        "dep_r4 must select Tier-2 emitter:\n{stderr}"
+    );
+}
+
+// Scenario 3:
+// The pre-pass produces no eligible OpenTelemetry artifact (e.g. app only uses otel-shim).
+// Verifies:
+// - Safe Tier-2 path with actual wrapper execution.
+// - dep_r4 selects Tier-2 C-ABI emitter.
+#[test]
+fn test_h1_no_eligible_otel_artifact_fallback() {
+    let temp = tempfile::tempdir().expect("create no-otel workspace");
+    let workspace = temp.path();
+    let shim = workspace.join("otel-shim");
+    fs::create_dir_all(shim.join("src")).unwrap();
+    fs::write(
+        shim.join("Cargo.toml"),
+        "[package]\nname = \"otel-shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        shim.join("src/lib.rs"),
+        r#"
+#[no_mangle]
+pub extern "C" fn __otel_span_enter(_name: *const u8, _len: usize) -> u64 { 1 }
+#[no_mangle]
+pub extern "C" fn __otel_span_exit(_id: u64) {}
+pub fn init() {}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        workspace.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "dep_r4", "otel-shim"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+
+    let dep = workspace.join("dep_r4");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("Cargo.toml"),
+        "[package]\nname = \"dep_r4\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(dep.join("src/lib.rs"), "pub fn compute() -> u32 { 77 }\n").unwrap();
+
+    let app = workspace.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_r4 = { path = "../dep_r4" }
+otel-shim = { path = "../otel-shim" }
+# Note: absolutely no opentelemetry crate in dependency graph
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        "fn main() { otel_shim::init(); assert_eq!(dep_r4::compute(), 77); println!(\"NO_OTEL_TIER2_VERIFIED\"); }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("run CLI with no otel artifact");
+
+    assert_success(&output, "no otel artifact run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("NO_OTEL_TIER2_VERIFIED"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the pre-pass produced no eligible OpenTelemetry artifact"),
+        "expected no eligible artifact warning:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_r4] selecting Tier-2 C-ABI emitter"),
+        "dep_r4 must select Tier-2 C-ABI emitter:\n{stderr}"
+    );
+}
+
+// Scenario 4:
+// The retained OpenTelemetry artifact disappears before the final build.
+// Verifies:
+// - Native injection is disabled, complete invalidation of desired units occurs.
+// - Affected packages safely recompiled through Tier-2.
+// - Application executes and exports spans.
+#[test]
+fn test_h1_retained_artifact_disappears_recovery() {
+    let temp = tempfile::tempdir().expect("create disappearing artifact workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    write_e2e_fixture(workspace, &repo_root.join("otel-shim"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .env("__CARGO_INSTRUMENT_FAULT_INJECT_DELETE_RETAINED", "1")
+        .output()
+        .expect("run CLI with deleted retained artifact");
+
+    assert_success(&output, "disappearing artifact run");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("H1_PRODUCTION_CLI_E2E_VERIFIED"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("selective invalidation removed the retained OpenTelemetry artifact"),
+        "expected missing artifact warning:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_r4] selecting Tier-2 C-ABI emitter"),
+        "dep_r4 must select Tier-2 emitter:\n{stderr}"
+    );
+}
+
+// Scenario 5:
+// Selective cargo clean failure with OS error.
+// Verifies:
+// - Explicit orchestration error; no claim of successful fallback.
+#[test]
+fn test_h1_selective_clean_failure_terminates_with_diagnostic() {
     let temp = tempfile::tempdir().expect("create failure workspace");
     let workspace = temp.path();
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -656,7 +1062,6 @@ fn test_h1_failure_paths_and_recovery() {
         .to_path_buf();
     write_e2e_fixture(workspace, &repo_root.join("otel-shim"));
 
-    // Case 1: Fault injection into cargo clean
     let output_clean_fail = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
         .args(["--", "build", "--package", "app", "--offline"])
         .current_dir(workspace)
@@ -671,6 +1076,106 @@ fn test_h1_failure_paths_and_recovery() {
     assert!(
         stderr_clean.contains("cargo clean failed with OS error"),
         "expected clean fault injection message:\n{stderr_clean}"
+    );
+}
+
+// Scenario 6:
+// Duplicate package names where ambiguous cleaning cannot be guaranteed.
+// Verifies:
+// - Exact identity handled safely with explicit orchestration error.
+#[test]
+fn test_h1_ambiguous_package_name_prevents_unsafe_clean() {
+    let temp = tempfile::tempdir().expect("create ambiguous workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let shim = repo_root
+        .join("otel-shim")
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\", \"decoy\"]\nexclude = [\"ambiguous_dep_v1\", \"ambiguous_dep_v2\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+
+    let dir_v1 = workspace.join("ambiguous_dep_v1");
+    fs::create_dir_all(dir_v1.join("src")).unwrap();
+    fs::write(
+        dir_v1.join("Cargo.toml"),
+        "[package]\nname = \"ambiguous_dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(dir_v1.join("src/lib.rs"), "pub fn work() -> u32 { 1 }\n").unwrap();
+
+    let dir_v2 = workspace.join("ambiguous_dep_v2");
+    fs::create_dir_all(dir_v2.join("src")).unwrap();
+    fs::write(
+        dir_v2.join("Cargo.toml"),
+        "[package]\nname = \"ambiguous_dep\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(dir_v2.join("src/lib.rs"), "pub fn work() -> u32 { 2 }\n").unwrap();
+
+    let decoy = workspace.join("decoy");
+    fs::create_dir_all(decoy.join("src")).unwrap();
+    fs::write(
+        decoy.join("Cargo.toml"),
+        r#"[package]
+name = "decoy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ambiguous_dep = { path = "../ambiguous_dep_v2" }
+"#,
+    )
+    .unwrap();
+    fs::write(decoy.join("src/lib.rs"), "pub fn decoy() {}\n").unwrap();
+
+    let app = workspace.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ambiguous_dep = {{ path = "../ambiguous_dep_v1" }}
+otel-shim = {{ path = "{shim}" }}
+opentelemetry = "0.32.0"
+opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        "fn main() { otel_shim::init(); assert_eq!(ambiguous_dep::work(), 1); }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .output()
+        .expect("run with ambiguous packages");
+
+    assert!(
+        !output.status.success(),
+        "ambiguous package invalidation must terminate non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot safely selectively invalidate")
+            || stderr.contains("multiple versions exist"),
+        "unexpected error message:\n{stderr}"
     );
 }
 

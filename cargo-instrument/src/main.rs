@@ -411,8 +411,42 @@ fn acquire_native_artifacts(
     let metadata: serde_json::Value = serde_json::from_slice(&metadata_output.stdout)
         .map_err(|e| format!("metadata for pre-pass recovery is invalid: {e}"))?;
 
-    let capture_error = if output.status.success() {
-        plan.add_r4_artifacts_from_cargo_json(&metadata, &output.stdout, None)
+    let mut stdout = output.stdout;
+    // Test hook: Fault injection to simulate truncated/corrupted Cargo JSON
+    if env::var("__CARGO_INSTRUMENT_FAULT_INJECT_CORRUPT_JSON").is_ok() {
+        stdout.extend_from_slice(b"\n{malformed-json-artifact\n");
+    }
+    // Test hook: Fault injection to omit specific package messages from pre-pass JSON stream
+    if let Ok(omit_pkg) = env::var("__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_OMIT_PKG") {
+        let mut filtered = Vec::new();
+        for line in stdout.split(|b| *b == b'\n') {
+            if !line.is_empty() {
+                let omit = serde_json::from_slice::<serde_json::Value>(line)
+                    .map(|msg| {
+                        let id_matches = msg["package_id"]
+                            .as_str()
+                            .map(|id| id.contains(&omit_pkg))
+                            .unwrap_or(false);
+                        let target_matches = msg["target"]["name"]
+                            .as_str()
+                            .map(|t| {
+                                t == omit_pkg || t.replace('-', "_") == omit_pkg.replace('-', "_")
+                            })
+                            .unwrap_or(false);
+                        id_matches || target_matches
+                    })
+                    .unwrap_or(false);
+                if !omit {
+                    filtered.extend_from_slice(line);
+                    filtered.push(b'\n');
+                }
+            }
+        }
+        stdout = filtered;
+    }
+
+    let mut capture_error = if output.status.success() {
+        plan.add_r4_artifacts_from_cargo_json(&metadata, &stdout, None)
             .err()
             .map(|e| format!("pre-pass artifact output was incomplete: {e}"))
     } else {
@@ -423,12 +457,37 @@ fn acquire_native_artifacts(
         ))
     };
 
-    let retained_ids = if capture_error.is_none() {
-        retained_artifact_closure(plan, &metadata)
-    } else {
-        std::collections::HashSet::new()
-    };
+    // Test hook: Fault injection to simulate pre-pass failure
+    if env::var("__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_FAIL").is_ok() && capture_error.is_none() {
+        capture_error = Some("fault injection: pre-pass exited with error".to_string());
+    }
+
+    let freshly_compiled = freshly_compiled_package_ids(&stdout);
     let desired_instrumented_ids = desired_instrumented_package_ids(plan, &metadata);
+
+    // If pre-pass failed or output cannot establish complete coverage (e.g. malformed JSON),
+    // we must not use the partial JSON message stream as proof that absent dependencies are already instrumented.
+    let prepass_incomplete_or_failed = capture_error.is_some() || freshly_compiled.is_err();
+    if prepass_incomplete_or_failed {
+        plan.r4_native_otel_artifacts.clear();
+        let empty_retained = std::collections::HashSet::new();
+        invalidate_packages(
+            &desired_instrumented_ids,
+            &empty_retained,
+            &metadata,
+            cargo_args,
+            target_dir,
+            invocation_dir,
+        )?;
+        let reason = if let Err(e) = freshly_compiled {
+            format!("pre-pass Cargo JSON output was malformed: {e}")
+        } else {
+            capture_error.unwrap()
+        };
+        return Ok(NativeAcquisition::Tier2Only(reason));
+    }
+
+    let retained_ids = retained_artifact_closure(plan, &metadata);
     let retained_overlap: std::collections::HashSet<String> = desired_instrumented_ids
         .intersection(&retained_ids)
         .cloned()
@@ -436,26 +495,10 @@ fn acquire_native_artifacts(
     if !retained_overlap.is_empty() {
         // Abandon native orchestration for this invocation
         plan.r4_native_otel_artifacts.clear();
-        // Invalidation must consider the complete desired instrumentation set, including any
-        // units not represented in the successful portion of the pre-pass output, so no
-        // uninstrumented artifact silently bypasses the wrapper.
-        let freshly_compiled = freshly_compiled_package_ids(&output.stdout);
-        let uninstrumented_fresh = uninstrumented_fresh_package_ids(
-            &output.stdout,
-            &desired_instrumented_ids,
-            invocation_dir,
-        );
-        let dirty_instrumented_ids: std::collections::HashSet<String> = match &freshly_compiled {
-            Ok(ids) => desired_instrumented_ids
-                .intersection(ids)
-                .cloned()
-                .chain(uninstrumented_fresh)
-                .collect(),
-            Err(_) => desired_instrumented_ids.clone(),
-        };
         let empty_retained = std::collections::HashSet::new();
+        // Invalidate the complete desired instrumentation set
         invalidate_packages(
-            &dirty_instrumented_ids,
+            &desired_instrumented_ids,
             &empty_retained,
             &metadata,
             cargo_args,
@@ -467,18 +510,30 @@ fn acquire_native_artifacts(
         ));
     }
 
-    let instrumented_ids = desired_instrumented_ids;
-    let freshly_compiled = freshly_compiled_package_ids(&output.stdout);
+    let freshly_compiled_ids = freshly_compiled.as_ref().unwrap();
     let uninstrumented_fresh =
-        uninstrumented_fresh_package_ids(&output.stdout, &instrumented_ids, invocation_dir);
-    let dirty_instrumented_ids: std::collections::HashSet<String> = match &freshly_compiled {
-        Ok(ids) => instrumented_ids
-            .intersection(ids)
-            .cloned()
-            .chain(uninstrumented_fresh)
-            .collect(),
-        Err(_) => instrumented_ids.clone(),
-    };
+        uninstrumented_fresh_package_ids(&stdout, &desired_instrumented_ids, invocation_dir);
+    let dirty_instrumented_ids: std::collections::HashSet<String> = desired_instrumented_ids
+        .intersection(freshly_compiled_ids)
+        .cloned()
+        .chain(uninstrumented_fresh)
+        .collect();
+
+    if plan.r4_native_otel_artifacts.is_empty() {
+        let empty_retained = std::collections::HashSet::new();
+        invalidate_packages(
+            &dirty_instrumented_ids,
+            &empty_retained,
+            &metadata,
+            cargo_args,
+            target_dir,
+            invocation_dir,
+        )?;
+        return Ok(NativeAcquisition::Tier2Only(
+            "the pre-pass produced no eligible OpenTelemetry artifact".into(),
+        ));
+    }
+
     let clean_ids: std::collections::HashSet<String> = dirty_instrumented_ids
         .difference(&retained_ids)
         .cloned()
@@ -492,15 +547,13 @@ fn acquire_native_artifacts(
         invocation_dir,
     )?;
 
-    if let Some(reason) = capture_error {
-        plan.r4_native_otel_artifacts.clear();
-        return Ok(NativeAcquisition::Tier2Only(reason));
+    // Test hook: Fault injection for disappearing retained artifact
+    if env::var("__CARGO_INSTRUMENT_FAULT_INJECT_DELETE_RETAINED").is_ok() {
+        for artifact in &plan.r4_native_otel_artifacts {
+            let _ = std::fs::remove_file(&artifact.rlib_path);
+        }
     }
-    if plan.r4_native_otel_artifacts.is_empty() {
-        return Ok(NativeAcquisition::Tier2Only(
-            "the pre-pass produced no eligible OpenTelemetry artifact".into(),
-        ));
-    }
+
     if let Some(missing) = plan
         .r4_native_otel_artifacts
         .iter()
@@ -510,7 +563,7 @@ fn acquire_native_artifacts(
         plan.r4_native_otel_artifacts.clear();
         let empty_retained = std::collections::HashSet::new();
         invalidate_packages(
-            &instrumented_ids,
+            &desired_instrumented_ids,
             &empty_retained,
             &metadata,
             cargo_args,
