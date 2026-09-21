@@ -647,22 +647,16 @@ fn uninstrumented_fresh_package_ids(
                 invocation_dir.join(p)
             };
             let Ok(file_meta) = std::fs::metadata(&file_path) else {
-                artifact_mtimes.clear();
-                break;
+                continue;
             };
             let Ok(file_mtime) = file_meta.modified() else {
-                artifact_mtimes.clear();
-                break;
+                continue;
             };
             let Some(parent_dir) = file_path.parent() else {
-                artifact_mtimes.clear();
-                break;
+                continue;
             };
             let Some(stamp_name) = artifact_stamp_name(&norm_target, &file_path) else {
-                // A marker is only trusted when its Cargo metadata identity can
-                // be recovered from the emitted artifact filename.
-                artifact_mtimes.clear();
-                break;
+                continue;
             };
             let stamp_file = if parent_dir.ends_with("deps") {
                 parent_dir.join(stamp_name)
@@ -674,10 +668,15 @@ fn uninstrumented_fresh_package_ids(
         }
 
         let is_valid_instrumented = !artifact_mtimes.is_empty()
+            && !stamp_files.is_empty()
             && stamp_files.iter().all(|stamp_file| {
                 std::fs::metadata(stamp_file)
                     .and_then(|metadata| metadata.modified())
-                    .map(|stamp_mtime| artifact_mtimes.iter().all(|mtime| stamp_mtime >= *mtime))
+                    .map(|stamp_mtime| {
+                        artifact_mtimes
+                            .iter()
+                            .all(|mtime| stamp_mtime + std::time::Duration::from_secs(1) >= *mtime)
+                    })
                     .unwrap_or(false)
             });
         if !is_valid_instrumented {
@@ -694,10 +693,16 @@ fn artifact_stamp_name(normalized_target: &str, artifact: &Path) -> Option<Strin
     let stem = artifact.file_stem()?.to_str()?;
     let direct_prefix = format!("{normalized_target}-");
     let library_prefix = format!("lib{normalized_target}-");
-    let artifact_hash = stem
+    if let Some(artifact_hash) = stem
         .strip_prefix(&direct_prefix)
-        .or_else(|| stem.strip_prefix(&library_prefix))?;
-    UnitId::instrumentation_stamp_name(normalized_target, &format!("-{artifact_hash}"))
+        .or_else(|| stem.strip_prefix(&library_prefix))
+    {
+        UnitId::instrumentation_stamp_name(normalized_target, &format!("-{artifact_hash}"))
+    } else if stem == normalized_target || stem == format!("lib{normalized_target}") {
+        UnitId::instrumentation_stamp_name(normalized_target, "")
+    } else {
+        None
+    }
 }
 
 fn instrumented_package_ids(
@@ -905,18 +910,18 @@ fn invalidate_packages(
             ));
         }
         let norm = package.replace('-', "_");
-        let _ = std::fs::remove_file(
-            target_dir
-                .join("debug")
-                .join("deps")
-                .join(format!(".instrumented_{norm}")),
-        );
-        let _ = std::fs::remove_file(
-            target_dir
-                .join("release")
-                .join("deps")
-                .join(format!(".instrumented_{norm}")),
-        );
+        let prefix = format!(".cargo-instrument-transformed-{norm}");
+        for profile in ["debug", "release"] {
+            let deps = target_dir.join(profile).join("deps");
+            if let Ok(entries) = std::fs::read_dir(&deps) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with(&prefix) || name == format!(".instrumented_{norm}") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
