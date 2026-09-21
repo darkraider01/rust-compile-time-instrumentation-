@@ -51,6 +51,24 @@ fn find_mirrored_dependency_source(root: &Path) -> Option<PathBuf> {
     None
 }
 
+fn find_mirrored_sources(root: &Path, marker: &str) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(root)
+        .expect("read mirror root")
+        .filter_map(Result::ok)
+    {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(find_mirrored_sources(&path, marker));
+        } else if path.file_name().is_some_and(|name| name == "lib.rs")
+            && fs::read_to_string(&path).is_ok_and(|contents| contents.contains(marker))
+        {
+            found.push(path);
+        }
+    }
+    found
+}
+
 fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut snapshot = Vec::new();
     for entry in fs::read_dir(root).expect("read source tree") {
@@ -634,4 +652,276 @@ fn r4_extern_injection_path_dependency_proof() {
         snapshot_tree(&registry_source),
         "Cargo registry source cache mutated"
     );
+}
+
+#[test]
+fn h1_cli_automatically_acquires_and_injects_native_otel() {
+    let temp = tempfile::tempdir().expect("create CLI R-4 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (dep_manifest, dep_source) = write_fixture(workspace, &repo_root.join("otel-shim"));
+    let source_before = fs::read(&dep_source).unwrap();
+    let manifest_before = fs::read(&dep_manifest).unwrap();
+    let registry_source = cached_otel_source();
+    let registry_before = snapshot_tree(&registry_source);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("run ordinary cargo-instrument CLI");
+    assert_success(&output, "ordinary CLI native R-4 build");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("R4_EXTERN_INJECTION_VERIFIED"),
+        "ordinary CLI run did not export native dependency spans:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("crate=dep_r4"),
+        "dep_r4 did not pass through RUSTC_WRAPPER:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let target = workspace.join("target/instrumented");
+    let session = SessionPlan::load_from_file(&target.join("cargo_instrument_session.json"))
+        .expect("CLI must save its per-invocation session plan");
+    assert_eq!(
+        session.r4_native_otel_artifacts.len(),
+        1,
+        "CLI must capture one exact artifact"
+    );
+    assert!(session.r4_native_otel_artifacts[0].rlib_path.is_file());
+    let native_extern = format!(
+        "injecting --extern opentelemetry={}",
+        session.r4_native_otel_artifacts[0].rlib_path.display()
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(&native_extern),
+        "the native dependency did not receive the exact Cargo-reported --extern"
+    );
+    let mirror = find_mirrored_dependency_source(&target).expect("find native dependency mirror");
+    let contents = fs::read_to_string(mirror).unwrap();
+    assert!(contents.contains("opentelemetry::global::tracer(\"dep_r4\")"));
+    assert!(!contents.contains("__otel_span_enter"));
+    assert_eq!(
+        source_before,
+        fs::read(dep_source).unwrap(),
+        "dependency source mutated"
+    );
+    assert_eq!(
+        manifest_before,
+        fs::read(dep_manifest).unwrap(),
+        "dependency manifest mutated"
+    );
+    assert_eq!(
+        registry_before,
+        snapshot_tree(&registry_source),
+        "registry source cache mutated"
+    );
+}
+
+fn write_mixed_fixture(workspace: &Path, otel_shim: &Path) {
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\", \"app_tier2\", \"dep_native\", \"dep_tier2\"]\nresolver = \"2\"\n",
+    ).unwrap();
+    for (name, source) in [
+        ("dep_native", "pub fn native_work() -> u32 { 7 }\n"),
+        ("dep_tier2", "pub fn tier2_work() -> u32 { 11 }\n"),
+    ] {
+        let dir = workspace.join(name);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("src/lib.rs"), source).unwrap();
+    }
+    let shim = otel_shim.to_string_lossy().replace('\\', "/");
+    let app = workspace.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_native = {{ path = "../dep_native" }}
+dep_tier2 = {{ path = "../dep_tier2" }}
+otel-shim = {{ path = "{shim}" }}
+opentelemetry = "0.32.0"
+opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(app.join("src/main.rs"), r#"use opentelemetry::trace::{TraceContextExt as _, Tracer as _};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+fn main() {
+    otel_shim::init();
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder().with_simple_exporter(exporter.clone()).build();
+    opentelemetry::global::set_tracer_provider(provider);
+    let tracer = opentelemetry::global::tracer("mixed-app");
+    let parent = tracer.start("mixed_parent");
+    let cx = opentelemetry::Context::current_with_span(parent);
+    let parent_id = cx.span().span_context().span_id();
+    let trace_id = cx.span().span_context().trace_id();
+    { let _guard = cx.clone().attach(); assert_eq!(dep_native::native_work(), 7); assert_eq!(dep_tier2::tier2_work(), 11); }
+    cx.span().end();
+    let spans = exporter.get_finished_spans().unwrap();
+    for name in ["native_work", "tier2_work"] {
+        let span = spans.iter().find(|span| span.name == name).expect("dependency span");
+        assert_eq!(span.parent_span_id, parent_id); assert_eq!(span.span_context.trace_id(), trace_id);
+    }
+    println!("H1_MIXED_NATIVE_TIER2_VERIFIED");
+}
+"#).unwrap();
+    let tier2_app = workspace.join("app_tier2");
+    fs::create_dir_all(tier2_app.join("src")).unwrap();
+    fs::write(
+        tier2_app.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app_tier2"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+dep_tier2 = {{ path = "../dep_tier2" }}
+otel-shim = {{ path = "{shim}" }}
+opentelemetry = "0.31.0"
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        tier2_app.join("src/main.rs"),
+        "fn main() { otel_shim::init(); assert_eq!(dep_tier2::tier2_work(), 11); }\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn h1_cli_mixed_native_and_tier2_recompile_and_export() {
+    let temp = tempfile::tempdir().expect("create mixed H1 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    write_mixed_fixture(workspace, &repo_root.join("otel-shim"));
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .unwrap();
+    assert_success(&output, "mixed native/Tier-2 CLI run");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("H1_MIXED_NATIVE_TIER2_VERIFIED"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("crate=dep_native"),
+        "native dependency bypassed wrapper:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_tier2"),
+        "Tier-2 dependency bypassed wrapper:\n{stderr}"
+    );
+    assert!(stderr.contains("crate=dep_native] selecting native R-4 emitter"));
+    assert!(stderr.contains("crate=dep_tier2] selecting Tier-2 C-ABI emitter"));
+    let mirrors = find_mirrored_sources(
+        &workspace.join("target/instrumented"),
+        "__cargo_instrument_anchor",
+    );
+    let native = mirrors
+        .iter()
+        .find(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("pub fn native_work")
+        })
+        .expect("native mirror");
+    let tier2 = mirrors
+        .iter()
+        .find(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .contains("pub fn tier2_work")
+        })
+        .expect("Tier-2 mirror");
+    assert!(fs::read_to_string(native)
+        .unwrap()
+        .contains("opentelemetry::global::tracer(\"dep_native\")"));
+    assert!(fs::read_to_string(tier2)
+        .unwrap()
+        .contains("__otel_span_enter"));
+    assert!(!fs::read_to_string(tier2)
+        .unwrap()
+        .contains("opentelemetry::global::tracer(\"dep_tier2\")"));
+}
+
+#[test]
+fn h1_cli_failed_prepass_recompiles_dependencies_through_tier2() {
+    let temp = tempfile::tempdir().expect("create failed-prepass workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    write_mixed_fixture(workspace, &repo_root.join("otel-shim"));
+    let app_source = workspace.join("app/src/main.rs");
+    fs::write(
+        &app_source,
+        "fn main() { let _ = dep_native::native_work(); let _ = dep_tier2::tier2_work(); compile_error!(\"intentional H1 pre-pass failure\"); }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "build", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "the intentional app error must fail the final build"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pre-pass exited"),
+        "failed pre-pass must be diagnosed:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_native"),
+        "dep_native was reused after failed pre-pass:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_tier2"),
+        "dep_tier2 was reused after failed pre-pass:\n{stderr}"
+    );
+    let mirrors = find_mirrored_sources(
+        &workspace.join("target/instrumented"),
+        "__cargo_instrument_anchor",
+    );
+    for function in ["pub fn native_work", "pub fn tier2_work"] {
+        let mirror = mirrors
+            .iter()
+            .find(|path| fs::read_to_string(path).unwrap().contains(function))
+            .expect("dependency mirror after pre-pass failure");
+        assert!(
+            fs::read_to_string(mirror)
+                .unwrap()
+                .contains("__otel_span_enter"),
+            "Tier-2 recovery was not applied for {function}"
+        );
+    }
 }
