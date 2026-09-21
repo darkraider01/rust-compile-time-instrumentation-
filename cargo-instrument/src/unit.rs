@@ -50,6 +50,10 @@ impl UnitId {
     /// in the artifact path, so it is the identity shared by the wrapper and
     /// Cargo's `compiler-artifact` message. A crate name alone is insufficient.
     pub fn instrumentation_stamp_name(crate_name: &str, extra_filename: &str) -> Option<String> {
+        let norm = crate_name.replace('-', "_");
+        if extra_filename.is_empty() {
+            return Some(format!(".cargo-instrument-transformed-{norm}.stamp"));
+        }
         let artifact_hash = extra_filename.strip_prefix('-')?;
         if artifact_hash.is_empty()
             || !artifact_hash
@@ -59,9 +63,7 @@ impl UnitId {
             return None;
         }
         Some(format!(
-            ".cargo-instrument-transformed-{}-{}.stamp",
-            crate_name.replace('-', "_"),
-            artifact_hash
+            ".cargo-instrument-transformed-{norm}-{artifact_hash}.stamp"
         ))
     }
 }

@@ -368,14 +368,17 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
     if status.success() {
         if let Some((info, out_dir)) = &mirrored_info {
             remap_dep_info_files(out_dir, info);
-            if let Some(stamp_name) = info
-                .extra_filename
-                .as_deref()
-                .and_then(|extra| UnitId::instrumentation_stamp_name(&info.crate_name, extra))
-            {
-                // Only a successful compile from a mirrored source tree may
-                // certify an artifact as transformed.  Skipped and fail-open
-                // invocations intentionally leave no marker.
+            // Only a successful compile from a mirrored source tree may
+            // certify an artifact as transformed.  Skipped and fail-open
+            // invocations intentionally leave no marker.
+            if let Some(extra) = info.extra_filename.as_deref() {
+                if let Some(stamp_name) =
+                    UnitId::instrumentation_stamp_name(&info.crate_name, extra)
+                {
+                    let _ = fs::write(out_dir.join(stamp_name), b"1");
+                }
+            }
+            if let Some(stamp_name) = UnitId::instrumentation_stamp_name(&info.crate_name, "") {
                 let _ = fs::write(out_dir.join(stamp_name), b"1");
             }
         }
