@@ -128,13 +128,14 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<String>) {
     }
 }
 
-/// Whether any mirrored source under `dir` had C-ABI trampoline calls spliced into it.
+/// Whether any mirrored source under `dir` had instrumentation calls spliced into it
+/// (either Tier-2 C-ABI trampolines or native OpenTelemetry tracer calls).
 fn contains_trampoline_symbols(dir: &Path) -> bool {
     let mut files = Vec::new();
     collect_rs_paths(dir, &mut files);
     files.iter().any(|p| {
         fs::read_to_string(p)
-            .map(|s| s.contains("__otel_span_enter"))
+            .map(|s| s.contains("__otel_span_enter") || s.contains("opentelemetry::global::tracer"))
             .unwrap_or(false)
     })
 }

@@ -727,8 +727,17 @@ fn h1_cli_automatically_acquires_and_injects_native_otel() {
 fn write_mixed_fixture(workspace: &Path, otel_shim: &Path) {
     fs::write(
         workspace.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"app\", \"app_tier2\", \"dep_native\", \"dep_tier2\"]\nresolver = \"2\"\n",
+        "[workspace]\nmembers = [\"app\", \"app_tier2\", \"dep_native\", \"dep_tier2\", \"otel_conflict\"]\nresolver = \"2\"\n",
     ).unwrap();
+    let otel_conflict = workspace.join("otel_conflict");
+    fs::create_dir_all(otel_conflict.join("src")).unwrap();
+    fs::write(
+        otel_conflict.join("Cargo.toml"),
+        "[package]\nname = \"opentelemetry\"\nversion = \"0.31.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(otel_conflict.join("src/lib.rs"), "").unwrap();
+
     for (name, source) in [
         ("dep_native", "pub fn native_work() -> u32 { 7 }\n"),
         ("dep_tier2", "pub fn tier2_work() -> u32 { 11 }\n"),
@@ -798,7 +807,7 @@ edition = "2021"
 [dependencies]
 dep_tier2 = {{ path = "../dep_tier2" }}
 otel-shim = {{ path = "{shim}" }}
-opentelemetry = "0.31.0"
+opentelemetry = {{ path = "../otel_conflict" }}
 "#
         ),
     )
@@ -924,4 +933,316 @@ fn h1_cli_failed_prepass_recompiles_dependencies_through_tier2() {
             "Tier-2 recovery was not applied for {function}"
         );
     }
+}
+
+#[test]
+fn h1_cli_prepopulated_target_dir_recompiles_uninstrumented_dependencies() {
+    let temp = tempfile::tempdir().expect("create prepopulated H1 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    write_mixed_fixture(workspace, &repo_root.join("otel-shim"));
+
+    let target_dir = workspace.join("target/instrumented");
+
+    // 1. Prepopulate the exact target directory using ordinary, uninstrumented Cargo
+    let prepopulate = Command::new("cargo")
+        .args(["build", "--package", "app", "--offline", "--target-dir"])
+        .arg(&target_dir)
+        .current_dir(workspace)
+        .output()
+        .expect("pre-populate target directory with uninstrumented cargo");
+    assert_success(&prepopulate, "uninstrumented cargo prepopulation");
+
+    // Verify uninstrumented artifacts exist
+    assert!(target_dir.join("debug").exists());
+
+    // 2. Invoke the normal cargo-instrument CLI into the same target directory
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .unwrap();
+    assert_success(
+        &output,
+        "cargo-instrument with pre-populated target directory",
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("H1_MIXED_NATIVE_TIER2_VERIFIED"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Verifies that the intended dependency compilation units actually pass through RUSTC_WRAPPER
+    assert!(
+        stderr.contains("crate=dep_native"),
+        "dep_native did not pass through RUSTC_WRAPPER on pre-populated target dir:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("crate=dep_tier2"),
+        "dep_tier2 did not pass through RUSTC_WRAPPER on pre-populated target dir:\n{stderr}"
+    );
+    // Verifies native and Tier-2 instrumentation are applied correctly
+    assert!(stderr.contains("crate=dep_native] selecting native R-4 emitter"));
+    assert!(stderr.contains("crate=dep_tier2] selecting Tier-2 C-ABI emitter"));
+}
+
+#[test]
+fn h1_cli_run_preserves_application_arguments() {
+    let temp = tempfile::tempdir().expect("create args H1 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (_, _) = write_fixture(workspace, &repo_root.join("otel-shim"));
+
+    // Modify app/src/main.rs inside main() to assert application arguments
+    let app_main = workspace.join("app/src/main.rs");
+    let original = fs::read_to_string(&app_main).unwrap();
+    let modified = original.replace(
+        "otel_shim::init();",
+        r#"let args: Vec<String> = std::env::args().collect();
+    assert!(args.iter().any(|a| a == "--config"), "missing --config in args: {args:?}");
+    assert!(args.iter().any(|a| a == "production.toml"), "missing production.toml in args: {args:?}");
+    println!("APP_ARGS_VERIFIED");
+    otel_shim::init();"#,
+    );
+    fs::write(&app_main, modified).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args([
+            "run",
+            "--package",
+            "app",
+            "--offline",
+            "--",
+            "--config",
+            "production.toml",
+            "--flag-value",
+        ])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("run cargo-instrument with app args");
+    assert_success(&output, "cargo-instrument run with app args");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("APP_ARGS_VERIFIED"),
+        "app did not receive arguments:\n{stdout}"
+    );
+    assert!(stdout.contains("R4_EXTERN_INJECTION_VERIFIED"));
+}
+
+#[test]
+fn h1_cli_repeat_and_incremental_builds() {
+    let temp = tempfile::tempdir().expect("create repeat/incremental H1 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (_, _) = write_fixture(workspace, &repo_root.join("otel-shim"));
+
+    // Initial cold CLI run
+    let cold = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("cold run");
+    assert_success(&cold, "cold build");
+    assert!(String::from_utf8_lossy(&cold.stdout).contains("R4_EXTERN_INJECTION_VERIFIED"));
+
+    // Repeat CLI run (cached, nothing rebuilt, spans preserved)
+    let repeat = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("repeat run");
+    assert_success(&repeat, "repeat build");
+    assert!(String::from_utf8_lossy(&repeat.stdout).contains("R4_EXTERN_INJECTION_VERIFIED"));
+
+    // Incremental app edit
+    let app_main = workspace.join("app/src/main.rs");
+    fs::write(
+        &app_main,
+        format!(
+            "{}\n// incremental edit comment\n",
+            fs::read_to_string(&app_main).unwrap()
+        ),
+    )
+    .unwrap();
+
+    let incremental = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("incremental run");
+    assert_success(&incremental, "incremental build");
+    assert!(String::from_utf8_lossy(&incremental.stdout).contains("R4_EXTERN_INJECTION_VERIFIED"));
+}
+
+#[test]
+fn h1_cli_clean_rebuild_and_automatic_artifact_reacquisition() {
+    let temp = tempfile::tempdir().expect("create clean-rebuild H1 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (_, _) = write_fixture(workspace, &repo_root.join("otel-shim"));
+
+    // Initial cold CLI run
+    let cold = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .output()
+        .expect("cold run");
+    assert_success(&cold, "cold build");
+
+    // Perform cargo clean
+    let clean = Command::new("cargo")
+        .args(["clean", "--target-dir", "target/instrumented"])
+        .current_dir(workspace)
+        .output()
+        .expect("cargo clean");
+    assert_success(&clean, "cargo clean");
+
+    // Rebuild after clean — proves automatic artifact reacquisition
+    let rebuilt = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("clean rebuild");
+    assert_success(&rebuilt, "rebuilt after clean");
+    assert!(String::from_utf8_lossy(&rebuilt.stdout).contains("R4_EXTERN_INJECTION_VERIFIED"));
+}
+
+#[test]
+fn h1_cli_selective_clean_failure_terminates_with_diagnostic() {
+    let temp = tempfile::tempdir().expect("create clean failure H1 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let (_, _) = write_fixture(workspace, &repo_root.join("otel-shim"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .env("__CARGO_INSTRUMENT_FAULT_INJECT_CLEAN_FAIL", "1")
+        .output()
+        .expect("run with clean fault injection");
+    assert!(
+        !output.status.success(),
+        "clean failure must terminate orchestration non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cargo-instrument orchestration error")
+            && stderr.contains("cargo clean failed"),
+        "missing actionable selective invalidation diagnostic:\n{stderr}"
+    );
+}
+
+#[test]
+fn h1_cli_ambiguous_package_name_prevents_unsafe_clean() {
+    let temp = tempfile::tempdir().expect("create ambiguous H1 workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let shim = repo_root
+        .join("otel-shim")
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    // Two external path dependencies outside workspace members share package name "ambiguous_dep"
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"app\", \"decoy\"]\nexclude = [\"ambiguous_dep_v1\", \"ambiguous_dep_v2\"]\nresolver = \"2\"\n",
+    ).unwrap();
+
+    let dir_v1 = workspace.join("ambiguous_dep_v1");
+    fs::create_dir_all(dir_v1.join("src")).unwrap();
+    fs::write(
+        dir_v1.join("Cargo.toml"),
+        "[package]\nname = \"ambiguous_dep\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(dir_v1.join("src/lib.rs"), "pub fn work() -> u32 { 1 }\n").unwrap();
+
+    let dir_v2 = workspace.join("ambiguous_dep_v2");
+    fs::create_dir_all(dir_v2.join("src")).unwrap();
+    fs::write(
+        dir_v2.join("Cargo.toml"),
+        "[package]\nname = \"ambiguous_dep\"\nversion = \"0.2.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(dir_v2.join("src/lib.rs"), "pub fn work() -> u32 { 2 }\n").unwrap();
+
+    let decoy = workspace.join("decoy");
+    fs::create_dir_all(decoy.join("src")).unwrap();
+    fs::write(
+        decoy.join("Cargo.toml"),
+        r#"[package]
+name = "decoy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ambiguous_dep = { path = "../ambiguous_dep_v2" }
+"#,
+    )
+    .unwrap();
+    fs::write(decoy.join("src/lib.rs"), "pub fn decoy() {}\n").unwrap();
+
+    let app = workspace.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ambiguous_dep = {{ path = "../ambiguous_dep_v1" }}
+otel-shim = {{ path = "{shim}" }}
+opentelemetry = "0.32.0"
+opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        "fn main() { otel_shim::init(); assert_eq!(ambiguous_dep::work(), 1); }\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app", "--offline"])
+        .current_dir(workspace)
+        .output()
+        .expect("run with ambiguous packages");
+
+    // Safe selective clean cannot be established because ambiguous versions exist and only one is selected
+    assert!(
+        !output.status.success(),
+        "ambiguous package invalidation must terminate non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("cannot safely selectively invalidate")
+            || stderr.contains("multiple versions exist"),
+        "unexpected error message:\n{stderr}"
+    );
 }

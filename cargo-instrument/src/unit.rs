@@ -44,6 +44,26 @@ impl UnitId {
             None => self.crate_name.clone(),
         }
     }
+
+    /// Name of the marker proving that an exact Cargo artifact was compiled
+    /// from a mirrored, transformed source tree. Cargo places `extra_filename`
+    /// in the artifact path, so it is the identity shared by the wrapper and
+    /// Cargo's `compiler-artifact` message. A crate name alone is insufficient.
+    pub fn instrumentation_stamp_name(crate_name: &str, extra_filename: &str) -> Option<String> {
+        let artifact_hash = extra_filename.strip_prefix('-')?;
+        if artifact_hash.is_empty()
+            || !artifact_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return None;
+        }
+        Some(format!(
+            ".cargo-instrument-transformed-{}-{}.stamp",
+            crate_name.replace('-', "_"),
+            artifact_hash
+        ))
+    }
 }
 
 impl fmt::Display for UnitId {
@@ -68,5 +88,18 @@ mod tests {
         let id = UnitId::from_crate_name("bar");
         assert_eq!(id.dir_name(), "bar");
         assert_eq!(id.to_string(), "bar");
+        assert_eq!(UnitId::instrumentation_stamp_name("bar", "hash"), None);
+    }
+
+    #[test]
+    fn test_instrumentation_stamp_name_is_unit_specific() {
+        assert_eq!(
+            UnitId::instrumentation_stamp_name("foo_bar", "-first").as_deref(),
+            Some(".cargo-instrument-transformed-foo_bar-first.stamp")
+        );
+        assert_ne!(
+            UnitId::instrumentation_stamp_name("foo_bar", "-first"),
+            UnitId::instrumentation_stamp_name("foo_bar", "-second")
+        );
     }
 }
