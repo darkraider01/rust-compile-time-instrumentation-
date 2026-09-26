@@ -18,7 +18,7 @@ This document details the confirmed root cause, the architecture of the complete
 ```text
 H1 native R-4 production orchestration  RESOLVED
 H2 feature-safe native selection        RESOLVED
-H3 Tokio package identity               PARTIAL / outstanding
+H3 Tokio package identity               PARTIALLY RESOLVED (Package/binding proved; artifact/features open)
 Cross-target and all-target CLI modes   wrapper-only behavior retained
 Overall P2.4 production hardening       INCOMPLETE
 ```
@@ -148,10 +148,10 @@ cargo test --workspace                                              PASS (100% p
 While H1 is fully resolved, the following items remain open and explicitly out of scope for H1:
 
 1. **H2 — Feature-Safe Native Selection:**
-   When multiple crates in the build graph request conflicting feature flags on `opentelemetry` (e.g. `trace` vs `metrics` or different SDK exporters), Cargo may produce distinct artifacts. Selecting an artifact with mismatched features can lead to silent telemetry loss. Safe resolution across feature-divergent closures remains open.
+   RESOLVED (see [`p2.4-validation-audit.md`](p2.4-validation-audit.md#h2-resolution--feature-safe-native-opentelemetry-selection)). Authoritative feature extraction from Cargo JSON messages, mandatory `"trace"` verification, and exact canonical artifact path matching are enforced.
 2. **H3 — Tokio Package Identity:**
-   Discriminating `tokio` instances across multiple versions, renames, or feature profiles without relying solely on the package name string remains open.
+   PARTIALLY RESOLVED. Cargo package/binding name and rename identity are verified via `SessionPlan::unit_has_real_tokio_binding`. However, discriminating concrete Tokio compiler-artifact paths, target/profile consistency, and required feature profiles (e.g. `rt`, `rt-multi-thread`) without relying solely on metadata edges remains open.
 3. **Cross-Target / Multi-Target Invocations:**
    CLI invocations targeting multiple targets simultaneously (e.g. `--target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu`) or `--all-targets` retain wrapper-only behavior.
 4. **Overall Milestone Status:**
-   H1 is **RESOLVED**. However, overall P2.4 production hardening remains **INCOMPLETE** until H2 and H3 are addressed.
+   H1 is **RESOLVED**. However, overall P2.4 production hardening remains **INCOMPLETE** until H3 artifact/feature validation, cancellation (#7), and Stream/Sink (#8) are addressed.

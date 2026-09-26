@@ -131,6 +131,12 @@ Automatic Tokio spawn propagation runs **if and only if** all 6 conditions are p
 
 If any link in this proof is missing, foreign, or ambiguous, `report.spawn_sites` is cleared and no rewriting occurs (conservative no-transformation).
 
+#### Status & Scope Boundary: What is Resolved vs Remaining Open
+
+- **Status:** **PARTIALLY RESOLVED**
+- **Resolved (Cargo Package/Binding/Rename Identity):** The 6-point check establishes that the current unit's Cargo dependency edge named `tokio` maps to a genuine Cargo package whose package name is `tokio`. This decisively eliminates the dependency-rename vulnerability (`tokio = { package = "fake-runtime" }`), rejects packages that rename Tokio away, and protects units lacking a direct dependency on Tokio.
+- **Remaining Open (Authoritative Artifact & Feature Profile Identity):** The current implementation verifies metadata resolve edges and `--extern tokio` presence, but does not yet validate the concrete `--extern tokio=<rlib>` artifact path against Cargo `compiler-artifact` JSON output, nor does it verify target/profile consistency or validate required feature profiles (e.g. `rt`, `rt-multi-thread`). Full end-to-end artifact identity verification remains open.
+
 ---
 
 ## 3. Verification & Evidence
