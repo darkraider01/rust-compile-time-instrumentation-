@@ -46,11 +46,13 @@ Phase 2 - Production Hardening (In Progress)
           │       ├── Step 3  `span_suggestion` transformation engine                 ✅ Complete
           │       ├── Step 4  Cargo fix integration & clean-tree safety gate          ✅ Complete
           │       └── Step 5  Idempotence, Result status & async_trait parity suite  ✅ Complete
-          ├── P2.4 Opt-In Dependency Pipeline & Async Trampolines   ⬜ Planned
-          │       ├── R-4 investigation: `--extern` injection vs C-ABI / R-1 / R-2
-          │       ├── Async dependency trampolines & `tokio::spawn` context propagation
-          │       ├── Stream / Sink instrumentation & span completion status
-          │       └── Opt-in integration (`--with-dependencies` / env flag)
+          ├── P2.4 Opt-In Dependency Pipeline & Async Trampolines   🟡 In Progress
+          │       ├── R-4 investigation: `--extern` injection vs C-ABI / R-1 / R-2  ✅ Resolved (Hybrid Fallback)
+          │       ├── H1 production orchestration (Cargo pre-pass & selective clean) ✅ Complete
+          │       ├── H2 feature-safe native OpenTelemetry selection                 ✅ Complete
+          │       ├── Async context propagation (#5) & `tokio::spawn` (#6)           ✅ Complete
+          │       ├── Stream / Sink instrumentation & cancellation lifecycle (#7, #8) ⬜ Planned
+          │       └── Opt-in integration (`--with-dependencies` / env flag) (#4)     ⬜ Planned
           └── P2.5 Large Graphs & Cross-Platform Validation         ⬜ Planned
                   ├── Multi-crate workspace scale & opt-in graph scale (≥100 units)
                   ├── Tracer caching (`OnceLock`)
