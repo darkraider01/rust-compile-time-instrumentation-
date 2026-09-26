@@ -382,10 +382,7 @@ impl SessionPlan {
 
                 // Invariant 2: Active rustc --extern path match (if specified)
                 if let Some(extern_path) = extern_crate_path(rustc_args, "opentelemetry") {
-                    let same_file = artifact.rlib_path.file_name().is_some()
-                        && artifact.rlib_path.file_name() == extern_path.file_name();
-                    let same_path = artifact.rlib_path == extern_path;
-                    if !same_file && !same_path {
+                    if !paths_refer_to_same_file(&artifact.rlib_path, &extern_path) {
                         return Err(format!(
                             "Cargo-reported OpenTelemetry artifact '{}' does not match active rustc --extern '{}'",
                             artifact.rlib_path.display(),
@@ -439,6 +436,22 @@ fn parse_extern_spec_path(spec: &str, crate_name: &str) -> Option<PathBuf> {
         Some(PathBuf::from(path_str))
     } else {
         None
+    }
+}
+
+/// Compares two filesystem paths to determine if they refer to the exact same file.
+///
+/// Fast path: direct path equality comparison.
+/// Slow path: canonicalizes both paths and compares the canonicalized representations.
+/// If canonicalization fails on either path (e.g. non-existent or stale path), returns false.
+/// Never falls back to filename-only equality.
+pub fn paths_refer_to_same_file(p1: &Path, p2: &Path) -> bool {
+    if p1 == p2 {
+        return true;
+    }
+    match (fs::canonicalize(p1), fs::canonicalize(p2)) {
+        (Ok(c1), Ok(c2)) => c1 == c2,
+        _ => false,
     }
 }
 
@@ -1629,5 +1642,36 @@ mod tests {
         assert!(!scoped_plan
             .target_reachable_package_ids
             .contains("app-b 0.1.0 (path+file:///app_b)"));
+    }
+
+    #[test]
+    fn test_paths_refer_to_same_file_behavior() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir_a = temp.path().join("dir_a");
+        let dir_b = temp.path().join("dir_b");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+
+        let file_a = dir_a.join("libopentelemetry.rlib");
+        fs::write(&file_a, b"file a").unwrap();
+        let file_b = dir_b.join("libopentelemetry.rlib");
+        fs::write(&file_b, b"file b").unwrap();
+
+        // 1. Exact same path
+        assert!(paths_refer_to_same_file(&file_a, &file_a));
+
+        // 2. Lexically different but canonically identical
+        let sub_a = dir_a.join("sub");
+        fs::create_dir_all(&sub_a).unwrap();
+        let lexical_same = sub_a.join("..").join("libopentelemetry.rlib");
+        assert_ne!(file_a, lexical_same);
+        assert!(paths_refer_to_same_file(&file_a, &lexical_same));
+
+        // 3. Same filename in different directories must be rejected
+        assert!(!paths_refer_to_same_file(&file_a, &file_b));
+
+        // 4. Non-existent path must be rejected
+        let non_existent = dir_a.join("nonexistent.rlib");
+        assert!(!paths_refer_to_same_file(&file_a, &non_existent));
     }
 }
