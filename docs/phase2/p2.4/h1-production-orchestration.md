@@ -17,7 +17,7 @@ This document details the confirmed root cause, the architecture of the complete
 
 ```text
 H1 native R-4 production orchestration  RESOLVED
-H2 feature-safe native selection        PARTIAL / outstanding
+H2 feature-safe native selection        RESOLVED
 H3 Tokio package identity               PARTIAL / outstanding
 Cross-target and all-target CLI modes   wrapper-only behavior retained
 Overall P2.4 production hardening       INCOMPLETE
