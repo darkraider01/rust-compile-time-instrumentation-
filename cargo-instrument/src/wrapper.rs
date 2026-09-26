@@ -236,14 +236,22 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                     } else if use_sentinel {
                                         Some(Box::new(SentinelEmitter))
                                     } else if role == CrateRole::Application {
-                                        if has_otel {
+                                        if has_otel
+                                            && session_plan.package_has_otel_trace(crate_name)
+                                        {
                                             Some(Box::new(NativeOtelEmitter::new(crate_name)))
                                         } else if native_otel_enforced {
                                             eprintln!(
-                                                    "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry'. \
+                                                    "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry' with 'trace' feature. \
                                                     Skipping instrumentation per S11 fail-open."
                                                 );
                                             None
+                                        } else if has_otel_shim {
+                                            Some(Box::new(TrampolineEmitter::new(
+                                                crate_name,
+                                                invocation.unit.edition().map(String::from),
+                                                report.unsafe_policy,
+                                            )))
                                         } else {
                                             Some(Box::new(SentinelEmitter))
                                         }
