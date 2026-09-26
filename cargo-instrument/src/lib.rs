@@ -9,7 +9,10 @@ pub mod wrapper;
 pub use ast::{analyze_source_file, analyze_source_str, check_application_preflight, AstError};
 pub use candidate::{Candidate, DiscoveryReport, FunctionKind, SpawnSite, UnsafePolicy};
 pub use discovery::{CompilationUnit, CrateInvocation, CrateRole, DiscoveryError};
-pub use session::{resolve_package_spec, SessionPlan, SkipCause, SESSION_ENV};
+pub use session::{
+    paths_refer_to_same_file, resolve_package_spec, rustc_has_extern_binding, CargoDepEdge,
+    SessionPlan, SkipCause, SESSION_ENV,
+};
 pub use transform::{
     detect_line_ending, paths_are_identical, transform_source_file, transform_source_file_scoped,
     transform_source_file_scoped_with_emitter, transform_source_str,
