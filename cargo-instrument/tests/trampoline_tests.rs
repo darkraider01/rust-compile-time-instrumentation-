@@ -498,15 +498,15 @@ pub async fn app_caller() {
     // 6. Run `cargo build` through `cargo-instrument` wrapper
     // Set target-dir to target/instrumented to satisfy ADR-004
     let target_dir = ws_root.join("target").join("instrumented");
-    let output = Command::new("cargo")
+    let output = Command::new(cargo_instrument_bin)
         .args([
+            "--",
             "run",
             "--manifest-path",
             app_cargo.to_str().unwrap(),
             "--target-dir",
             target_dir.to_str().unwrap(),
         ])
-        .env("RUSTC_WRAPPER", cargo_instrument_bin)
         .env("INSTRUMENT_DEBUG", "0")
         .env("RUST_BACKTRACE", "1")
         .output()

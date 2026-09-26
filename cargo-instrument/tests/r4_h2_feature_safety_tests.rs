@@ -402,7 +402,7 @@ fn test_h2_target_mismatch_fails_open() {
         .insert(dep_id.to_string(), dep_dir);
     plan.r4_otel_package_by_dependency
         .insert(dep_id.to_string(), otel_id.to_string());
-    plan.r4_expected_features_by_dependency
+    plan.r4_required_features_by_dependency
         .insert(dep_id.to_string(), vec!["trace".to_string()]);
 
     let message = serde_json::json!({
@@ -477,7 +477,7 @@ fn test_h2_profile_mismatch_fails_open() {
         .insert(dep_id.to_string(), dep_dir);
     plan.r4_otel_package_by_dependency
         .insert(dep_id.to_string(), otel_id.to_string());
-    plan.r4_expected_features_by_dependency
+    plan.r4_required_features_by_dependency
         .insert(dep_id.to_string(), vec!["trace".to_string()]);
 
     let message = serde_json::json!({
@@ -543,5 +543,288 @@ fn test_h2_multiple_otel_versions_incompatible_roots() {
         plan.r4_otel_package_by_dependency.get(app_b),
         Some(&otel_30.to_string()),
         "single root retaining exact 0.30 identity"
+    );
+}
+
+// 7. Target-specific feature declarations:
+// Validates that when target-specific dependencies declare different features (e.g. active OS has `metrics`,
+// inactive OS has `trace`), the inactive declaration does NOT contaminate feature identity.
+// The active compiled artifact lacks `trace`, so native application instrumentation MUST NOT be selected,
+// and the build must succeed through Tier-2/S11 without `opentelemetry::trace` compile failures.
+#[test]
+fn test_h2_target_specific_features_do_not_contaminate_active_unit() {
+    let temp = tempfile::tempdir().expect("create target-specific workspace");
+    let workspace = temp.path();
+
+    let shim = workspace.join("otel-shim");
+    write_shim(&shim);
+
+    fs::write(
+        workspace.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app_target_test", "dep_target_test", "otel-shim"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+
+    let dep = workspace.join("dep_target_test");
+    fs::create_dir_all(dep.join("src")).unwrap();
+    fs::write(
+        dep.join("Cargo.toml"),
+        r#"[package]
+name = "dep_target_test"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dep.join("src/lib.rs"),
+        r#"pub fn run_dep() -> u32 { 77 }
+"#,
+    )
+    .unwrap();
+
+    let app = workspace.join("app_target_test");
+    fs::create_dir_all(app.join("src")).unwrap();
+
+    // Dynamically configure active OS with `metrics` (lacks `trace`),
+    // and inactive OS with `trace`.
+    // Under buggy manifest-scanning, the inactive `trace` declaration contaminates the build.
+    // Under artifact-authoritative H2, only the active compiled artifact features count.
+    let (active_cfg, inactive_cfg) = if cfg!(windows) {
+        ("cfg(windows)", "cfg(unix)")
+    } else {
+        ("cfg(unix)", "cfg(windows)")
+    };
+
+    let app_manifest = format!(
+        r#"[package]
+name = "app_target_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_target_test = {{ path = "../dep_target_test" }}
+otel-shim = {{ path = "../otel-shim" }}
+
+[target.'{active_cfg}'.dependencies]
+opentelemetry = {{ version = "0.32.0", default-features = false, features = ["metrics"] }}
+
+[target.'{inactive_cfg}'.dependencies]
+opentelemetry = {{ version = "0.32.0", default-features = false, features = ["trace"] }}
+"#
+    );
+    fs::write(app.join("Cargo.toml"), app_manifest).unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        r#"fn main() {
+    otel_shim::init();
+    println!("TARGET_DEP_RES={}", dep_target_test::run_dep());
+}
+"#,
+    )
+    .unwrap();
+
+    let before_snapshot = snapshot_tree(workspace);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args(["--", "run", "--package", "app_target_test", "--offline"])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("run app_target_test");
+
+    assert_success(&output, "run app_target_test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("TARGET_DEP_RES=77"),
+        "expected successful execution via Tier-2 fallback:\n{stdout}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("lacks required 'trace' feature"),
+        "active artifact lacking trace must warn and reject native injection:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("selecting Tier-2 C-ABI emitter"),
+        "must safely fall back to Tier-2 C-ABI emitter:\n{stderr}"
+    );
+
+    let after_snapshot = snapshot_tree(workspace);
+    assert_eq!(
+        before_snapshot, after_snapshot,
+        "source and manifest files must remain byte-identical before and after build"
+    );
+}
+
+// 8. Package name different from target name:
+// Fixture: `[package] name = "my-app"`, `[[bin]] name = "server"`, `[dependencies] opentelemetry = "0.32.0"`.
+// Validates:
+// - Package identity resolves to `my-app` via `package_manifest_dirs`.
+// - Rustc crate name is `server`.
+// - Native application instrumentation is still selected when the active OTel artifact has `trace`.
+#[test]
+fn test_h2_package_name_differs_from_target_name() {
+    let temp = tempfile::tempdir().expect("create package vs target workspace");
+    let workspace = temp.path();
+
+    fs::write(
+        workspace.join("Cargo.toml"),
+        r#"[workspace]
+members = ["my_app"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+
+    let app = workspace.join("my_app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "my-app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[dependencies]
+opentelemetry = "0.32.0"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        r#"fn work() -> u32 { 123 }
+
+fn main() {
+    println!("SERVER_OUTPUT={}", work());
+}
+"#,
+    )
+    .unwrap();
+
+    let before_snapshot = snapshot_tree(workspace);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args([
+            "--",
+            "run",
+            "--package",
+            "my-app",
+            "--bin",
+            "server",
+            "--offline",
+        ])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("run server binary");
+
+    assert_success(&output, "run server binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("SERVER_OUTPUT=123"),
+        "expected successful execution of server binary:\n{stdout}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("crate=server] selecting native OpenTelemetry emitter"),
+        "target name 'server' from package 'my-app' must select native OpenTelemetry emitter:\n{stderr}"
+    );
+
+    let after_snapshot = snapshot_tree(workspace);
+    assert_eq!(
+        before_snapshot, after_snapshot,
+        "source and manifest files must remain byte-identical before and after build"
+    );
+}
+
+// 9. Missing artifact feature information unit test:
+// Construct Cargo compiler-artifact JSON messages without features or with null features.
+// Proves they are not accepted as feature-safe native evidence, and native resolution fails open.
+#[test]
+fn test_h2_missing_artifact_features_fails_open() {
+    use cargo_instrument::SessionPlan;
+    let temp = tempfile::tempdir().expect("create tempdir");
+    let dep_dir = temp.path().join("dep");
+    fs::create_dir_all(&dep_dir).unwrap();
+    let source = dep_dir.join("src/lib.rs");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, "pub fn work() {}\n").unwrap();
+    let rlib = temp.path().join("libopentelemetry-nofeats.rlib");
+    fs::write(&rlib, b"nofeats artifact").unwrap();
+
+    let dep_id = "dep 0.1.0 (path+file:///dep)";
+    let otel_id = "registry+https://example.invalid#index#opentelemetry@0.32.0";
+    let metadata = serde_json::json!({
+        "packages": [
+            {"id": dep_id, "name": "dep", "version": "0.1.0"},
+            {"id": otel_id, "name": "opentelemetry", "version": "0.32.0"}
+        ],
+        "resolve": {"nodes": [
+            {"id": otel_id, "features": ["trace"]}
+        ]}
+    });
+
+    let mut plan = SessionPlan::default();
+    plan.package_manifest_dirs
+        .insert(dep_id.to_string(), dep_dir);
+    plan.r4_otel_package_by_dependency
+        .insert(dep_id.to_string(), otel_id.to_string());
+    plan.r4_required_features_by_dependency
+        .insert(dep_id.to_string(), vec!["trace".to_string()]);
+
+    // Compiler-artifact message lacking "features" key
+    let message_missing_features = serde_json::json!({
+        "reason": "compiler-artifact",
+        "package_id": otel_id,
+        "filenames": [rlib],
+        "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
+    });
+
+    plan.add_r4_artifacts_from_cargo_json(
+        &metadata,
+        format!("{message_missing_features}\n").as_bytes(),
+        None,
+    )
+    .expect("process artifact message");
+
+    assert!(
+        plan.r4_native_otel_artifacts.is_empty(),
+        "artifact without 'features' key must not be accepted as native evidence"
+    );
+
+    let err = plan.r4_native_otel_artifact_for(&source, &[]).unwrap_err();
+    assert!(
+        err.contains("no Cargo-authoritative OpenTelemetry artifact"),
+        "missing feature artifact must fail open: {err}"
+    );
+
+    // Compiler-artifact message with "features": null
+    let message_null_features = serde_json::json!({
+        "reason": "compiler-artifact",
+        "package_id": otel_id,
+        "filenames": [rlib],
+        "features": null,
+        "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
+    });
+
+    plan.add_r4_artifacts_from_cargo_json(
+        &metadata,
+        format!("{message_null_features}\n").as_bytes(),
+        None,
+    )
+    .expect("process artifact message with null features");
+
+    assert!(
+        plan.r4_native_otel_artifacts.is_empty(),
+        "artifact with 'features': null must not be accepted as native evidence"
     );
 }
