@@ -236,17 +236,27 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                     } else if use_sentinel {
                                         Some(Box::new(SentinelEmitter))
                                     } else if role == CrateRole::Application {
-                                        if has_otel
-                                            && session_plan.package_has_otel_trace(crate_name)
-                                        {
+                                        if has_otel && r4_native_otel_rlib.is_some() {
+                                            if config.debug_output {
+                                                eprintln!(
+                                                    "[cargo-instrument PID={} crate={crate_name}] selecting native OpenTelemetry emitter",
+                                                    std::process::id()
+                                                );
+                                            }
                                             Some(Box::new(NativeOtelEmitter::new(crate_name)))
                                         } else if native_otel_enforced {
                                             eprintln!(
-                                                    "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry' with 'trace' feature. \
-                                                    Skipping instrumentation per S11 fail-open."
-                                                );
+                                                "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry' with 'trace' feature. \
+                                                 Skipping instrumentation per S11 fail-open."
+                                            );
                                             None
                                         } else if has_otel_shim {
+                                            if config.debug_output {
+                                                eprintln!(
+                                                    "[cargo-instrument PID={} crate={crate_name}] selecting Tier-2 C-ABI emitter",
+                                                    std::process::id()
+                                                );
+                                            }
                                             Some(Box::new(TrampolineEmitter::new(
                                                 crate_name,
                                                 invocation.unit.edition().map(String::from),
@@ -298,18 +308,20 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
 
                                     if let Some(emitter) = emitter {
                                         if let Some(otel_rlib) = r4_native_otel_rlib {
-                                            if config.debug_output {
-                                                eprintln!(
-                                                    "[cargo-instrument PID={} crate={crate_name}] injecting --extern opentelemetry={}",
-                                                    std::process::id(),
+                                            if !has_otel {
+                                                if config.debug_output {
+                                                    eprintln!(
+                                                        "[cargo-instrument PID={} crate={crate_name}] injecting --extern opentelemetry={}",
+                                                        std::process::id(),
+                                                        otel_rlib.display()
+                                                    );
+                                                }
+                                                args_to_run.push("--extern".to_string());
+                                                args_to_run.push(format!(
+                                                    "opentelemetry={}",
                                                     otel_rlib.display()
-                                                );
+                                                ));
                                             }
-                                            args_to_run.push("--extern".to_string());
-                                            args_to_run.push(format!(
-                                                "opentelemetry={}",
-                                                otel_rlib.display()
-                                            ));
                                         }
                                         match mirror_and_transform_crate_sources(
                                             &current_dir,

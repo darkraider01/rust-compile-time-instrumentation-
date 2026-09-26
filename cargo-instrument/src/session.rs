@@ -106,22 +106,36 @@ pub struct SessionPlan {
     /// that reaches it. Omitted when roots disagree or no target-safe choice exists.
     #[serde(default)]
     pub r4_otel_package_by_dependency: HashMap<String, String>,
-    /// Dependency package id -> expected resolved features for the OpenTelemetry artifact.
-    #[serde(default)]
-    pub r4_expected_features_by_dependency: HashMap<String, Vec<String>>,
-    /// Set of package names that declare a dependency on opentelemetry with the "trace" feature enabled.
-    #[serde(default)]
-    pub packages_with_otel_trace: HashSet<String>,
+    /// Dependency package id -> features required on the OpenTelemetry artifact for native injection.
+    #[serde(default, alias = "r4_expected_features_by_dependency")]
+    pub r4_required_features_by_dependency: HashMap<String, Vec<String>>,
     /// Exact Cargo-reported artifacts available to the R-4 resolver.
     #[serde(default)]
     pub r4_native_otel_artifacts: Vec<R4NativeOtelArtifact>,
 }
 
 impl SessionPlan {
-    /// Returns true if the package declares a dependency on opentelemetry with the "trace" feature enabled.
-    pub fn package_has_otel_trace(&self, package_name: &str) -> bool {
-        self.packages_with_otel_trace
-            .contains(&package_name.replace('-', "_"))
+    /// Authoritatively resolves whether the current application unit is eligible for native OpenTelemetry emission.
+    ///
+    /// The unit is eligible if and only if:
+    /// 1. An active `--extern opentelemetry=...` was provided to rustc (`has_otel`).
+    /// 2. Its source file authoritatively maps to a Cargo package ID via `package_manifest_dirs`.
+    /// 3. The exact OpenTelemetry artifact for this package, target, and profile exists,
+    ///    was produced by Cargo, matches the extern rlib path (if specified), and its
+    ///    authoritative `compiler-artifact["features"]` includes every required feature (`trace`).
+    pub fn application_has_native_otel_trace(
+        &self,
+        source_file: &Path,
+        rustc_args: &[String],
+        has_otel: bool,
+    ) -> bool {
+        if !has_otel {
+            return false;
+        }
+        self.r4_native_otel_artifact_for(source_file, rustc_args)
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Returns true if the package is compiled exclusively for the host
@@ -179,25 +193,6 @@ impl SessionPlan {
         cargo_messages: &[u8],
         target: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let features_by_package = metadata["resolve"]["nodes"]
-            .as_array()
-            .map(|nodes| {
-                nodes
-                    .iter()
-                    .filter_map(|node| {
-                        let id = node["id"].as_str()?;
-                        let mut features: Vec<String> = node["features"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|feature| feature.as_str().map(String::from))
-                            .collect();
-                        features.sort();
-                        Some((id.to_string(), features))
-                    })
-                    .collect::<HashMap<_, _>>()
-            })
-            .unwrap_or_default();
         let versions_by_package = metadata["packages"]
             .as_array()
             .map(|packages| {
@@ -267,23 +262,17 @@ impl SessionPlan {
                     .unwrap_or(false),
                 test: message["profile"]["test"].as_bool().unwrap_or(false),
             };
-            let artifact_features = message["features"]
-                .as_array()
-                .map(|arr| {
-                    let mut feats: Vec<String> = arr
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect();
-                    feats.sort();
-                    feats.dedup();
-                    feats
-                })
-                .unwrap_or_else(|| {
-                    features_by_package
-                        .get(package_id)
-                        .cloned()
-                        .unwrap_or_default()
-                });
+            let Some(feature_array) = message["features"].as_array() else {
+                // H2: compiler-artifact["features"] must be present and valid.
+                // Missing or malformed feature information fails open; do not register.
+                continue;
+            };
+            let mut artifact_features: Vec<String> = feature_array
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            artifact_features.sort();
+            artifact_features.dedup();
 
             artifacts.push(R4NativeOtelArtifact {
                 package_id: package_id.to_string(),
@@ -336,7 +325,19 @@ impl SessionPlan {
             .iter()
             .filter(|(_, manifest_dir)| source_file.starts_with(manifest_dir.as_path()))
             .max_by_key(|(_, manifest_dir)| manifest_dir.components().count())
-            .map(|(package_id, _)| package_id);
+            .map(|(package_id, _)| package_id)
+            .or_else(|| {
+                let canon_source = fs::canonicalize(source_file).ok()?;
+                self.package_manifest_dirs
+                    .iter()
+                    .filter(|(_, manifest_dir)| {
+                        fs::canonicalize(manifest_dir)
+                            .map(|c_dir| canon_source.starts_with(&c_dir))
+                            .unwrap_or(false)
+                    })
+                    .max_by_key(|(_, manifest_dir)| manifest_dir.components().count())
+                    .map(|(package_id, _)| package_id)
+            });
         let Some(package_id) = package_id else {
             return Ok(None);
         };
@@ -360,29 +361,39 @@ impl SessionPlan {
                 self.r4_native_otel_artifacts,
             )),
             [artifact] if artifact.rlib_path.is_file() => {
-                // Invariant 1: Mandatory "trace" feature for native R-4 injection
-                if !artifact.resolved_features.iter().any(|f| f == "trace") {
+                // Invariant 1: Required features match (at minimum "trace")
+                let default_required = vec!["trace".to_string()];
+                let required = self
+                    .r4_required_features_by_dependency
+                    .get(package_id)
+                    .unwrap_or(&default_required);
+                let missing: Vec<_> = required
+                    .iter()
+                    .filter(|req| !artifact.resolved_features.iter().any(|f| f == req.as_str()))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
                     return Err(format!(
-                        "Cargo-authoritative OpenTelemetry artifact '{}' for package '{otel_package_id}' lacks required 'trace' feature; resolved features: {:?}",
+                        "Cargo-authoritative OpenTelemetry artifact '{}' for package '{otel_package_id}' lacks required 'trace' feature; missing required feature(s): {missing:?}; resolved features: {:?}",
                         artifact.rlib_path.display(),
                         artifact.resolved_features,
                     ));
                 }
-                // Invariant 2: Expected features match (if expected features recorded)
-                if let Some(expected_features) = self.r4_expected_features_by_dependency.get(package_id) {
-                    let missing: Vec<_> = expected_features
-                        .iter()
-                        .filter(|f| !artifact.resolved_features.contains(f))
-                        .cloned()
-                        .collect();
-                    if !missing.is_empty() {
+
+                // Invariant 2: Active rustc --extern path match (if specified)
+                if let Some(extern_path) = extern_crate_path(rustc_args, "opentelemetry") {
+                    let same_file = artifact.rlib_path.file_name().is_some()
+                        && artifact.rlib_path.file_name() == extern_path.file_name();
+                    let same_path = artifact.rlib_path == extern_path;
+                    if !same_file && !same_path {
                         return Err(format!(
-                            "Cargo-authoritative OpenTelemetry artifact '{}' for package '{otel_package_id}' has feature mismatch; missing expected feature(s): {missing:?}; resolved features: {:?}",
+                            "Cargo-reported OpenTelemetry artifact '{}' does not match active rustc --extern '{}'",
                             artifact.rlib_path.display(),
-                            artifact.resolved_features,
+                            extern_path.display()
                         ));
                     }
                 }
+
                 Ok(Some(*artifact))
             }
             [artifact] => Err(format!(
@@ -394,7 +405,44 @@ impl SessionPlan {
             )),
         }
     }
+}
 
+/// Extracts the path to a specific extern crate from rustc arguments if provided with `=<path>`.
+pub fn extern_crate_path(rustc_args: &[String], crate_name: &str) -> Option<PathBuf> {
+    let mut i = 0;
+    while i < rustc_args.len() {
+        let arg = &rustc_args[i];
+        if arg == "--extern" {
+            if i + 1 < rustc_args.len() {
+                let spec = &rustc_args[i + 1];
+                if let Some(path) = parse_extern_spec_path(spec, crate_name) {
+                    return Some(path);
+                }
+                i += 2;
+                continue;
+            }
+        } else if let Some(spec) = arg.strip_prefix("--extern=") {
+            if let Some(path) = parse_extern_spec_path(spec, crate_name) {
+                return Some(path);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn parse_extern_spec_path(spec: &str, crate_name: &str) -> Option<PathBuf> {
+    let (name_part, path_part) = spec.split_once('=')?;
+    let actual_name = name_part.rsplit(':').next().unwrap_or(name_part);
+    if actual_name == crate_name || actual_name.replace('-', "_") == crate_name.replace('-', "_") {
+        let path_str = path_part.trim_matches('"');
+        Some(PathBuf::from(path_str))
+    } else {
+        None
+    }
+}
+
+impl SessionPlan {
     /// Compute a SHA-256 fingerprint over Cargo.lock and all workspace/local Cargo.toml manifests.
     pub fn compute_fingerprint(workspace_root: &Path, manifest_paths: &[PathBuf]) -> String {
         let mut hasher = Sha256::new();
@@ -743,8 +791,7 @@ impl SessionPlan {
                     package_manifest_dirs,
                     target_reachable_package_ids: HashSet::new(),
                     r4_otel_package_by_dependency: HashMap::new(),
-                    r4_expected_features_by_dependency: HashMap::new(),
-                    packages_with_otel_trace: HashSet::new(),
+                    r4_required_features_by_dependency: HashMap::new(),
                     r4_native_otel_artifacts: Vec::new(),
                 });
             }
@@ -902,7 +949,7 @@ impl SessionPlan {
         // resolves exactly one, identical OpenTelemetry package id. Metadata package ids carry
         // the source/version identity; a disagreement is deliberately left unmapped.
         let mut r4_otel_package_by_dependency = HashMap::new();
-        let mut r4_expected_features_by_dependency = HashMap::new();
+        let mut r4_required_features_by_dependency = HashMap::new();
         for dependency_id in &target_reachable_ids {
             let root_otel_ids: Vec<HashSet<String>> = target_root_reachability
                 .iter()
@@ -933,7 +980,7 @@ impl SessionPlan {
                 let mut expected = vec!["trace".to_string()];
                 expected.sort();
                 expected.dedup();
-                r4_expected_features_by_dependency.insert(dependency_id.clone(), expected);
+                r4_required_features_by_dependency.insert(dependency_id.clone(), expected);
             }
         }
 
@@ -962,28 +1009,6 @@ impl SessionPlan {
             }
         }
 
-        let mut packages_with_otel_trace: HashSet<String> = HashSet::new();
-        for pkg in packages {
-            if let Some(pkg_name) = pkg["name"].as_str() {
-                if let Some(deps) = pkg["dependencies"].as_array() {
-                    for dep in deps {
-                        if dep["name"].as_str() == Some("opentelemetry") {
-                            let uses_default =
-                                dep["uses_default_features"].as_bool().unwrap_or(true);
-                            let has_trace = uses_default
-                                || dep["features"]
-                                    .as_array()
-                                    .map(|feats| feats.iter().any(|f| f.as_str() == Some("trace")))
-                                    .unwrap_or(false);
-                            if has_trace {
-                                packages_with_otel_trace.insert(pkg_name.replace('-', "_"));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
 
         Ok(Self {
@@ -997,8 +1022,7 @@ impl SessionPlan {
             package_manifest_dirs,
             target_reachable_package_ids: target_reachable_ids,
             r4_otel_package_by_dependency,
-            r4_expected_features_by_dependency,
-            packages_with_otel_trace,
+            r4_required_features_by_dependency,
             r4_native_otel_artifacts: Vec::new(),
         })
     }
@@ -1453,6 +1477,7 @@ mod tests {
             "reason": "compiler-artifact",
             "package_id": otel_id,
             "filenames": [rlib],
+            "features": ["trace", "testing"],
             "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
         });
         plan.add_r4_artifacts_from_cargo_json(&metadata, format!("{message}\n").as_bytes(), None)
