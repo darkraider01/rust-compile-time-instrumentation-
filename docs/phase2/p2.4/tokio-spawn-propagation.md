@@ -99,6 +99,38 @@ The wrapper does not inject synthetic intermediate spans (e.g. `tokio.spawn` or 
 
 $$\text{app\_parent} \longrightarrow \text{dep\_r4::async\_work}$$
 
+### 2.7 H3: Cargo-Authoritative Tokio Package Identity Verification
+
+An active rustc `--extern tokio` binding name alone is **insufficient identity proof**. In Cargo, dependency renames allow an arbitrary foreign package to be bound to the crate name `tokio`:
+
+```toml
+[dependencies]
+tokio = { package = "fake-runtime", path = "../fake-runtime" }
+```
+
+Under such a rename, the compiler receives `--extern tokio=...`, and the source may contain syntactic calls to `tokio::spawn(...)`. However, that API has no relationship to Tokio, and wrapping it with `opentelemetry::trace::FutureExt::with_context` would introduce broken dependencies or invalid types.
+
+To resolve **H3**, `cargo-instrument` enforces an authoritative identity model distinguishing five distinct concepts:
+
+| Concept | Definition | Example | Identity Role |
+| :--- | :--- | :--- | :--- |
+| **rustc extern binding name** | Flag passed to `rustc` (`--extern <name>=...`) | `tokio` | Necessary gate: compiler exposes binding. Insufficient alone. |
+| **Cargo dependency binding name** | Alias declared in `Cargo.toml` / `resolve.nodes[].deps[].name` | `tokio` | Binds the current unit's local import space. |
+| **Cargo package ID** | Globally unique package instance in resolve graph | `registry+...#tokio@1.43.0` | Disambiguates instance across graph. |
+| **Cargo package name** | True package name in manifest `packages[].name` | `tokio` vs `fake-runtime` | Authoritative package identity proof. |
+| **Source syntax** | Spelled path in source AST | `tokio::spawn(...)` | Syntactic candidate for call-site wrapping. |
+
+#### Authoritative Invariant
+Automatic Tokio spawn propagation runs **if and only if** all 6 conditions are proven:
+1. `rustc` actually supplies an extern binding named `tokio`.
+2. The current wrapped unit resolves to an exact Cargo package ID via `package_manifest_dirs` longest-prefix match.
+3. That Cargo package has a dependency edge in Cargo metadata `resolve.nodes[].deps[]` whose binding name is `tokio`.
+4. That dependency edge resolves to an exact Cargo package ID.
+5. That target package's true Cargo package name is `tokio`.
+6. The spawn site passes conservative lexical, shadow, and structural idempotence checks.
+
+If any link in this proof is missing, foreign, or ambiguous, `report.spawn_sites` is cleared and no rewriting occurs (conservative no-transformation).
+
 ---
 
 ## 3. Verification & Evidence
@@ -115,6 +147,8 @@ A dedicated integration test suite in `cargo-instrument/tests/tokio_spawn_tests.
 6. `test_transform_nested_tokio_spawns`: Verifies nested `tokio::spawn` calls are both wrapped without offset drift or overlapping edit collisions.
 7. `test_transform_spawn_only_file_with_zero_candidates`: Verifies a file with zero eligible candidates (e.g. `#[inline]` functions) and an active spawn transforms cleanly.
 8. `test_runtime_multi_thread_context_propagation`: Proves runtime multi-threaded propagation across nested spawns under an active parent span with zero active context leaks and exact trace ancestry.
+9. `test_h3_metadata_identity_proof_all_adversarial_cases`: Full multi-case adversarial unit suite verifying that real Tokio is proved, fake package renamed to `tokio` is rejected, Tokio renamed away to `my_tokio` is rejected, Tokio elsewhere in workspace is rejected, multiple Tokio versions resolve strictly per unit edge, and unknown units fail open safely.
+10. `test_h3_adversarial_fake_runtime_renamed_to_tokio_live_cargo_build`: Live Cargo workspace integration proof where an application crate depends on `tokio = { package = "fake-runtime", path = "..." }` and calls `tokio::spawn`. Proves the wrapper detects the foreign package identity, logs suppression, leaves the spawn site unwrapped, transforms legitimate function candidates, and the binary compiles and runs cleanly.
 
 ### 3.2 End-to-End Multi-Crate Integration Proof (`r4_extern_injection_tests.rs`)
 

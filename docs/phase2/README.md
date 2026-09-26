@@ -50,9 +50,10 @@ Phase 2 - Production Hardening (In Progress)
           │       ├── R-4 investigation: `--extern` injection vs C-ABI / R-1 / R-2  ✅ Resolved (Hybrid Fallback)
           │       ├── H1 production orchestration (Cargo pre-pass & selective clean) ✅ Complete
           │       ├── H2 feature-safe native OpenTelemetry selection                 ✅ Complete
+          │       ├── H3 Cargo-authoritative Tokio package identity                  ✅ Complete
           │       ├── Async context propagation (#5) & `tokio::spawn` (#6)           ✅ Complete
-          │       ├── Stream / Sink instrumentation & cancellation lifecycle (#7, #8) ⬜ Planned
-          │       └── Opt-in integration (`--with-dependencies` / env flag) (#4)     ⬜ Planned
+          │       ├── Opt-in integration (`--with-dependencies` / env flag) (#4)     ⬜ Planned (ACTIVE NEXT)
+          │       └── Stream / Sink instrumentation & cancellation lifecycle (#7, #8) ⬜ Planned
           └── P2.5 Large Graphs & Cross-Platform Validation         ⬜ Planned
                   ├── Multi-crate workspace scale & opt-in graph scale (≥100 units)
                   ├── Tracer caching (`OnceLock`)
