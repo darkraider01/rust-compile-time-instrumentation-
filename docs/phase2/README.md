@@ -549,7 +549,7 @@ Not all Rust function forms are automatically instrumented. The semantic boundar
 
 #### Key Focus Areas
 
-1. **R-4 Resolution ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)):** Resolved (**Hybrid Fallback**). Native `--extern` injection is adopted for deterministically resolved compatible units, while the Tier-2 C ABI (`otel-shim`) is retained as the required fallback for multi-version or ambiguous units. Full evidence in [`r4-extern-injection-spike.md`](p2.4/r4-extern-injection-spike.md).
+1. **R-4 Resolution ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)):** Resolved (**Hybrid Fallback**). Native `--extern` injection is adopted for deterministically resolved compatible units, while the Tier-2 C ABI (`otel-shim`) is retained as the required fallback for multi-version or ambiguous units. Full evidence in [`r4-extern-injection-spike.md`](p2.4/r4-extern-injection-spike.md); production CLI orchestration, incomplete pre-pass recovery architecture, and 13-scenario validation matrix in [`h1-production-orchestration.md`](p2.4/h1-production-orchestration.md).
 2. **Async Dependency Context Propagation & Trampolines:**
    - **Future Suspension & Thread Migration:** Verified. Native `FutureExt::with_context` deterministically preserves OpenTelemetry context across suspension, resumption, and cross-thread migration ([`async-context-propagation.md`](p2.4/async-context-propagation.md)).
    - `tokio::spawn` context propagation via spawn-site context capture and span links ([ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls)) — Issue #6.
