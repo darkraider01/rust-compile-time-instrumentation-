@@ -83,7 +83,6 @@ fn test_h2_adversarial_feature_metrics_only_lacks_trace() {
 
     let shim = workspace.join("otel-shim");
     write_shim(&shim);
-    let shim_path = shim.to_string_lossy().replace('\\', "/");
 
     fs::write(
         workspace.join("Cargo.toml"),
@@ -116,18 +115,16 @@ edition = "2021"
     fs::create_dir_all(root_metrics.join("src")).unwrap();
     fs::write(
         root_metrics.join("Cargo.toml"),
-        format!(
-            r#"[package]
+        r#"[package]
 name = "root_metrics"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dep_shared = {{ path = "../dep_shared" }}
-opentelemetry = {{ version = "0.32.0", default-features = false, features = ["metrics"] }}
-otel-shim = {{ path = "{shim_path}" }}
-"#
-        ),
+dep_shared = { path = "../dep_shared" }
+opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }
+otel-shim = { path = "../otel-shim" }
+"#,
     )
     .unwrap();
     fs::write(
@@ -183,7 +180,6 @@ fn test_h2_valid_native_artifact_selected() {
 
     let shim = workspace.join("otel-shim");
     write_shim(&shim);
-    let shim_path = shim.to_string_lossy().replace('\\', "/");
 
     fs::write(
         workspace.join("Cargo.toml"),
@@ -216,18 +212,16 @@ edition = "2021"
     fs::create_dir_all(root_native.join("src")).unwrap();
     fs::write(
         root_native.join("Cargo.toml"),
-        format!(
-            r#"[package]
+        r#"[package]
 name = "root_native"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dep_shared = {{ path = "../dep_shared" }}
+dep_shared = { path = "../dep_shared" }
 opentelemetry = "0.32.0"
-otel-shim = {{ path = "{shim_path}" }}
-"#
-        ),
+otel-shim = { path = "../otel-shim" }
+"#,
     )
     .unwrap();
     fs::write(
@@ -281,7 +275,6 @@ fn test_h2_workspace_feature_unification_enables_native() {
 
     let shim = workspace.join("otel-shim");
     write_shim(&shim);
-    let shim_path = shim.to_string_lossy().replace('\\', "/");
 
     fs::write(
         workspace.join("Cargo.toml"),
@@ -314,18 +307,16 @@ edition = "2021"
     fs::create_dir_all(root_native.join("src")).unwrap();
     fs::write(
         root_native.join("Cargo.toml"),
-        format!(
-            r#"[package]
+        r#"[package]
 name = "root_native"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dep_shared = {{ path = "../dep_shared" }}
+dep_shared = { path = "../dep_shared" }
 opentelemetry = "0.32.0"
-otel-shim = {{ path = "{shim_path}" }}
-"#
-        ),
+otel-shim = { path = "../otel-shim" }
+"#,
     )
     .unwrap();
     fs::write(
@@ -342,18 +333,16 @@ otel-shim = {{ path = "{shim_path}" }}
     fs::create_dir_all(root_metrics.join("src")).unwrap();
     fs::write(
         root_metrics.join("Cargo.toml"),
-        format!(
-            r#"[package]
+        r#"[package]
 name = "root_metrics"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-dep_shared = {{ path = "../dep_shared" }}
-opentelemetry = {{ version = "0.32.0", default-features = false, features = ["metrics"] }}
-otel-shim = {{ path = "{shim_path}" }}
-"#
-        ),
+dep_shared = { path = "../dep_shared" }
+opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }
+otel-shim = { path = "../otel-shim" }
+"#,
     )
     .unwrap();
     fs::write(
