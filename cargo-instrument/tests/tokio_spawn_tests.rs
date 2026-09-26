@@ -477,3 +477,311 @@ async fn test_runtime_multi_thread_context_propagation() {
         "no active context leak on caller thread"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 7. H3: Cargo-authoritative Tokio package identity verification
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_h3_metadata_identity_proof_all_adversarial_cases() {
+    use cargo_instrument::session::{CargoDepEdge, SessionPlan};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let real_app_dir = temp.path().join("real_app");
+    let fake_app_dir = temp.path().join("fake_app");
+    let renamed_app_dir = temp.path().join("renamed_app");
+    let unrelated_app_dir = temp.path().join("unrelated_app");
+    let multi_v02_dir = temp.path().join("multi_v02");
+    std::fs::create_dir_all(real_app_dir.join("src")).unwrap();
+    std::fs::create_dir_all(fake_app_dir.join("src")).unwrap();
+    std::fs::create_dir_all(renamed_app_dir.join("src")).unwrap();
+    std::fs::create_dir_all(unrelated_app_dir.join("src")).unwrap();
+    std::fs::create_dir_all(multi_v02_dir.join("src")).unwrap();
+
+    let real_src = real_app_dir.join("src/lib.rs");
+    let fake_src = fake_app_dir.join("src/lib.rs");
+    let renamed_src = renamed_app_dir.join("src/lib.rs");
+    let unrelated_src = unrelated_app_dir.join("src/lib.rs");
+    let v02_src = multi_v02_dir.join("src/lib.rs");
+
+    let real_id = "real-app 0.1.0 (path+file:///real_app)";
+    let fake_app_id = "fake-app 0.1.0 (path+file:///fake_app)";
+    let renamed_app_id = "renamed-app 0.1.0 (path+file:///renamed_app)";
+    let unrelated_app_id = "unrelated-app 0.1.0 (path+file:///unrelated_app)";
+    let v02_id = "multi-v02 0.1.0 (path+file:///multi_v02)";
+
+    let tokio_v1_id = "registry+https://example.invalid#index#tokio@1.43.0";
+    let tokio_v02_id = "registry+https://example.invalid#index#tokio@0.2.25";
+    let fake_runtime_id = "path+file:///fake-runtime#0.1.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(real_id.to_string(), real_app_dir);
+    package_manifest_dirs.insert(fake_app_id.to_string(), fake_app_dir);
+    package_manifest_dirs.insert(renamed_app_id.to_string(), renamed_app_dir);
+    package_manifest_dirs.insert(unrelated_app_id.to_string(), unrelated_app_dir);
+    package_manifest_dirs.insert(v02_id.to_string(), multi_v02_dir);
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(real_id.to_string(), "real-app".to_string());
+    package_names_by_id.insert(fake_app_id.to_string(), "fake-app".to_string());
+    package_names_by_id.insert(renamed_app_id.to_string(), "renamed-app".to_string());
+    package_names_by_id.insert(unrelated_app_id.to_string(), "unrelated-app".to_string());
+    package_names_by_id.insert(v02_id.to_string(), "multi-v02".to_string());
+    package_names_by_id.insert(tokio_v1_id.to_string(), "tokio".to_string());
+    package_names_by_id.insert(tokio_v02_id.to_string(), "tokio".to_string());
+    package_names_by_id.insert(fake_runtime_id.to_string(), "fake-runtime".to_string());
+
+    let mut package_dependencies = HashMap::new();
+
+    // 1. Real app depends on tokio@1.43.0 with binding name "tokio"
+    package_dependencies.insert(
+        real_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_v1_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    // 2. Fake app has tokio = { package = "fake-runtime", ... } (binding name is "tokio", but package is fake-runtime)
+    package_dependencies.insert(
+        fake_app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: fake_runtime_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    // 3. Renamed app has my_tokio = { package = "tokio", ... } (binding name is "my_tokio")
+    package_dependencies.insert(
+        renamed_app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "my_tokio".to_string(),
+            package_id: tokio_v1_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    // 4. Unrelated app has no tokio dependency
+    package_dependencies.insert(unrelated_app_id.to_string(), vec![]);
+
+    // 5. Multi-version app depends on tokio@0.2.25 with binding name "tokio"
+    package_dependencies.insert(
+        v02_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_v02_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        ..Default::default()
+    };
+
+    let tokio_args = vec![
+        "--extern".to_string(),
+        "tokio=target/libtokio.rlib".to_string(),
+    ];
+    let my_tokio_args = vec![
+        "--extern".to_string(),
+        "my_tokio=target/libtokio.rlib".to_string(),
+    ];
+
+    // Case 1: Real Tokio -> accepted
+    assert!(
+        plan.unit_has_real_tokio_binding(&real_src, &tokio_args),
+        "real Tokio binding must be proved and accepted"
+    );
+
+    // Case 2: Fake package renamed to tokio -> rejected
+    assert!(
+        !plan.unit_has_real_tokio_binding(&fake_src, &tokio_args),
+        "fake runtime renamed to tokio must be rejected"
+    );
+
+    // Case 3: Actual Tokio renamed away to my_tokio -> rejected (syntax and binding require 'tokio')
+    assert!(
+        !plan.unit_has_real_tokio_binding(&renamed_src, &my_tokio_args),
+        "renamed tokio binding (my_tokio) must not be accepted for tokio::spawn propagation"
+    );
+    // Also verify conservative AST recognition ignores my_tokio::spawn
+    let renamed_ast = analyze_source_str(
+        "renamed_app",
+        &renamed_src,
+        "fn run() { my_tokio::spawn(async { 1 }); }",
+    )
+    .expect("parse source");
+    assert!(
+        renamed_ast.spawn_sites.is_empty(),
+        "syntactic recognizer must only match tokio::spawn, not my_tokio::spawn"
+    );
+
+    // Case 4: Tokio elsewhere in graph -> rejected for unit without dependency
+    assert!(
+        !plan.unit_has_real_tokio_binding(&unrelated_src, &tokio_args),
+        "tokio elsewhere in graph must not enable unit lacking tokio dependency"
+    );
+
+    // Case 5: Multiple Tokio versions -> resolves per edge (v0.2 accepted for multi_v02)
+    assert!(
+        plan.unit_has_real_tokio_binding(&v02_src, &tokio_args),
+        "independent tokio version edge must resolve per package edge"
+    );
+
+    // Case 6: Unknown/stale unit -> rejected
+    let unknown_src = temp.path().join("unknown/src/lib.rs");
+    assert!(
+        !plan.unit_has_real_tokio_binding(&unknown_src, &tokio_args),
+        "unknown unit must be rejected safely"
+    );
+}
+
+#[test]
+fn test_h3_adversarial_fake_runtime_renamed_to_tokio_live_cargo_build() {
+    use std::fs;
+    use std::process::Command;
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let workspace_root = temp_dir.path();
+
+    // 1. Create fake-runtime crate
+    let fake_runtime_dir = workspace_root.join("fake_runtime");
+    fs::create_dir_all(fake_runtime_dir.join("src")).expect("create fake_runtime/src");
+    fs::write(
+        fake_runtime_dir.join("Cargo.toml"),
+        r#"[package]
+name = "fake-runtime"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .expect("write fake_runtime Cargo.toml");
+
+    fs::write(
+        fake_runtime_dir.join("src/lib.rs"),
+        r#"pub fn spawn<F>(f: F)
+where
+    F: Send + 'static,
+{
+    let _ = f;
+}
+"#,
+    )
+    .expect("write fake_runtime src/lib.rs");
+
+    // 2. Create app crate depending on fake-runtime renamed to tokio
+    let app_dir = workspace_root.join("app");
+    fs::create_dir_all(app_dir.join("src")).expect("create app/src");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { package = "fake-runtime", path = "../fake_runtime" }
+"#,
+    )
+    .expect("write app Cargo.toml");
+
+    fs::write(
+        app_dir.join("src/main.rs"),
+        r#"fn work() -> i32 {
+    100
+}
+
+fn main() {
+    let w = work();
+    assert_eq!(w, 100);
+    tokio::spawn(async {
+        42
+    });
+}
+"#,
+    )
+    .expect("write app src/main.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let target_dir = workspace_root.join("target").join("instrumented");
+
+    // 3. Build with cargo-instrument as RUSTC_WRAPPER
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .current_dir(&app_dir)
+        .env("RUSTC_WRAPPER", cargo_instrument_bin)
+        .env("CARGO_INSTRUMENT_WRAPPER_MODE", "1")
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("execute wrapped cargo build");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "Wrapped cargo build failed! stderr:\n{stderr}"
+    );
+
+    // 4. Assert that H3 identity check suppressed tokio::spawn rewriting
+    assert!(
+        stderr.contains("suppressed 1 tokio::spawn site(s): unit lacks Cargo-authoritative Tokio package binding"),
+        "Wrapper should log suppression of tokio::spawn site for fake runtime. stderr:\n{stderr}"
+    );
+
+    // 5. Inspect mirrored main.rs: functions transformed, but spawn NOT rewritten
+    let instrumented_sources = target_dir
+        .join("debug")
+        .join("deps")
+        .join("instrumented_sources");
+
+    let app_pkg_dir = fs::read_dir(&instrumented_sources)
+        .ok()
+        .and_then(|entries| {
+            entries.flatten().map(|e| e.path()).find(|p| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                name == "app" || name.starts_with("app-")
+            })
+        });
+
+    if let Some(mirrored_dir) = app_pkg_dir {
+        let mirrored_main =
+            fs::read_to_string(mirrored_dir.join("src/main.rs")).expect("read mirrored main.rs");
+        // Function candidate must be anchored
+        assert!(
+            mirrored_main.contains("/* __cargo_instrument_anchor: \"work\" */"),
+            "mirrored main.rs should instrument function candidate 'work'"
+        );
+        // Spawn must NOT be rewritten with FutureExt::with_context
+        assert!(
+            !mirrored_main.contains("FutureExt::with_context"),
+            "fake runtime tokio::spawn MUST NOT be rewritten with FutureExt::with_context"
+        );
+        assert!(
+            !mirrored_main.contains("opentelemetry::Context::current()"),
+            "fake runtime tokio::spawn MUST NOT inject OpenTelemetry Context::current()"
+        );
+        assert!(
+            mirrored_main.contains("tokio::spawn(async {"),
+            "original tokio::spawn call must remain intact"
+        );
+    }
+
+    // 6. Run the compiled binary to ensure it executes cleanly
+    let bin_name = if cfg!(windows) { "app.exe" } else { "app" };
+    let app_bin = target_dir.join("debug").join(bin_name);
+    let run_output = Command::new(&app_bin)
+        .output()
+        .expect("execute compiled app binary");
+    assert!(
+        run_output.status.success(),
+        "compiled app binary failed to run! stderr: {}",
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+}

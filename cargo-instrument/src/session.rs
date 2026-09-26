@@ -67,6 +67,18 @@ pub enum SkipCause {
 /// Global build session policy constructed once per Cargo build via `cargo metadata`.
 ///
 /// Cargo is responsible for scheduling, ordering, parallelism, and unit resolution.
+/// A dependency edge in Cargo's resolve graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CargoDepEdge {
+    /// The extern binding name exposed to rustc (e.g. "tokio" or a renamed alias).
+    pub binding_name: String,
+    /// The exact target Package ID.
+    pub package_id: String,
+    /// Dependency kinds (e.g. [None] for normal, [Some("dev")], [Some("build")]).
+    #[serde(default)]
+    pub kinds: Vec<Option<String>>,
+}
+
 /// `SessionPlan` provides identity and topology knowledge to the per-unit wrapper:
 /// 1. Whether any target root links `otel-shim` (preventing unresolved C-ABI trampolines).
 /// 2. Which packages are compiled exclusively for the host (preventing proc-macro dep instrumentation).
@@ -112,6 +124,12 @@ pub struct SessionPlan {
     /// Exact Cargo-reported artifacts available to the R-4 resolver.
     #[serde(default)]
     pub r4_native_otel_artifacts: Vec<R4NativeOtelArtifact>,
+    /// Authoritative mapping of package ID -> package name (e.g. "tokio", "fake-runtime").
+    #[serde(default)]
+    pub package_names_by_id: HashMap<String, String>,
+    /// Authoritative dependency edges per package ID from Cargo metadata resolve nodes.
+    #[serde(default)]
+    pub package_dependencies: HashMap<String, Vec<CargoDepEdge>>,
 }
 
 impl SessionPlan {
@@ -311,17 +329,10 @@ impl SessionPlan {
         Ok(())
     }
 
-    /// Resolves the exact native OpenTelemetry artifact for one wrapped dependency unit.
-    ///
-    /// `Ok(None)` means this package was not selected for R-4 native injection. `Err` is an
-    /// ambiguity, stale path, profile mismatch, or target mismatch and must fall open to Tier-2.
-    pub fn r4_native_otel_artifact_for(
-        &self,
-        source_file: &Path,
-        rustc_args: &[String],
-    ) -> Result<Option<&R4NativeOtelArtifact>, String> {
-        let package_id = self
-            .package_manifest_dirs
+    /// Authoritatively resolves the Cargo package ID for a given source file
+    /// by finding the longest matching manifest directory.
+    pub fn package_id_for_source(&self, source_file: &Path) -> Option<&String> {
+        self.package_manifest_dirs
             .iter()
             .filter(|(_, manifest_dir)| source_file.starts_with(manifest_dir.as_path()))
             .max_by_key(|(_, manifest_dir)| manifest_dir.components().count())
@@ -337,7 +348,72 @@ impl SessionPlan {
                     })
                     .max_by_key(|(_, manifest_dir)| manifest_dir.components().count())
                     .map(|(package_id, _)| package_id)
-            });
+            })
+    }
+
+    /// Authoritatively resolves whether the current compilation unit has an active
+    /// rustc `--extern tokio` binding backed by the genuine Cargo package `tokio`.
+    ///
+    /// Automatic Tokio spawn propagation may run only when ALL of:
+    /// 1. rustc actually supplies an extern binding named `tokio`
+    /// 2. current wrapped unit resolves to an exact Cargo package ID
+    /// 3. that Cargo package has a dependency edge whose binding name is `tokio`
+    /// 4. that dependency edge resolves to an exact Cargo package ID
+    /// 5. that package's Cargo package name is `tokio`
+    ///
+    /// If any part of this proof is missing, unresolvable, or ambiguous, returns `false`
+    /// so the spawn site is preserved unmodified (conservative no-transformation).
+    pub fn unit_has_real_tokio_binding(&self, source_file: &Path, rustc_args: &[String]) -> bool {
+        // Condition 1: rustc actually supplies an extern binding named `tokio`
+        if !rustc_has_extern_binding(rustc_args, "tokio") {
+            return false;
+        }
+
+        // Condition 2: current wrapped unit resolves to an exact Cargo package ID
+        let Some(package_id) = self.package_id_for_source(source_file) else {
+            return false;
+        };
+
+        // Condition 3 & 4: that Cargo package has a dependency edge whose binding name is `tokio`
+        // resolving to an exact Cargo package ID
+        let Some(deps) = self.package_dependencies.get(package_id) else {
+            return false;
+        };
+
+        let tokio_edges: Vec<&CargoDepEdge> = deps
+            .iter()
+            .filter(|edge| {
+                edge.binding_name == "tokio" || edge.binding_name.replace('-', "_") == "tokio"
+            })
+            .collect();
+
+        if tokio_edges.is_empty() {
+            return false;
+        }
+
+        // Condition 5: that package's Cargo package name is `tokio`
+        // Every candidate edge with binding name `tokio` must resolve to an exact package
+        // whose Cargo package name is `tokio`. If any edge resolves to a non-Tokio package
+        // (e.g. fake-runtime) or is unresolvable/ambiguous, reject conservatively.
+        tokio_edges.iter().all(|edge| {
+            if let Some(pkg_name) = self.package_names_by_id.get(&edge.package_id) {
+                pkg_name == "tokio" || pkg_name.replace('-', "_") == "tokio"
+            } else {
+                false
+            }
+        })
+    }
+
+    /// Resolves the exact native OpenTelemetry artifact for one wrapped dependency unit.
+    ///
+    /// `Ok(None)` means this package was not selected for R-4 native injection. `Err` is an
+    /// ambiguity, stale path, profile mismatch, or target mismatch and must fall open to Tier-2.
+    pub fn r4_native_otel_artifact_for(
+        &self,
+        source_file: &Path,
+        rustc_args: &[String],
+    ) -> Result<Option<&R4NativeOtelArtifact>, String> {
+        let package_id = self.package_id_for_source(source_file);
         let Some(package_id) = package_id else {
             return Ok(None);
         };
@@ -453,6 +529,39 @@ pub fn paths_refer_to_same_file(p1: &Path, p2: &Path) -> bool {
         (Ok(c1), Ok(c2)) => c1 == c2,
         _ => false,
     }
+}
+
+/// Returns true if rustc arguments specify an `--extern` binding with the given name.
+///
+/// Handles `--extern name`, `--extern name=path`, `--extern=name`, `--extern=name=path`,
+/// and crate-type modifiers such as `--extern noprelude:name=path`.
+pub fn rustc_has_extern_binding(rustc_args: &[String], binding_name: &str) -> bool {
+    let mut i = 0;
+    while i < rustc_args.len() {
+        let arg = &rustc_args[i];
+        if arg == "--extern" {
+            if i + 1 < rustc_args.len() {
+                let spec = &rustc_args[i + 1];
+                if spec_matches_extern_binding(spec, binding_name) {
+                    return true;
+                }
+                i += 2;
+                continue;
+            }
+        } else if let Some(spec) = arg.strip_prefix("--extern=") {
+            if spec_matches_extern_binding(spec, binding_name) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+fn spec_matches_extern_binding(spec: &str, binding_name: &str) -> bool {
+    let name_part = spec.split('=').next().unwrap_or(spec);
+    let actual_name = name_part.rsplit(':').next().unwrap_or(name_part);
+    actual_name == binding_name || actual_name.replace('-', "_") == binding_name.replace('-', "_")
 }
 
 impl SessionPlan {
@@ -806,6 +915,8 @@ impl SessionPlan {
                     r4_otel_package_by_dependency: HashMap::new(),
                     r4_required_features_by_dependency: HashMap::new(),
                     r4_native_otel_artifacts: Vec::new(),
+                    package_names_by_id: pkg_id_to_name,
+                    package_dependencies: HashMap::new(),
                 });
             }
         };
@@ -813,9 +924,11 @@ impl SessionPlan {
         // Adjacency map: node_id -> Vec<(dep_pkg_id, Vec<Option<kind>>)>
         type DepEdge = (String, Vec<Option<String>>);
         let mut node_deps: HashMap<String, Vec<DepEdge>> = HashMap::new();
+        let mut package_dependencies: HashMap<String, Vec<CargoDepEdge>> = HashMap::new();
         for node in nodes {
             if let Some(id) = node["id"].as_str() {
                 let mut deps_list = Vec::new();
+                let mut node_dep_edges = Vec::new();
                 if let Some(deps) = node["deps"].as_array() {
                     for dep in deps {
                         if let Some(dep_pkg) = dep["pkg"].as_str() {
@@ -829,11 +942,24 @@ impl SessionPlan {
                             if kinds.is_empty() {
                                 kinds.push(None); // Default is normal target dep
                             }
-                            deps_list.push((dep_pkg.to_string(), kinds));
+                            deps_list.push((dep_pkg.to_string(), kinds.clone()));
+
+                            let binding_name = dep["name"]
+                                .as_str()
+                                .map(|s| s.to_string())
+                                .or_else(|| pkg_id_to_name.get(dep_pkg).cloned())
+                                .unwrap_or_default();
+
+                            node_dep_edges.push(CargoDepEdge {
+                                binding_name,
+                                package_id: dep_pkg.to_string(),
+                                kinds,
+                            });
                         }
                     }
                 }
                 node_deps.insert(id.to_string(), deps_list);
+                package_dependencies.insert(id.to_string(), node_dep_edges);
             }
         }
 
@@ -1037,6 +1163,8 @@ impl SessionPlan {
             r4_otel_package_by_dependency,
             r4_required_features_by_dependency,
             r4_native_otel_artifacts: Vec::new(),
+            package_names_by_id: pkg_id_to_name,
+            package_dependencies,
         })
     }
 
@@ -1673,5 +1801,58 @@ mod tests {
         // 4. Non-existent path must be rejected
         let non_existent = dir_a.join("nonexistent.rlib");
         assert!(!paths_refer_to_same_file(&file_a, &non_existent));
+    }
+
+    #[test]
+    fn test_rustc_has_extern_binding() {
+        // Space-separated: --extern tokio
+        assert!(rustc_has_extern_binding(
+            &["--extern".to_string(), "tokio".to_string()],
+            "tokio"
+        ));
+        // Space-separated with path: --extern tokio=path
+        assert!(rustc_has_extern_binding(
+            &[
+                "--extern".to_string(),
+                "tokio=/path/to/libtokio.rlib".to_string()
+            ],
+            "tokio"
+        ));
+        // Equals-separated: --extern=tokio
+        assert!(rustc_has_extern_binding(
+            &["--extern=tokio".to_string()],
+            "tokio"
+        ));
+        // Equals-separated with path: --extern=tokio=path
+        assert!(rustc_has_extern_binding(
+            &["--extern=tokio=/path/to/libtokio.rlib".to_string()],
+            "tokio"
+        ));
+        // Modifier prefix: --extern noprelude:tokio=path
+        assert!(rustc_has_extern_binding(
+            &[
+                "--extern".to_string(),
+                "noprelude:tokio=/path/to/libtokio.rlib".to_string()
+            ],
+            "tokio"
+        ));
+        // Equals with modifier prefix: --extern=noprelude:tokio=path
+        assert!(rustc_has_extern_binding(
+            &["--extern=noprelude:tokio=/path/to/libtokio.rlib".to_string()],
+            "tokio"
+        ));
+        // Renamed/different crate name must NOT match
+        assert!(!rustc_has_extern_binding(
+            &[
+                "--extern".to_string(),
+                "my_tokio=/path/to/libtokio.rlib".to_string()
+            ],
+            "tokio"
+        ));
+        assert!(!rustc_has_extern_binding(
+            &["--extern=other=/path/to/other.rlib".to_string()],
+            "tokio"
+        ));
+        assert!(!rustc_has_extern_binding(&[], "tokio"));
     }
 }

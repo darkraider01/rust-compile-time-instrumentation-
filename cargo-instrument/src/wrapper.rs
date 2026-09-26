@@ -157,10 +157,27 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                     if !should_skip && resolved_path.exists() {
                         match analyze_source_file(crate_name, &resolved_path) {
                             Ok(mut report) => {
-                                // `--extern tokio` is Cargo's authoritative, cheap dependency
-                                // signal. A syntactic `tokio::spawn` cannot be a Tokio call when
-                                // this unit does not receive Tokio, so preserve it unchanged.
-                                if !invocation.unit.has_tokio() {
+                                // H3: Cargo-authoritative Tokio package identity verification.
+                                // Automatic Tokio spawn propagation may run only when ALL of:
+                                // 1. rustc actually supplies an extern binding named `tokio`
+                                // 2. current wrapped unit resolves to an exact Cargo package ID
+                                // 3. that Cargo package has a dependency edge whose binding name is `tokio`
+                                // 4. that dependency edge resolves to an exact Cargo package ID
+                                // 5. that package's Cargo package name is `tokio`
+                                // 6. the spawn site passes lexical/shadowing checks (already checked by AST analyzer)
+                                // If any part of this proof is missing or ambiguous, clear spawn_sites so no
+                                // rewriting occurs (conservative no-transformation).
+                                if !session_plan
+                                    .unit_has_real_tokio_binding(&resolved_path, &config.rustc_args)
+                                {
+                                    if !report.spawn_sites.is_empty() && config.debug_output {
+                                        eprintln!(
+                                            "[cargo-instrument PID={} crate={}] suppressed {} tokio::spawn site(s): unit lacks Cargo-authoritative Tokio package binding",
+                                            std::process::id(),
+                                            crate_name,
+                                            report.spawn_sites.len()
+                                        );
+                                    }
                                     report.spawn_sites.clear();
                                 }
                                 if config.debug_output {
