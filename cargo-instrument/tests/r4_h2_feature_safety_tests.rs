@@ -828,3 +828,115 @@ fn test_h2_missing_artifact_features_fails_open() {
         "artifact with 'features': null must not be accepted as native evidence"
     );
 }
+
+// 10. Active rustc --extern path identity enforcement:
+// Validates:
+// - exact same path -> accepted;
+// - lexically different but canonically identical path -> accepted;
+// - same filename in two different directories -> rejected / fails open;
+// - non-existent/stale extern path -> rejected / fails open;
+// - existing valid H2 native path still succeeds.
+#[test]
+fn test_h2_extern_artifact_path_identity_enforcement() {
+    use cargo_instrument::SessionPlan;
+    let temp = tempfile::tempdir().expect("create tempdir");
+    let dep_dir = temp.path().join("dep");
+    fs::create_dir_all(&dep_dir).unwrap();
+    let source = dep_dir.join("src/lib.rs");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, "pub fn work() {}\n").unwrap();
+
+    let dir_a = temp.path().join("dir_a");
+    let dir_b = temp.path().join("dir_b");
+    fs::create_dir_all(&dir_a).unwrap();
+    fs::create_dir_all(&dir_b).unwrap();
+
+    let rlib_a = dir_a.join("libopentelemetry.rlib");
+    fs::write(&rlib_a, b"artifact a").unwrap();
+    let rlib_b = dir_b.join("libopentelemetry.rlib");
+    fs::write(&rlib_b, b"artifact b").unwrap();
+
+    let dep_id = "dep 0.1.0 (path+file:///dep)";
+    let otel_id = "registry+https://example.invalid#index#opentelemetry@0.32.0";
+    let metadata = serde_json::json!({
+        "packages": [
+            {"id": dep_id, "name": "dep", "version": "0.1.0"},
+            {"id": otel_id, "name": "opentelemetry", "version": "0.32.0"}
+        ],
+        "resolve": {"nodes": [
+            {"id": otel_id, "features": ["trace"]}
+        ]}
+    });
+
+    let mut plan = SessionPlan::default();
+    plan.package_manifest_dirs
+        .insert(dep_id.to_string(), dep_dir);
+    plan.r4_otel_package_by_dependency
+        .insert(dep_id.to_string(), otel_id.to_string());
+    plan.r4_required_features_by_dependency
+        .insert(dep_id.to_string(), vec!["trace".to_string()]);
+
+    let message = serde_json::json!({
+        "reason": "compiler-artifact",
+        "package_id": otel_id,
+        "filenames": [rlib_a],
+        "features": ["trace"],
+        "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
+    });
+
+    plan.add_r4_artifacts_from_cargo_json(&metadata, format!("{message}\n").as_bytes(), None)
+        .expect("process artifact message");
+
+    // Case 1: Exact same path -> accepted
+    let args_exact = vec![
+        "--extern".to_string(),
+        format!("opentelemetry={}", rlib_a.display()),
+    ];
+    let artifact = plan
+        .r4_native_otel_artifact_for(&source, &args_exact)
+        .expect("exact path must resolve successfully")
+        .expect("artifact must be found");
+    assert_eq!(artifact.rlib_path, rlib_a);
+
+    // Case 2: Lexically different but canonically identical path -> accepted
+    let sub_a = dir_a.join("sub");
+    fs::create_dir_all(&sub_a).unwrap();
+    let lexical_same = sub_a.join("..").join("libopentelemetry.rlib");
+    assert_ne!(rlib_a, lexical_same);
+    let args_lexical = vec![
+        "--extern".to_string(),
+        format!("opentelemetry={}", lexical_same.display()),
+    ];
+    let artifact_lex = plan
+        .r4_native_otel_artifact_for(&source, &args_lexical)
+        .expect("lexically different but canonically identical path must resolve")
+        .expect("artifact must be found");
+    assert_eq!(artifact_lex.rlib_path, rlib_a);
+
+    // Case 3: Same filename in two different directories -> rejected
+    let args_different_dir = vec![
+        "--extern".to_string(),
+        format!("opentelemetry={}", rlib_b.display()),
+    ];
+    let err_diff = plan
+        .r4_native_otel_artifact_for(&source, &args_different_dir)
+        .unwrap_err();
+    assert!(
+        err_diff.contains("does not match active rustc --extern"),
+        "same filename in different directory must be rejected: {err_diff}"
+    );
+
+    // Case 4: Non-existent/stale extern path -> rejected/fails open
+    let stale_path = dir_a.join("stale_nonexistent.rlib");
+    let args_stale = vec![
+        "--extern".to_string(),
+        format!("opentelemetry={}", stale_path.display()),
+    ];
+    let err_stale = plan
+        .r4_native_otel_artifact_for(&source, &args_stale)
+        .unwrap_err();
+    assert!(
+        err_stale.contains("does not match active rustc --extern"),
+        "stale or non-existent extern path must be rejected: {err_stale}"
+    );
+}
