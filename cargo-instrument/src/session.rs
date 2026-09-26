@@ -106,12 +106,24 @@ pub struct SessionPlan {
     /// that reaches it. Omitted when roots disagree or no target-safe choice exists.
     #[serde(default)]
     pub r4_otel_package_by_dependency: HashMap<String, String>,
+    /// Dependency package id -> expected resolved features for the OpenTelemetry artifact.
+    #[serde(default)]
+    pub r4_expected_features_by_dependency: HashMap<String, Vec<String>>,
+    /// Set of package names that declare a dependency on opentelemetry with the "trace" feature enabled.
+    #[serde(default)]
+    pub packages_with_otel_trace: HashSet<String>,
     /// Exact Cargo-reported artifacts available to the R-4 resolver.
     #[serde(default)]
     pub r4_native_otel_artifacts: Vec<R4NativeOtelArtifact>,
 }
 
 impl SessionPlan {
+    /// Returns true if the package declares a dependency on opentelemetry with the "trace" feature enabled.
+    pub fn package_has_otel_trace(&self, package_name: &str) -> bool {
+        self.packages_with_otel_trace
+            .contains(&package_name.replace('-', "_"))
+    }
+
     /// Returns true if the package is compiled exclusively for the host
     /// (e.g. a dependency of a proc-macro or build script, not linked into target artifacts).
     ///
@@ -255,15 +267,31 @@ impl SessionPlan {
                     .unwrap_or(false),
                 test: message["profile"]["test"].as_bool().unwrap_or(false),
             };
+            let artifact_features = message["features"]
+                .as_array()
+                .map(|arr| {
+                    let mut feats: Vec<String> = arr
+                        .iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                    feats.sort();
+                    feats.dedup();
+                    feats
+                })
+                .unwrap_or_else(|| {
+                    features_by_package
+                        .get(package_id)
+                        .cloned()
+                        .unwrap_or_default()
+                });
+
             artifacts.push(R4NativeOtelArtifact {
                 package_id: package_id.to_string(),
                 package_version: versions_by_package
                     .get(package_id)
                     .cloned()
                     .ok_or_else(|| format!("Cargo metadata lacks version for '{package_id}'"))?,
-                resolved_features: features_by_package.get(package_id).cloned().ok_or_else(
-                    || format!("Cargo metadata lacks resolved features for '{package_id}'"),
-                )?,
+                resolved_features: artifact_features,
                 target: target.clone(),
                 profile,
                 rlib_path: rlibs.into_iter().next().unwrap(),
@@ -331,7 +359,32 @@ impl SessionPlan {
                 "no Cargo-authoritative OpenTelemetry artifact for package '{otel_package_id}', target {target:?}, profile {profile:?}; available artifacts: {:?}",
                 self.r4_native_otel_artifacts,
             )),
-            [artifact] if artifact.rlib_path.is_file() => Ok(Some(*artifact)),
+            [artifact] if artifact.rlib_path.is_file() => {
+                // Invariant 1: Mandatory "trace" feature for native R-4 injection
+                if !artifact.resolved_features.iter().any(|f| f == "trace") {
+                    return Err(format!(
+                        "Cargo-authoritative OpenTelemetry artifact '{}' for package '{otel_package_id}' lacks required 'trace' feature; resolved features: {:?}",
+                        artifact.rlib_path.display(),
+                        artifact.resolved_features,
+                    ));
+                }
+                // Invariant 2: Expected features match (if expected features recorded)
+                if let Some(expected_features) = self.r4_expected_features_by_dependency.get(package_id) {
+                    let missing: Vec<_> = expected_features
+                        .iter()
+                        .filter(|f| !artifact.resolved_features.contains(f))
+                        .cloned()
+                        .collect();
+                    if !missing.is_empty() {
+                        return Err(format!(
+                            "Cargo-authoritative OpenTelemetry artifact '{}' for package '{otel_package_id}' has feature mismatch; missing expected feature(s): {missing:?}; resolved features: {:?}",
+                            artifact.rlib_path.display(),
+                            artifact.resolved_features,
+                        ));
+                    }
+                }
+                Ok(Some(*artifact))
+            }
             [artifact] => Err(format!(
                 "Cargo-authoritative OpenTelemetry artifact '{}' is no longer present",
                 artifact.rlib_path.display()
@@ -690,6 +743,8 @@ impl SessionPlan {
                     package_manifest_dirs,
                     target_reachable_package_ids: HashSet::new(),
                     r4_otel_package_by_dependency: HashMap::new(),
+                    r4_expected_features_by_dependency: HashMap::new(),
+                    packages_with_otel_trace: HashSet::new(),
                     r4_native_otel_artifacts: Vec::new(),
                 });
             }
@@ -847,6 +902,7 @@ impl SessionPlan {
         // resolves exactly one, identical OpenTelemetry package id. Metadata package ids carry
         // the source/version identity; a disagreement is deliberately left unmapped.
         let mut r4_otel_package_by_dependency = HashMap::new();
+        let mut r4_expected_features_by_dependency = HashMap::new();
         for dependency_id in &target_reachable_ids {
             let root_otel_ids: Vec<HashSet<String>> = target_root_reachability
                 .iter()
@@ -871,10 +927,13 @@ impl SessionPlan {
                 .flat_map(|ids| ids.iter().cloned())
                 .collect();
             if shared_otel_ids.len() == 1 {
-                r4_otel_package_by_dependency.insert(
-                    dependency_id.clone(),
-                    shared_otel_ids.into_iter().next().unwrap(),
-                );
+                let otel_id = shared_otel_ids.into_iter().next().unwrap();
+                r4_otel_package_by_dependency.insert(dependency_id.clone(), otel_id);
+                // Native R-4 injection requires at least the "trace" feature.
+                let mut expected = vec!["trace".to_string()];
+                expected.sort();
+                expected.dedup();
+                r4_expected_features_by_dependency.insert(dependency_id.clone(), expected);
             }
         }
 
@@ -903,6 +962,28 @@ impl SessionPlan {
             }
         }
 
+        let mut packages_with_otel_trace: HashSet<String> = HashSet::new();
+        for pkg in packages {
+            if let Some(pkg_name) = pkg["name"].as_str() {
+                if let Some(deps) = pkg["dependencies"].as_array() {
+                    for dep in deps {
+                        if dep["name"].as_str() == Some("opentelemetry") {
+                            let uses_default =
+                                dep["uses_default_features"].as_bool().unwrap_or(true);
+                            let has_trace = uses_default
+                                || dep["features"]
+                                    .as_array()
+                                    .map(|feats| feats.iter().any(|f| f.as_str() == Some("trace")))
+                                    .unwrap_or(false);
+                            if has_trace {
+                                packages_with_otel_trace.insert(pkg_name.replace('-', "_"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
 
         Ok(Self {
@@ -916,6 +997,8 @@ impl SessionPlan {
             package_manifest_dirs,
             target_reachable_package_ids: target_reachable_ids,
             r4_otel_package_by_dependency,
+            r4_expected_features_by_dependency,
+            packages_with_otel_trace,
             r4_native_otel_artifacts: Vec::new(),
         })
     }
