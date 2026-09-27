@@ -130,6 +130,8 @@ fn prepare_r4_session(workspace: &Path, target: &Path) -> (SessionPlan, PathBuf,
     let mut plan = SessionPlan::from_metadata_json(&metadata).expect("build R-4 session plan");
     plan.add_r4_artifacts_from_cargo_json(&metadata, &prepass.stdout, None)
         .expect("capture authoritative R-4 Cargo artifact");
+    plan.add_tokio_artifacts_from_cargo_json(&metadata, &prepass.stdout, None)
+        .expect("capture authoritative Tokio Cargo artifacts");
     assert_eq!(
         plan.r4_native_otel_artifacts.len(),
         1,
@@ -220,6 +222,7 @@ edition = "2021"
 [dependencies]
 opentelemetry = "0.32.0"
 opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"] }
 "#,
     )
     .unwrap();

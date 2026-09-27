@@ -49,6 +49,13 @@ jobs:
       - name: Run registry source cache immutability guard
         run: cargo test --workspace --test trampoline_tests test_registry_source_cache_immutability -- --ignored --nocapture
 
+      - name: P2.4 public opt-in and lifecycle acceptance
+        run: cargo test -p cargo-instrument --test p24_closeout_tests -- --nocapture --test-threads=2
+
+      - name: P2.4 isolated R-4 migration proof (Linux)
+        if: runner.os == 'Linux'
+        run: cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --nocapture
+
       - name: Run overhead benchmarks (A17)
         run: cargo bench --bench bench_overhead
 
@@ -59,14 +66,11 @@ jobs:
           {
             echo "## E2E Registry & Benchmark Validation (\`${{ matrix.os }}\`)"
             echo
-            echo "Successfully executed end-to-end instrumentation against real crates.io dependencies (\`census = \"=0.4.2\"\`)."
+            echo "Job outcome: ${{ job.status }}. See individual steps for registry, P2.4, and benchmark evidence."
             echo
             echo "| Category | Acceptance Criteria | Result |"
             echo "|---|---|---|"
-            echo "| Runtime Spans | A4, A5, A6, A7, A8 | PASSED |"
-            echo "| Source Fidelity | A11, A12 | PASSED (~/.cargo/registry immutability verified) |"
-            echo "| Cargo Correctness | A13, A14 | PASSED (clean, repeat, incremental) |"
-            echo "| Safety Negatives | A15, A16 | PASSED (fail-open on malformed syntax & ABI collisions) |"
-            echo "| Overhead Benchmarks | A17 | PASSED (N=5 compile-time medians & runtime latencies) |"
-            echo "| Byte Reproducibility | A18 | PASSED (100% SHA-256 match across runs) |"
+            echo "| Registry acceptance | A4–A8, A11–A18 | See registry test and benchmark steps |"
+            echo "| P2.4 public workflow | CLI, lifecycle, metadata, immutability | See public opt-in acceptance step |"
+            echo "| R-4 migration | Linux task parenting and fail-open | See isolated migration step on Linux |"
           } >> "$GITHUB_STEP_SUMMARY"
