@@ -5,7 +5,7 @@
 # Phase 2 - Production Hardening
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
-**Status:** In progress (P2.1, P2.2 complete; P2.3 semantic instrumentation complete; P2.4 next focus; verified locally on Windows MSVC; CI matrix covers Ubuntu, Windows, macOS)
+**Status:** In progress (P2.1, P2.2 complete; P2.3 semantic instrumentation complete; P2.4 complete; acceptance evidence in closeout.md; verified locally on Windows MSVC and Linux ELF; CI matrix covers Ubuntu, Windows, macOS)
 **Toolchain:** Stable Rust for the workspace (CI tracks latest `stable`; verified locally on 1.97.1). P2.3 generation alone uses the pinned toolchain in [`tools/p23-toolchain.txt`](../../tools/p23-toolchain.txt) plus `rustc-dev`, `rust-src`, and `llvm-tools-preview` (required for compiler-private linking on Windows); generated application source and the existing dependency wrapper pipeline remain stable-Rust consumers.
 **P2.3 driver policy:** The current pin is `nightly-2026-09-09`. Repository-development invocation via `cargo instrument-rust --apply` is supported; installed/distributed driver discovery remains a deliberate follow-up.
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
@@ -46,14 +46,14 @@ Phase 2 - Production Hardening (In Progress)
           │       ├── Step 3  `span_suggestion` transformation engine                 ✅ Complete
           │       ├── Step 4  Cargo fix integration & clean-tree safety gate          ✅ Complete
           │       └── Step 5  Idempotence, Result status & async_trait parity suite  ✅ Complete
-          ├── P2.4 Opt-In Dependency Pipeline & Async Trampolines   🟡 In Progress
+          ├── P2.4 Opt-In Dependency Pipeline & Async Trampolines   ✅ Complete
           │       ├── R-4 investigation: `--extern` injection vs C-ABI / R-1 / R-2  ✅ Resolved (Hybrid Fallback)
           │       ├── H1 production orchestration (Cargo pre-pass & selective clean) ✅ Complete
           │       ├── H2 feature-safe native OpenTelemetry selection                 ✅ Complete
-          │       ├── H3 Cargo-authoritative Tokio package identity                  🟡 Partially Resolved
+          │       ├── H3 Cargo-authoritative Tokio package/artifact identity         ✅ Complete
           │       ├── Async context propagation (#5) & `tokio::spawn` (#6)           ✅ Complete
-          │       ├── Opt-in integration (`--with-dependencies` / env flag) (#4)     ⬜ Planned (ACTIVE NEXT)
-          │       └── Stream / Sink instrumentation & cancellation lifecycle (#7, #8) ⬜ Planned
+          │       ├── Opt-in integration (`--with-dependencies` / env flag) (#4)     ✅ Complete
+          │       └── Stream / Sink exclusion semantics & cancellation (#7, #8)      ✅ Complete
           └── P2.5 Large Graphs & Cross-Platform Validation         ⬜ Planned
                   ├── Multi-crate workspace scale & opt-in graph scale (≥100 units)
                   ├── Tracer caching (`OnceLock`)
@@ -305,21 +305,21 @@ $16 + 16 = 32$ to $18 + 14 = 32$. Phase 1 documents record the pre-fix split as 
 
 ### Architecture Risks for Later Integration (P2.4 Opt-In Scope)
 
-Four risks in the Tier-2 C ABI. Under the hybrid architecture ([ADR-012](decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture)), dependency instrumentation is the opt-in path, so these risks and their resolution are scheduled in P2.4 behind the default first-party lint-apply driver (P2.3).
+Four risks in the Tier-2 C ABI. Under the hybrid architecture ([ADR-012](decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture)), dependency instrumentation is the opt-in path, so their P2.4 resolutions preserve the default first-party lint-apply driver (P2.3).
 
 R-1 and R-2 are limitations of the ABI's width and were originally scheduled as an ABI extension. R-3 was resolved in P2.2 via panic containment (commit [`6bf0880`](https://github.com/darkraider01/rust-compile-time-instrumentation-/commit/6bf0880)). R-4 evaluated native `--extern` injection and established the **Hybrid Fallback** architecture ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)): native injection is preferred for deterministically resolved compatible units, while the Tier-2 C ABI is retained as the required fallback for units where native injection cannot be safely resolved (e.g. shared multi-version graphs). R-1 and R-2 remain relevant for the C-ABI fallback path.
 
 #### R-1: Dependency spans share hardcoded instrumentation scope
 
-`otel-shim/src/lib.rs:119` uses `global::tracer("dependency")` as a literal string for all third-party crates, whereas Tier-1 uses `global::tracer(crate_name)`. Per-crate `InstrumentationScope` attribution is lost in Tier-2. Passing crate name across the ABI will be batched into P2.4 for units using the C-ABI fallback.
+The original `__otel_span_enter` ABI uses `global::tracer("dependency")`, whereas native emission uses `global::tracer(crate_name)`. Per-crate `InstrumentationScope` attribution is lost in Tier-2. P2.4 adds the feature-advertised `__otel_span_enter_v2` ABI carrying crate scope. The public wrapper uses it when Cargo proves `metadata-v2`; older or unverified shim providers retain the original scope for compatibility.
 
 #### R-2: File, line, and kind transmitted across ABI and discarded
 
-`__otel_span_enter(name, name_len, _file, _file_len, _line, _kind)` in `otel-shim/src/lib.rs:87-137` leaves file, line, and kind underscore-prefixed and unused, hardcoding `SpanKind::Internal`. Semantic convention attributes (`code.function.name`, `code.file.path`, `code.line.number` per §16.14) will be wired into the span builder during P2.4 for units using the C-ABI fallback.
+Historically, `__otel_span_enter` discarded the supplied file, line, and kind. P2.4 now records `code.function.name`, `code.file.path`, and `code.line.number` and maps kind in the shim. Versioned emission reports original source coordinates; legacy callers keep their original ABI.
 
 #### R-3: A panic inside the shim aborts the host process
 
-All seven exported symbols in `otel-shim/src/lib.rs` and both declarations spliced by `transform.rs`
+All production exported symbols in `otel-shim/src/lib.rs` and both declarations spliced by `transform.rs`
 were plain `extern "C"`, not `extern "C-unwind"`. Since Rust 1.71, a panic reaching a plain
 `extern "C"` boundary aborts the process and cannot be caught by `catch_unwind` in the host
 application. This was reachable in practice, not in theory: the shim already carries a fix for a
@@ -333,12 +333,12 @@ conflict with S11.
 **Mitigation landed (P2.2):** Implemented both layers described in
 [ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional):
 1. **Layer 1 (Fail-open panic containment):** `catch_unwind` with narrow `AssertUnwindSafe` inside each of
-   the seven exported functions in `otel-shim/src/lib.rs`. On panic, it swallows the error and returns the
+   the production exported functions in `otel-shim/src/lib.rs`. On panic, it swallows the error and returns the
    S9 no-op value (`0` for `u64` handles/tokens, unit for the rest). Telemetry failure never propagates into
    user code. Crucially, this prevents a double-panic abort when `__OtelGuard::drop()` calls `__otel_span_exit`
    while unwinding from an application panic.
 2. **Layer 2 (ABI backstop):** Changed `extern "C"` to `extern "C-unwind"` across all nine declarations
-   (the seven exports in `otel-shim` and both spliced blocks emitted by `transform.rs`). Any panic escaping
+   (the production exports in `otel-shim` and both spliced blocks emitted by `transform.rs`). Any panic escaping
    across the boundary unwinds safely instead of triggering an immediate process abort.
 
 **Stated limit:** `panic = "abort"` makes both layers inert. If a user's compilation profile specifies
@@ -363,7 +363,7 @@ injection and established that:
    must fail open.
 3. Therefore, the architecture is **Hybrid Fallback**: native injection is preferred for deterministically
    resolved compatible units; the Tier-2 C ABI (`otel-shim`) remains intact as the required fallback.
-4. Automatic `tokio::spawn` task-boundary context propagation is distinct and scheduled in P2.4.
+4. Automatic `tokio::spawn` task-boundary context propagation is distinct and completed in P2.4 with Cargo package/artifact/feature validation.
 
 A structural limit survives that fix: a dependency is compiled once and shared, so if two binaries
 resolve different `opentelemetry` versions, the single shared compilation can satisfy at most one -
@@ -542,11 +542,16 @@ Not all Rust function forms are automatically instrumented. The semantic boundar
 | 4 | Trait impl methods, `#[async_trait]` support & real suspension proof | ✅ Complete |
 | 5 | `cargo fix` round-trip verification, second-apply idempotence & full regression suite | ✅ Complete |
 
-*Note on Suspension Evidence:* The `YieldOnce` test proves context-safe behavior across a real suspension/resume boundary (`Poll::Pending` → wake → `Poll::Ready`) under the current `FutureExt::with_context` lifecycle, with correct parent/child relationships. It does not claim arbitrary worker-thread migration, spawned-task propagation, or arbitrary executor propagation; those remain the focus of P2.4.
+*Note on Suspension Evidence:* The `YieldOnce` test proves context-safe behavior across a real suspension/resume boundary (`Poll::Pending` → wake → `Poll::Ready`) under the current `FutureExt::with_context` lifecycle, with correct parent/child relationships. It does not claim arbitrary worker-thread migration, spawned-task propagation, or arbitrary executor propagation; those are covered separately by the P2.4 migration and spawn evidence.
 
 *Note on UX/Distribution:* Development invocation via `cargo instrument-rust --apply` is fully functional and tested. General driver discovery/packaging and standalone `--show` preview UX remain deliberate operational follow-ups separate from semantic completion.
 
-### 6.4 P2.4 - Opt-In Dependency Pipeline & Async Trampolines (Planned)
+### 6.4 P2.4 - Opt-In Dependency Pipeline & Async Trampolines
+
+The current workflow, lifecycle/Stream/Sink decisions, validation matrix, and
+accepted fallback limits are documented in [P2.4 closeout](p2.4/closeout.md).
+Use `cargo instrument --with-dependencies -- build` or `-- run`. Workspace
+members remain owned by `cargo instrument-rust --apply`.
 
 **Objective:** Harden the transparent dependency instrumentation pipeline (`RUSTC_WRAPPER`) as an explicit opt-in mode (`--with-dependencies` or `CARGO_INSTRUMENT_DEPENDENCIES=1`) for users who require zero-code telemetry across third-party crates.
 
@@ -555,10 +560,10 @@ Not all Rust function forms are automatically instrumented. The semantic boundar
 1. **R-4 Resolution ([ADR-011](decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)):** Resolved (**Hybrid Fallback**). Native `--extern` injection is adopted for deterministically resolved compatible units, while the Tier-2 C ABI (`otel-shim`) is retained as the required fallback for multi-version or ambiguous units. Full evidence in [`r4-extern-injection-spike.md`](p2.4/r4-extern-injection-spike.md); production CLI orchestration, incomplete pre-pass recovery architecture, and 13-scenario validation matrix in [`h1-production-orchestration.md`](p2.4/h1-production-orchestration.md).
 2. **Async Dependency Context Propagation & Trampolines:**
    - **Future Suspension & Thread Migration:** Verified. Native `FutureExt::with_context` deterministically preserves OpenTelemetry context across suspension, resumption, and cross-thread migration ([`async-context-propagation.md`](p2.4/async-context-propagation.md)).
-   - `tokio::spawn` context propagation via spawn-site context capture and span links ([ADR-001](../research/17-decision-records.md#adr-001--generate-native-opentelemetry-api-calls)) — Issue #6.
-   - Stream / Sink poll-boundary instrumentation.
-   - Cancelled-vs-completed span status tracking across task lifecycles.
-3. **Opt-In CLI Integration:** Seamless orchestration connecting first-party lint-applied crates with dependency wrapper builds.
+   - `tokio::spawn` context propagation via spawn-site context capture and verified parent relationships, without synthetic task spans — Issue #6.
+   - Stream / Sink polling methods are conservatively excluded; no span per poll or item.
+   - Native dependency lifecycle outcomes distinguish completed, cancelled, and unwound futures.
+3. **Opt-In CLI Integration:** Implemented public dependency-only orchestration connecting first-party lint-applied crates with dependency wrapper builds, including registry opt-in and policy-aware cache invalidation.
 
 ### 6.5 P2.5 - Large Graphs & Cross-Platform Validation (Planned)
 
@@ -587,7 +592,7 @@ P2.2 Macro Expansion Resilience & Coexistence ✅
   │
   ├────────────────────────────────────────────────────────┐
   ▼                                                        ▼
-P2.3 First-Party Lint-Apply (Semantic Complete) ✅        P2.4 Opt-In Dependency Pipeline & Async ◀── next focus
+P2.3 First-Party Lint-Apply (Semantic Complete) ✅        P2.4 Opt-In Dependency Pipeline & Async — see closeout record
   │                                                        │
   └───────────────────────────┬────────────────────────────┘
                               ▼
@@ -597,7 +602,7 @@ P2.3 First-Party Lint-Apply (Semantic Complete) ✅        P2.4 Opt-In Dependenc
 P2.1 is a hard prerequisite: it established unique unit identity and mirror isolation, without which multi-unit builds collided.
 P2.2 proved coexistence with explicit instrumentation and demonstrated hybrid parenting across `#[async_trait]` boundaries.
 P2.2 directly enabled the ADR-012 feasibility spike: confirming that `#[async_trait]` method bodies preserve call-site spans, clearing P2.3 to build the new default first-party lint-apply path without fear of coverage regression.
-P2.3 semantic instrumentation is complete: the `cargo instrument-rust` lint driver delivers verified, zero-overhead, reviewable instrumentation for first-party crates. Next focus shifts to P2.4 on the opt-in track: resolving R-4 (`--extern` injection vs C ABI) and implementing async dependency trampolines (`tokio::spawn` context propagation per ADR-001, Stream/Sink poll boundaries, and cancelled-vs-completed span lifecycle).
+P2.3 semantic instrumentation is complete: the `cargo instrument-rust` lint driver delivers verified, zero-overhead, reviewable instrumentation for first-party crates. P2.4 now exposes the opt-in track through `--with-dependencies`, validates native and fallback artifacts, propagates Tokio spawn context, distinguishes native dependency cancellation, and excludes Stream/Sink poll boundaries. Current acceptance evidence is in [closeout.md](p2.4/closeout.md); the next milestone is P2.5.
 P2.5 brings both paths together for large-scale graph benchmarking and cross-platform verification.
 
 | Phase-1 deferral | Lands in | Rationale |
@@ -605,10 +610,10 @@ P2.5 brings both paths together for large-scale graph benchmarking and cross-pla
 | First-party body wrapping via `span_suggestion` | **P2.3** | Core engine for the default lint-apply workflow (ADR-012) |
 | HIR eligibility rules & AST reconciliation | **P2.3** | Port of `ast.rs` rules to rustc HIR with visit deduplication |
 | Developer CLI (`--show`, `--apply`) | **P2.3** | Reviewable diagnostics and clean-tree in-place rewriting |
-| `tokio::spawn` context propagation | **P2.4** | Needs spawn-site context capture and span links (ADR-001) for opt-in deps |
-| Stream / Sink instrumentation | **P2.4** | Same poll-boundary machinery, larger surface on opt-in deps |
-| Cancelled-vs-completed span status | **P2.4** | Falls out of owning the async lifecycle in dependencies |
-| R-4 `--extern` injection vs C-ABI | **P2.4** | Settles whether Tier-2 collapses into native calls or requires R-1/R-2 ABI extensions |
+| `tokio::spawn` context propagation | **P2.4** | Complete: context capture with no synthetic task span |
+| Stream / Sink instrumentation | **P2.4** | Decided: exclude poll/item methods; lifetime ownership requires an explicit future API |
+| Cancelled-vs-completed span status | **P2.4** | Complete: native dependency outcome attribute and guarded end |
+| R-4 `--extern` injection vs C-ABI | **P2.4** | Complete: native-preferred Hybrid Fallback with versioned scope metadata |
 | Tracer caching (`OnceLock`) | **P2.5** | Performance; gate on a re-baselined benchmark per §16.3 across both modes |
 | Build-script / package-graph metadata (H1) | **P2.1** | This is exactly the build-graph knowledge P2.1 introduces |
 | AST fallback coverage (`Result<&str, E>`) | **P2.2** | Sits with the other return-type precision work |

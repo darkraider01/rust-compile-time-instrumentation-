@@ -463,6 +463,13 @@ The existing first-party wrapper/native path remains a compatibility and referen
 
 #### Intentionally deferred to P2.4
 
+**Resolution (2026-09-28):** [P2.4 closeout](p2.4/closeout.md) records native-preferred
+Hybrid Fallback, public `--with-dependencies` orchestration, dependency cancellation
+outcomes, Tokio package and pipelined artifact identity, and a conservative exclusion
+policy for Stream/Sink polling methods. Workspace source remains owned by the HIR
+apply-once frontend. Tracer caching and scale/platform certification remain P2.5 work.
+The list below preserves the original architecture-freeze backlog.
+
 - Whether native `--extern opentelemetry=...` injection is valuable for a restricted dependency subset.
 - Whether the C ABI remains permanent or becomes fallback-only.
 - Async dependency runtime representation, poll-time context attachment, cancellation, and task migration.

@@ -3,6 +3,10 @@
 **Status:** Production-oriented artifact-resolution spike complete.
 **Recommendation:** **Use a hybrid fallback**; native injection is safe only for an explicitly resolved compatible unit.
 
+**Production follow-up:** The public dependency-only CLI, async lifecycle outcomes,
+versioned fallback metadata ABI, and complete P2.4 acceptance matrix are recorded in
+[closeout.md](closeout.md). This spike remains the historical feasibility evidence.
+
 This record is the evidence for [issue #3](https://github.com/darkraider01/rust-compile-time-instrumentation-/issues/3). [ADR-011](../../phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional) has been updated to incorporate this final Hybrid Fallback decision; the existing C-ABI path remains intact as the required fallback.
 
 ## Question

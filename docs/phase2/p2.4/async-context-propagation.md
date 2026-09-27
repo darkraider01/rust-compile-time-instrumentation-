@@ -5,6 +5,11 @@
 
 This record provides the evidence for [Issue #5](https://github.com/darkraider01/rust-compile-time-instrumentation-/issues/5).
 
+**P2.4 closeout follow-up:** Native dependency emission now also owns a lifecycle
+guard distinguishing completed/cancelled/unwound outcomes without changing poll-time
+context propagation. Public CLI evidence and accepted fallback limits are in
+[closeout.md](closeout.md).
+
 ---
 
 ## 1. Goal & Context

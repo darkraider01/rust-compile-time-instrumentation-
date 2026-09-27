@@ -20,7 +20,7 @@ H1 native R-4 production orchestration  RESOLVED
 H2 feature-safe native selection        RESOLVED
 H3 Tokio package identity               RESOLVED
 Cross-target and all-target CLI modes   wrapper-only behavior retained
-Overall P2.4 production hardening       INCOMPLETE
+Overall P2.4 status                    See closeout.md for current acceptance
 ```
 
 ---
@@ -145,7 +145,7 @@ cargo test --workspace                                              PASS (100% p
 
 ## 6. Scope Boundaries & Remaining Limitations
 
-While H1 is fully resolved, the following items remain open and explicitly out of scope for H1:
+H1 is resolved. Related workstreams and retained invocation limits are tracked below:
 
 1. **H2 — Feature-Safe Native Selection:**
    RESOLVED (see [`p2.4-validation-audit.md`](p2.4-validation-audit.md#h2-resolution--feature-safe-native-opentelemetry-selection)). Authoritative feature extraction from Cargo JSON messages, mandatory `"trace"` verification, and exact canonical artifact path matching are enforced.
@@ -154,4 +154,4 @@ While H1 is fully resolved, the following items remain open and explicitly out o
 3. **Cross-Target / Multi-Target Invocations:**
    CLI invocations targeting multiple targets simultaneously (e.g. `--target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu`) or `--all-targets` retain wrapper-only behavior.
 4. **Overall Milestone Status:**
-   H1, H2, and H3 are **RESOLVED**. However, overall P2.4 production hardening remains **INCOMPLETE** until cancellation (#7) and Stream/Sink (#8) are addressed.
+   H1, H2, and H3 are **RESOLVED**. The public opt-in policy, native async cancellation outcomes, Stream/Sink exclusion decision, and final acceptance evidence are recorded in [closeout.md](closeout.md).

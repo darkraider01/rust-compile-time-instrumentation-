@@ -21,7 +21,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
 | **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across the automated suite) |
-| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), first-party lint-apply driver (P2.3 semantic instrumentation complete), async dependency trampolines & opt-in pipeline (P2.4 next focus), large graphs & cross-platform validation (P2.5 planned). Decisions recorded as [ADR-007 … ADR-013](docs/phase2/decision-records.md) |
+| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), first-party lint-apply driver (P2.3 semantic instrumentation complete), async dependency lifecycle & opt-in pipeline (P2.4 complete), large graphs & cross-platform validation (P2.5 planned). Decisions recorded as [ADR-007 … ADR-013](docs/phase2/decision-records.md) |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
@@ -83,8 +83,8 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
   Establishes clean coexistence between automatic instrumentation and developer-written annotations ([ADR-009](docs/phase2/decision-records.md#adr-009---explicit-instrumentation-wins-at-whole-function-granularity)). Widens the explicit-instrumentation matcher to any qualified path (`#[tracing::instrument]`, `#[tracing_attributes::instrument]`, `#[otel_instrument::instrument]`, `#[propagate_context]`), skips such functions whole to prevent duplicate spans and `__otel_cx` identifier shadowing, and proves hybrid parenting - an explicit `#[tracing::instrument]` caller adopting automatically instrumented dependency spans as children - across both synchronous and `#[async_trait]` boundaries ([ADR-010](docs/phase2/decision-records.md#adr-010---hybrid-parenting-is-delegated-to-tracing-opentelemetry)). Measured over-suppression on `census-0.4.2` and `async-trait`: 0.0%.
 - [x] **P2.3 - First-Party Lint-Apply Driver (`cargo instrument-rust`)** - SEMANTIC INSTRUMENTATION COMPLETE
   `cargo instrument-rust --apply` clean-tree-gates a first-party-only `cargo fix` run, puts the isolated nightly `rustc_driver` HIR frontend in `RUSTC`, and leaves Cargo's `RUSTC_WRAPPER` diagnostics proxy intact. It emits genuine `MachineApplicable` edits for supported semantic forms: ordinary free functions, inherent methods, trait implementation methods, native `async fn` bodies, and verified `#[async_trait]` methods when `opentelemetry` is present. Result status recording captures `Status::error("")` for semantic `core::result::Result` types, explicit user instrumentation takes precedence, and direct self-recursion on `self` is excluded. Deliberate exclusions: nested local functions, default trait method bodies, macro/expansion-owned source, const functions, closures, and foreign ABIs. The persistent marker `/* __cargo_instrument_rust:p23 */` makes the command idempotent. The process fixture proves edit, dependency-source immutability, stable rebuild, dirty-tree refusal, and a committed no-op second run. The stable workspace does not depend on `rustc_private`; the driver requires nightly plus `rustc-dev`. Operational packaging and preview UX (`--show`) remain deliberate follow-ups.
-- [ ] **P2.4 - Opt-In Dependency Pipeline & Async Trampolines** - IN PROGRESS
-  Hardens the opt-in dependency instrumentation path. Resolves R-4 ([ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)): establishes a **Hybrid Fallback** architecture where native `--extern` injection is preferred for deterministically resolved compatible units, and the Tier-2 C ABI is retained as the required fallback. Implements async dependency trampolines (`tokio::spawn` context propagation per ADR-001, Stream/Sink poll boundaries, and cancelled-vs-completed span lifecycle).
+- [x] **P2.4 - Opt-In Dependency Pipeline & Async Trampolines** - COMPLETE
+  Exposes `--with-dependencies` and completes the **Hybrid Fallback** architecture: native `--extern` injection for compatible units, with the synchronous Tier-2 C ABI retained as fallback. Validates Cargo artifact identity, propagates Tokio spawn context, distinguishes native dependency cancellation from completion, and excludes Stream/Sink polling boundaries. [Closeout and acceptance evidence](docs/phase2/p2.4/closeout.md) records the tested workflow and accepted limits.
 - [ ] **P2.5 - Large Dependency Graphs & Cross-Platform Validation** - PLANNED
   Validates both hybrid modes across large multi-crate workspaces and ≥100-unit dependency graphs. Implements tracer caching (`OnceLock`) per §16.3, and verifies cross-platform execution on Windows (MSVC with MAX_PATH mitigation), Linux (ELF), and macOS (Mach-O).
 
@@ -122,11 +122,31 @@ Architecture decisions [ADR-011](docs/phase2/decision-records.md#adr-011---the-t
 
 ## CLI Usage & Prototype Demonstration
 
+### P2.4 dependency opt-in
+
+First-party source uses `cargo instrument-rust --apply`. After reviewing and
+committing those edits, build or run with dependency instrumentation:
+
+```text
+cargo instrument --with-dependencies -- build
+cargo instrument --with-dependencies -- run -- <application arguments>
+```
+
+For a development checkout, invoke the binary with
+`cargo run --bin cargo-instrument -- --with-dependencies -- build`.
+`CARGO_INSTRUMENT_DEPENDENCIES=1` selects the same policy. Workspace members and
+the telemetry/executor runtime closure are excluded from mirror instrumentation.
+Native-compatible dependencies support async lifecycle outcomes and Tokio context
+propagation; the required C-ABI fallback handles synchronous functions and skips
+unsupported async sites. Stream/Sink polling methods are excluded to avoid a span
+per poll/item. See [P2.4 closeout](docs/phase2/p2.4/closeout.md) for acceptance
+evidence, cancellation semantics, and fallback limits.
+
 `cargo-instrument` operates in two primary modes:
 1. **Interactive CLI**: Standalone AST inspection (`analyze`) and surgical transformation preview (`transform`).
 2. **Transparent Compiler Driver**: Invoking Cargo with `cargo run --bin cargo-instrument -- -- <cargo args...>` wraps `rustc` via `RUSTC_WRAPPER` and automatically routes build artifacts to an isolated directory (`target/instrumented`, per [ADR-004](docs/research/17-decision-records.md)).
 
-### 1. Live End-to-End Application Telemetry (The Hero Flow)
+### 1. Legacy wrapper compatibility demonstration
 
 Compiles and executes a sample application ([`examples/demo_app`](examples/demo_app/src/main.rs)) that calls into third-party dependency `census = "=0.4.2"`, automatically exporting 26 OpenTelemetry spans with cross-crate trace parenting and zero handle leaks:
 
