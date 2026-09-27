@@ -446,8 +446,14 @@ fn acquire_native_artifacts(
     }
 
     let mut capture_error = if output.status.success() {
-        plan.add_r4_artifacts_from_cargo_json(&metadata, &stdout, None)
-            .err()
+        let r4_err = plan
+            .add_r4_artifacts_from_cargo_json(&metadata, &stdout, None)
+            .err();
+        let tokio_err = plan
+            .add_tokio_artifacts_from_cargo_json(&metadata, &stdout, None)
+            .err();
+        r4_err
+            .or(tokio_err)
             .map(|e| format!("pre-pass artifact output was incomplete: {e}"))
     } else {
         Some(format!(

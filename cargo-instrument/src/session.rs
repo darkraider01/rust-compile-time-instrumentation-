@@ -349,7 +349,6 @@ impl SessionPlan {
             }
             self.r4_native_otel_artifacts.push(artifact);
         }
-        self.add_tokio_artifacts_from_cargo_json(metadata, cargo_messages, target)?;
         Ok(())
     }
 
