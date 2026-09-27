@@ -121,21 +121,30 @@ To resolve **H3**, `cargo-instrument` enforces an authoritative identity model d
 | **Source syntax** | Spelled path in source AST | `tokio::spawn(...)` | Syntactic candidate for call-site wrapping. |
 
 #### Authoritative Invariant
-Automatic Tokio spawn propagation runs **if and only if** all 6 conditions are proven:
+Automatic Tokio spawn propagation runs **if and only if** all authoritative identity conditions are proven:
 1. `rustc` actually supplies an extern binding named `tokio`.
 2. The current wrapped unit resolves to an exact Cargo package ID via `package_manifest_dirs` longest-prefix match.
 3. That Cargo package has a dependency edge in Cargo metadata `resolve.nodes[].deps[]` whose binding name is `tokio`.
 4. That dependency edge resolves to an exact Cargo package ID.
 5. That target package's true Cargo package name is `tokio`.
-6. The spawn site passes conservative lexical, shadow, and structural idempotence checks.
+6. When authoritative Cargo `compiler-artifact` records are captured (during the H1 same-target pre-pass), an exact matching Tokio artifact exists:
+   - Target and profile match the current compilation unit.
+   - The compiled `.rlib` path matches rustc's `--extern tokio=<rlib>` via canonical path identity (`paths_refer_to_same_file`).
+   - The active resolved features include the mandatory runtime feature (`"rt"`, either directly or transitively enabled by `"rt-multi-thread"`).
+7. The spawn site passes conservative lexical, shadow, and structural idempotence checks.
 
-If any link in this proof is missing, foreign, or ambiguous, `report.spawn_sites` is cleared and no rewriting occurs (conservative no-transformation).
+If any link in this proof is missing, foreign, ambiguous, or lacks the required runtime features, `report.spawn_sites` is cleared and no rewriting occurs (conservative no-transformation).
 
-#### Status & Scope Boundary: What is Resolved vs Remaining Open
+#### Status & Resolution: H3 Complete
 
-- **Status:** **PARTIALLY RESOLVED**
-- **Resolved (Cargo Package/Binding/Rename Identity):** The 6-point check establishes that the current unit's Cargo dependency edge named `tokio` maps to a genuine Cargo package whose package name is `tokio`. This decisively eliminates the dependency-rename vulnerability (`tokio = { package = "fake-runtime" }`), rejects packages that rename Tokio away, and protects units lacking a direct dependency on Tokio.
-- **Remaining Open (Authoritative Artifact & Feature Profile Identity):** The current implementation verifies metadata resolve edges and `--extern tokio` presence, but does not yet validate the concrete `--extern tokio=<rlib>` artifact path against Cargo `compiler-artifact` JSON output, nor does it verify target/profile consistency or validate required feature profiles (e.g. `rt`, `rt-multi-thread`). Full end-to-end artifact identity verification remains open.
+- **Status:** **COMPLETE**
+- **Cargo Package/Binding/Rename Identity:** The 6-point check establishes that the current unit's Cargo dependency edge named `tokio` maps to a genuine Cargo package whose package name is `tokio`. This decisively eliminates the dependency-rename vulnerability (`tokio = { package = "fake-runtime" }`), rejects packages that rename Tokio away, and protects units lacking a direct dependency on Tokio.
+- **Authoritative Artifact & Feature Profile Identity:** During the same-target pre-pass, Cargo `compiler-artifact` JSON records are captured for `tokio` packages into `SessionPlan::tokio_artifacts`. In `SessionPlan::tokio_artifact_for`, the compiler wrapper validates:
+  - Exact artifact match for target and profile;
+  - Presence of the `.rlib` file on disk;
+  - Satisfaction of required features (`"rt"`, including transitive satisfaction via `"rt-multi-thread"`);
+  - Exact path equality / canonical path equivalence (`paths_refer_to_same_file`) against any active rustc `--extern tokio=<path>` binding.
+  Any feature deficiency (e.g. Tokio compiled with only `sync` or `macros`), target mismatch, profile mismatch, non-existent artifact path, or ambiguity causes validation to fail safely, logging a clear diagnostic and suppressing spawn call-site rewrites.
 
 ---
 
@@ -143,7 +152,7 @@ If any link in this proof is missing, foreign, or ambiguous, `report.spawn_sites
 
 ### 3.1 Unit & Transformation Test Suite (`tokio_spawn_tests.rs`)
 
-A dedicated integration test suite in `cargo-instrument/tests/tokio_spawn_tests.rs` covers all design criteria:
+A dedicated integration test suite in `cargo-instrument/tests/tokio_spawn_tests.rs` covers all 21 design criteria:
 
 1. `test_uninstrumented_tokio_spawn_loses_parent_context`: Constructs and attaches a fixed, valid nonzero `SpanContext`, proves it is active before dispatch, then proves raw `tokio::spawn` sees `SpanId::INVALID` while the explicit wrapper preserves the exact fixed IDs. It has no global provider dependency.
 2. `test_ast_conservative_tokio_spawn_recognition` and `test_ast_tokio_shadowing_excludes_syntactic_spawn_matches`: Prove only accepted paths match and that `mod tokio`, `use ... as tokio`, and `extern crate ... as tokio` suppress rewrites.
@@ -155,6 +164,16 @@ A dedicated integration test suite in `cargo-instrument/tests/tokio_spawn_tests.
 8. `test_runtime_multi_thread_context_propagation`: Proves runtime multi-threaded propagation across nested spawns under an active parent span with zero active context leaks and exact trace ancestry.
 9. `test_h3_metadata_identity_proof_all_adversarial_cases`: Full multi-case adversarial unit suite verifying that real Tokio is proved, fake package renamed to `tokio` is rejected, Tokio renamed away to `my_tokio` is rejected, Tokio elsewhere in workspace is rejected, multiple Tokio versions resolve strictly per unit edge, and unknown units fail open safely.
 10. `test_h3_adversarial_fake_runtime_renamed_to_tokio_live_cargo_build`: Live Cargo workspace integration proof where an application crate depends on `tokio = { package = "fake-runtime", path = "..." }` and calls `tokio::spawn`. Proves the wrapper detects the foreign package identity, logs suppression, leaves the spawn site unwrapped, transforms legitimate function candidates, and the binary compiles and runs cleanly.
+11. `test_h3_valid_tokio_artifact_selected`: Proves that an exact matching Tokio artifact with `rt` feature, matching target and profile, and matching `--extern tokio` path passes validation.
+12. `test_h3_adversarial_tokio_artifact_lacks_rt_feature`: Proves that a Tokio artifact compiled with only `["sync", "macros"]` (lacking `rt`) fails validation with `FeatureMismatch` and suppresses spawn wrapping.
+13. `test_h3_tokio_artifact_rt_multi_thread_satisfies_rt_requirement`: Proves that Tokio compiled with `features = ["rt-multi-thread"]` (which resolves `rt` into the compiler-artifact features array) satisfies the `"rt"` requirement.
+14. `test_h3_tokio_artifact_target_mismatch_fails`: Proves target mismatch between compilation unit and Tokio artifact causes validation failure (`TargetMismatch`).
+15. `test_h3_tokio_artifact_profile_mismatch_fails`: Proves profile mismatch (e.g. debug vs release) causes validation failure (`ProfileMismatch`).
+16. `test_h3_tokio_extern_artifact_path_identity_enforcement`: Proves exact path equality and canonical path equivalence are accepted, while different directories with matching filenames or non-existent/stale paths are rejected (`ExternPathMismatch`).
+17. `test_h3_missing_tokio_artifact_features_fails`: Proves compiler-artifact messages lacking feature information fail validation (`MissingFeatures`).
+18. `test_h3_multiple_ambiguous_tokio_artifacts_rejected`: Proves multiple conflicting Tokio artifacts for the same unit/profile fail safe (`Ambiguous`).
+19. `test_h3_tokio_package_name_differs_from_bin_target`: Proves binary targets whose name differs from package name (e.g. package `my-service` with `[[bin]] name = "server"`) correctly validate active Tokio artifacts.
+20. `test_h3_live_cargo_build_tokio_feature_safety`: End-to-end live Cargo build proof executing `cargo build` with `cargo-instrument` as `RUSTC_WRAPPER` against a real crate depending on real Tokio with only `features = ["sync", "macros"]` (lacking `rt`). Asserts suppression is logged, function candidates are transformed, the spawn site is left untouched, and the resulting binary runs and passes assertions.
 
 ### 3.2 End-to-End Multi-Crate Integration Proof (`r4_extern_injection_tests.rs`)
 
