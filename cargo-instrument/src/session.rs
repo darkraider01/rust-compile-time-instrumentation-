@@ -98,6 +98,12 @@ pub struct CargoDepEdge {
 /// 2. Which packages are compiled exclusively for the host (preventing proc-macro dep instrumentation).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionPlan {
+    #[serde(default)]
+    pub shim_metadata_v2: bool,
+    #[serde(default)]
+    pub workspace_package_ids: HashSet<String>,
+    #[serde(default)]
+    pub wrapper_excluded_package_ids: HashSet<String>,
     /// Whether any target root in the build graph has otel-shim reachable.
     /// D5 / S11: Defaults to false to fail open if metadata evaluation fails.
     pub has_otel_shim_provider: bool,
@@ -147,6 +153,9 @@ pub struct SessionPlan {
     /// Authoritative Tokio artifacts captured from Cargo's `compiler-artifact` JSON output.
     #[serde(default)]
     pub tokio_artifacts: Vec<TokioArtifact>,
+    /// Cargo-reported companion metadata files keyed by the exact runtime rlib path.
+    #[serde(default)]
+    pub artifact_metadata_paths: HashMap<PathBuf, Vec<PathBuf>>,
     /// Authoritative mapping of package ID -> package name (e.g. "tokio", "fake-runtime").
     #[serde(default)]
     pub package_names_by_id: HashMap<String, String>,
@@ -156,6 +165,33 @@ pub struct SessionPlan {
 }
 
 impl SessionPlan {
+    /// Exclude owned source and the telemetry/executor implementation closure.
+    pub fn configure_dependency_only_policy(&mut self) {
+        self.wrapper_excluded_package_ids = self.workspace_package_ids.clone();
+        let mut queue: Vec<String> = self
+            .package_names_by_id
+            .iter()
+            .filter(|(_, name)| {
+                name.starts_with("opentelemetry") || *name == "otel-shim" || *name == "tokio"
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut visited = HashSet::new();
+        while let Some(id) = queue.pop() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            self.wrapper_excluded_package_ids.insert(id.clone());
+            if let Some(edges) = self.package_dependencies.get(&id) {
+                queue.extend(edges.iter().map(|edge| edge.package_id.clone()));
+            }
+        }
+    }
+
+    pub fn excludes_wrapper_source(&self, source: &Path) -> bool {
+        self.package_id_for_source(source)
+            .is_some_and(|id| self.wrapper_excluded_package_ids.contains(id))
+    }
     /// Authoritatively resolves whether the current application unit is eligible for native OpenTelemetry emission.
     ///
     /// The unit is eligible if and only if:
@@ -326,6 +362,17 @@ impl SessionPlan {
                 profile,
                 rlib_path: rlibs.into_iter().next().unwrap(),
             });
+            let rlib = &artifacts.last().unwrap().rlib_path;
+            let metadata_paths = message["filenames"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .map(PathBuf::from)
+                .filter(|path| path.extension().is_some_and(|ext| ext == "rmeta"))
+                .collect();
+            self.artifact_metadata_paths
+                .insert(rlib.clone(), metadata_paths);
         }
 
         for artifact in artifacts {
@@ -462,6 +509,17 @@ impl SessionPlan {
                 profile,
                 rlib_path: rlibs.into_iter().next().unwrap(),
             });
+            let rlib = &artifacts.last().unwrap().rlib_path;
+            let metadata_paths = message["filenames"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .map(PathBuf::from)
+                .filter(|path| path.extension().is_some_and(|ext| ext == "rmeta"))
+                .collect();
+            self.artifact_metadata_paths
+                .insert(rlib.clone(), metadata_paths);
         }
 
         for artifact in artifacts {
@@ -721,13 +779,17 @@ impl SessionPlan {
 
                 // Invariant 2: Active rustc --extern path match (if specified)
                 if let Some(extern_path) = extern_crate_path(rustc_args, "tokio") {
-                    if !paths_refer_to_same_file(&artifact.rlib_path, &extern_path) {
+                    let metadata_match = self.artifact_metadata_paths.get(&artifact.rlib_path)
+                        .is_some_and(|paths| paths.iter().any(|path| paths_refer_to_same_file(path, &extern_path)));
+                    if !paths_refer_to_same_file(&artifact.rlib_path, &extern_path) && !metadata_match {
                         return Err(format!(
                             "Cargo-reported Tokio artifact '{}' does not match active rustc --extern '{}'",
                             artifact.rlib_path.display(),
                             extern_path.display()
                         ));
                     }
+                } else {
+                    return Err("Tokio binding has no exact Cargo artifact path".into());
                 }
 
                 Ok(Some(*artifact))
@@ -796,13 +858,17 @@ impl SessionPlan {
 
                 // Invariant 2: Active rustc --extern path match (if specified)
                 if let Some(extern_path) = extern_crate_path(rustc_args, "opentelemetry") {
-                    if !paths_refer_to_same_file(&artifact.rlib_path, &extern_path) {
+                    let metadata_match = self.artifact_metadata_paths.get(&artifact.rlib_path)
+                        .is_some_and(|paths| paths.iter().any(|path| paths_refer_to_same_file(path, &extern_path)));
+                    if !paths_refer_to_same_file(&artifact.rlib_path, &extern_path) && !metadata_match {
                         return Err(format!(
                             "Cargo-reported OpenTelemetry artifact '{}' does not match active rustc --extern '{}'",
                             artifact.rlib_path.display(),
                             extern_path.display()
                         ));
                     }
+                } else if rustc_has_extern_binding(rustc_args, "opentelemetry") {
+                    return Err("OpenTelemetry binding has no exact Cargo artifact path".into());
                 }
 
                 Ok(Some(*artifact))
@@ -860,6 +926,9 @@ fn parse_extern_spec_path(spec: &str, crate_name: &str) -> Option<PathBuf> {
 /// If canonicalization fails on either path (e.g. non-existent or stale path), returns false.
 /// Never falls back to filename-only equality.
 pub fn paths_refer_to_same_file(p1: &Path, p2: &Path) -> bool {
+    if !p1.is_file() || !p2.is_file() {
+        return false;
+    }
     if p1 == p2 {
         return true;
     }
@@ -1065,12 +1134,13 @@ impl SessionPlan {
             let path = PathBuf::from(path_str);
             if path.exists() {
                 if let Ok(plan) = Self::load_from_file(&path) {
-                    eprintln!(
-                        "[DEBUG loaded plan from {}] r4_map: {:?}",
-                        path.display(),
-                        plan.r4_otel_package_by_dependency
-                    );
-                    return plan;
+                    let public_policy = std::env::var("CARGO_INSTRUMENT_DEPENDENCIES")
+                        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+                    if !public_policy || plan.is_fresh(&best_dir) {
+                        return plan;
+                    }
+                    eprintln!("warning: cargo-instrument: stale dependency session; rebuilding metadata and discarding captured artifacts");
                 }
             }
             match Self::build_from_metadata(&best_dir) {
@@ -1241,6 +1311,9 @@ impl SessionPlan {
                 });
                 let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
                 return Ok(Self {
+                    shim_metadata_v2: false,
+                    workspace_package_ids: workspace_members,
+                    wrapper_excluded_package_ids: HashSet::new(),
                     has_otel_shim_provider: has_shim,
                     shim_unsafe_packages: HashSet::new(),
                     host_only_packages: HashSet::new(),
@@ -1256,6 +1329,7 @@ impl SessionPlan {
                     tokio_package_by_dependency: HashMap::new(),
                     tokio_required_features_by_dependency: HashMap::new(),
                     tokio_artifacts: Vec::new(),
+                    artifact_metadata_paths: HashMap::new(),
                     package_names_by_id: pkg_id_to_name,
                     package_dependencies: HashMap::new(),
                 });
@@ -1519,6 +1593,9 @@ impl SessionPlan {
 
         Ok(Self {
             has_otel_shim_provider,
+            shim_metadata_v2: false,
+            workspace_package_ids: workspace_members,
+            wrapper_excluded_package_ids: HashSet::new(),
             shim_unsafe_packages,
             host_only_packages,
             host_only_manifest_dirs,
@@ -1533,6 +1610,7 @@ impl SessionPlan {
             tokio_package_by_dependency,
             tokio_required_features_by_dependency,
             tokio_artifacts: Vec::new(),
+            artifact_metadata_paths: HashMap::new(),
             package_names_by_id: pkg_id_to_name,
             package_dependencies,
         })

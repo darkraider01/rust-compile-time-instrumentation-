@@ -121,8 +121,14 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                         .unwrap_or_else(|| UnitId::from_crate_name(crate_name));
 
                     // Load session policy once per build session
-                    let session_plan =
+                    let mut session_plan =
                         SessionPlan::load_or_create(&current_dir, invocation.unit.out_dir());
+                    let dependency_only = env::var("CARGO_INSTRUMENT_DEPENDENCIES")
+                        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+                    if dependency_only {
+                        session_plan.configure_dependency_only_policy();
+                    }
 
                     // Registry dependency opt-in gate (§12.1, §12.3):
                     let registry_enabled = env::var("CARGO_INSTRUMENT_REGISTRY")
@@ -137,7 +143,11 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                     let is_host_only =
                         session_plan.is_host_only_unit(crate_name, Some(&resolved_path));
 
-                    let should_skip = if invocation.unit.is_telemetry_or_tool_crate() {
+                    let should_skip = if (dependency_only
+                        && session_plan.package_id_for_source(&resolved_path).is_none())
+                        || session_plan.excludes_wrapper_source(&resolved_path)
+                        || invocation.unit.is_telemetry_or_tool_crate()
+                    {
                         true
                     } else if is_host_only {
                         if config.debug_output {
@@ -171,6 +181,11 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                 // rewriting occurs (conservative no-transformation).
                                 if !session_plan
                                     .unit_has_real_tokio_binding(&resolved_path, &config.rustc_args)
+                                    || !matches!(
+                                        session_plan
+                                            .tokio_artifact_for(&resolved_path, &config.rustc_args),
+                                        Ok(Some(_))
+                                    )
                                 {
                                     if !report.spawn_sites.is_empty() {
                                         if config.debug_output {
@@ -276,7 +291,11 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                     std::process::id()
                                                 );
                                             }
-                                            Some(Box::new(NativeOtelEmitter::new(crate_name)))
+                                            Some(Box::new(if dependency_only {
+                                                NativeOtelEmitter::for_dependency(crate_name)
+                                            } else {
+                                                NativeOtelEmitter::new(crate_name)
+                                            }))
                                         } else if native_otel_enforced {
                                             eprintln!(
                                                 "warning: cargo-instrument: crate '{crate_name}' does not depend on 'opentelemetry' with 'trace' feature. \
@@ -290,11 +309,17 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                     std::process::id()
                                                 );
                                             }
-                                            Some(Box::new(TrampolineEmitter::new(
-                                                crate_name,
-                                                invocation.unit.edition().map(String::from),
-                                                report.unsafe_policy,
-                                            )))
+                                            Some(Box::new(
+                                                TrampolineEmitter::new(
+                                                    crate_name,
+                                                    invocation.unit.edition().map(String::from),
+                                                    report.unsafe_policy,
+                                                )
+                                                .with_metadata(
+                                                    dependency_only
+                                                        && session_plan.shim_metadata_v2,
+                                                ),
+                                            ))
                                         } else {
                                             Some(Box::new(SentinelEmitter))
                                         }
@@ -309,7 +334,9 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                     std::process::id()
                                                 );
                                             }
-                                            Some(Box::new(NativeOtelEmitter::new(crate_name)))
+                                            Some(Box::new(NativeOtelEmitter::for_dependency(
+                                                crate_name,
+                                            )))
                                         // G4 / G7 link provider gate: verify otel-shim is reachable in the build graph
                                         // and that no target root reaching this crate lacks otel-shim.
                                         } else if !session_plan.has_otel_shim_provider() {
@@ -331,11 +358,17 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                     std::process::id()
                                                 );
                                             }
-                                            Some(Box::new(TrampolineEmitter::new(
-                                                crate_name,
-                                                invocation.unit.edition().map(String::from),
-                                                report.unsafe_policy,
-                                            )))
+                                            Some(Box::new(
+                                                TrampolineEmitter::new(
+                                                    crate_name,
+                                                    invocation.unit.edition().map(String::from),
+                                                    report.unsafe_policy,
+                                                )
+                                                .with_metadata(
+                                                    dependency_only
+                                                        && session_plan.shim_metadata_v2,
+                                                ),
+                                            ))
                                         }
                                     };
 

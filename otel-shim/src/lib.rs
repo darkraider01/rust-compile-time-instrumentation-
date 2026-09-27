@@ -99,6 +99,47 @@ pub unsafe extern "C-unwind" fn __otel_span_enter(
     _line: u32,
     _kind: u8,
 ) -> u64 {
+    enter_span("dependency", name, name_len, _file, _file_len, _line, _kind)
+}
+
+/// Versioned metadata ABI. Existing callers keep the original symbol/signature.
+///
+/// # Safety
+/// All non-null pointers must refer to immutable UTF-8 buffers of the supplied
+/// lengths; the scope and function name buffers must have static lifetime.
+#[cfg(feature = "metadata-v2")]
+#[no_mangle]
+pub unsafe extern "C-unwind" fn __otel_span_enter_v2(
+    scope: *const u8,
+    scope_len: usize,
+    name: *const u8,
+    name_len: usize,
+    file: *const u8,
+    file_len: usize,
+    line: u32,
+    kind: u8,
+) -> u64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if scope.is_null() || scope_len == 0 {
+            return 0;
+        }
+        let Ok(scope) = str::from_utf8(slice::from_raw_parts(scope, scope_len)) else {
+            return 0;
+        };
+        enter_span(scope, name, name_len, file, file_len, line, kind)
+    }))
+    .unwrap_or(0)
+}
+
+unsafe fn enter_span(
+    scope: &str,
+    name: *const u8,
+    name_len: usize,
+    file: *const u8,
+    file_len: usize,
+    line: u32,
+    kind: u8,
+) -> u64 {
     // Soundness: AssertUnwindSafe is sound because name and file pointers are guaranteed by caller contract
     // to refer to static/immutable byte slices that are only read for UTF-8 decoding. Thread-locals
     // (STACK, IN_SHIM) cleanly drop their guards and borrows upon unwinding, ensuring that swallowing
@@ -133,9 +174,31 @@ pub unsafe extern "C-unwind" fn __otel_span_enter(
             Err(_) => return 0,
         };
 
-        let tracer = opentelemetry::global::tracer("dependency");
+        let tracer = opentelemetry::global::tracer(scope.to_owned());
+        let kind = match kind {
+            0 => opentelemetry::trace::SpanKind::Internal,
+            1 => opentelemetry::trace::SpanKind::Server,
+            2 => opentelemetry::trace::SpanKind::Client,
+            3 => opentelemetry::trace::SpanKind::Producer,
+            4 => opentelemetry::trace::SpanKind::Consumer,
+            _ => return 0,
+        };
+        let mut attributes = vec![
+            opentelemetry::KeyValue::new("code.function.name", name_str.to_owned()),
+            opentelemetry::KeyValue::new("code.line.number", i64::from(line)),
+        ];
+        if !file.is_null() && file_len > 0 {
+            let Ok(file) = str::from_utf8(slice::from_raw_parts(file, file_len)) else {
+                return 0;
+            };
+            attributes.push(opentelemetry::KeyValue::new(
+                "code.file.path",
+                file.to_owned(),
+            ));
+        }
         let span = opentelemetry::trace::Tracer::span_builder(&tracer, name_str)
-            .with_kind(opentelemetry::trace::SpanKind::Internal)
+            .with_kind(kind)
+            .with_attributes(attributes)
             .start(&tracer);
 
         let cx = <Context as opentelemetry::trace::TraceContextExt>::current_with_span(span);
@@ -341,6 +404,65 @@ mod tests {
                 exp
             })
             .clone()
+    }
+
+    #[test]
+    #[cfg(feature = "metadata-v2")]
+    fn metadata_v2_records_scope_coordinates_kind_and_rejects_invalid_input() {
+        let exporter = get_test_exporter();
+        unsafe {
+            assert_eq!(
+                __otel_span_enter_v2(
+                    std::ptr::null(),
+                    0,
+                    b"v2".as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    0,
+                    1,
+                    0
+                ),
+                0
+            );
+            assert_eq!(
+                __otel_span_enter_v2(
+                    b"\xff".as_ptr(),
+                    1,
+                    b"v2".as_ptr(),
+                    2,
+                    std::ptr::null(),
+                    0,
+                    1,
+                    0
+                ),
+                0
+            );
+            let handle = __otel_span_enter_v2(
+                b"metadata_v2_scope".as_ptr(),
+                17,
+                b"metadata_v2_unique".as_ptr(),
+                18,
+                b"original.rs".as_ptr(),
+                11,
+                42,
+                2,
+            );
+            assert_ne!(handle, 0);
+            __otel_span_exit(handle);
+        }
+        assert_eq!(active_span_count(), 0);
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans
+            .iter()
+            .find(|span| span.name == "metadata_v2_unique")
+            .unwrap();
+        assert_eq!(span.instrumentation_scope.name(), "metadata_v2_scope");
+        assert_eq!(span.span_kind, opentelemetry::trace::SpanKind::Client);
+        assert!(span
+            .attributes
+            .iter()
+            .any(|attribute| attribute.key.as_str() == "code.line.number"
+                && attribute.value == opentelemetry::Value::I64(42)));
     }
 
     /// S9: Handle 0 no-op invariant.

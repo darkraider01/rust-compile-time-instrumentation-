@@ -3,6 +3,21 @@
 //! This crate intentionally contains no syntax-tree or compiler-private types.
 
 pub const P23_MARKER: &str = "/* __cargo_instrument_rust:p23 */";
+/// Tool-specific attribute; this is not an OpenTelemetry semantic convention.
+pub const DEPENDENCY_ASYNC_OUTCOME: &str = "cargo.instrumentation.async.outcome";
+
+/// Poll boundaries do not own a stream/sink lifetime. Avoid a span per poll/item.
+pub fn is_polling_adapter_method(trait_name: &str, method: &str) -> bool {
+    matches!(
+        (trait_name, method),
+        ("Future", "poll")
+            | ("Stream", "poll_next")
+            | (
+                "Sink",
+                "poll_ready" | "start_send" | "poll_flush" | "poll_close"
+            )
+    )
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FunctionShape {

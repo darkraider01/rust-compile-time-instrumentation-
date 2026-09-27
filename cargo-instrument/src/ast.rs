@@ -12,6 +12,7 @@ use crate::candidate::{
 /// The seven runtime C-ABI symbols exported by `otel-shim`.
 pub const OTEL_ABI_SYMBOLS: &[&str] = &[
     "__otel_span_enter",
+    "__otel_span_enter_v2",
     "__otel_span_exit",
     "__otel_span_set_error",
     "__otel_span_start",
@@ -1078,6 +1079,14 @@ impl<'ast> Visit<'ast> for CandidateFinder {
 
         if let Some(imp) = &self.current_impl {
             if let Some(trait_ident) = &imp.trait_ident {
+                if instrument_semantics::is_polling_adapter_method(
+                    trait_ident,
+                    &i.sig.ident.to_string(),
+                ) {
+                    self.skipped_stats.adapter_trait += 1;
+                    self.visit_skipped_fn_body(&i.block);
+                    return;
+                }
                 if trait_ident == "Drop" && i.sig.ident == "drop" {
                     self.skipped_stats.drop_implementation += 1;
                     self.visit_skipped_fn_body(&i.block);

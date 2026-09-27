@@ -86,12 +86,23 @@ fn run_cli(args: &[String]) {
         Vec::new()
     };
 
-    if cli_args.is_empty() || cli_args.iter().any(|a| a == "--help" || a == "-h") {
+    let wrapper_options: Vec<_> = cli_args
+        .iter()
+        .take_while(|arg| arg.starts_with('-') && *arg != "--")
+        .collect();
+    if cli_args.is_empty()
+        || wrapper_options
+            .iter()
+            .any(|a| a.as_str() == "--help" || a.as_str() == "-h")
+    {
         print_help();
         return;
     }
 
-    if cli_args.iter().any(|a| a == "--version" || a == "-V") {
+    if wrapper_options
+        .iter()
+        .any(|a| a.as_str() == "--version" || a.as_str() == "-V")
+    {
         println!("cargo-instrument {}", env!("CARGO_PKG_VERSION"));
         return;
     }
@@ -205,12 +216,16 @@ struct CliInvocation {
     cargo_args: Vec<String>,
     app_args: Vec<String>,
     has_app_args_separator: bool,
+    with_dependencies: bool,
 }
 
 fn parse_cli_invocation(raw_args: &[String]) -> CliInvocation {
     let mut cargo_args = Vec::new();
     let mut app_args = Vec::new();
     let mut has_app_args_separator = false;
+    let mut with_dependencies = env::var("CARGO_INSTRUMENT_DEPENDENCIES")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
     let mut iter = raw_args.iter().peekable();
     if iter.peek().map(|s| s.as_str()) == Some("--") {
@@ -221,9 +236,13 @@ fn parse_cli_invocation(raw_args: &[String]) -> CliInvocation {
     for arg in iter {
         if in_app_args {
             app_args.push(arg.clone());
+        } else if arg == "--with-dependencies" {
+            with_dependencies = true;
         } else if arg == "--" {
-            in_app_args = true;
-            has_app_args_separator = true;
+            if !cargo_args.is_empty() {
+                in_app_args = true;
+                has_app_args_separator = true;
+            }
         } else {
             cargo_args.push(arg.clone());
         }
@@ -237,6 +256,7 @@ fn parse_cli_invocation(raw_args: &[String]) -> CliInvocation {
         cargo_args,
         app_args,
         has_app_args_separator,
+        with_dependencies,
     }
 }
 
@@ -262,6 +282,13 @@ fn execute_cargo_with_wrapper(args: &[String]) {
     }
 
     let mut invocation = parse_cli_invocation(args);
+    if invocation.with_dependencies {
+        // Publish the policy to metadata acquisition and all compiler children.
+        env::set_var("CARGO_INSTRUMENT_DEPENDENCIES", "1");
+        env::set_var("CARGO_INSTRUMENT_REGISTRY", "1");
+        cargo_cmd.env("CARGO_INSTRUMENT_DEPENDENCIES", "1");
+        cargo_cmd.env("CARGO_INSTRUMENT_REGISTRY", "1");
+    }
 
     // Check if user already provided --target-dir
     let has_target_dir = invocation
@@ -298,6 +325,32 @@ fn execute_cargo_with_wrapper(args: &[String]) {
     } else {
         current_dir.join(target_dir)
     };
+    let policy_path = resolved_target_dir.join("cargo_instrument_policy");
+    let policy = if invocation.with_dependencies {
+        "dependencies-v1"
+    } else {
+        "legacy-v1"
+    };
+    if (policy_path.exists()
+        && std::fs::read_to_string(&policy_path).ok().as_deref() != Some(policy))
+        || (invocation.with_dependencies && resolved_target_dir.exists() && !policy_path.exists())
+    {
+        let output = Command::new("cargo")
+            .arg("clean")
+            .arg("--target-dir")
+            .arg(&resolved_target_dir)
+            .args(clean_forward_flags(&invocation.cargo_args))
+            .current_dir(&current_dir)
+            .env_remove("RUSTC_WRAPPER")
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {}
+            _ => {
+                eprintln!("cargo-instrument: could not clear artifacts from the previous instrumentation policy");
+                process::exit(1);
+            }
+        }
+    }
 
     // Precompute SessionPlan once using the invocation's resolution flags.  In particular, an
     // offline Cargo command must never have its orchestration metadata probe reach the network.
@@ -305,6 +358,9 @@ fn execute_cargo_with_wrapper(args: &[String]) {
     let session_file = resolved_target_dir.join("cargo_instrument_session.json");
     match build_session_plan(&invocation.cargo_args, &current_dir) {
         Ok(mut plan) => {
+            if invocation.with_dependencies {
+                plan.configure_dependency_only_policy();
+            }
             // Native R-4 acquisition is deliberately limited to ordinary build/run.  The
             // pre-pass uses this exact target directory so Cargo's crate identities remain
             // compatible with the final wrapper-enabled build.  Unsupported commands retain
@@ -353,6 +409,12 @@ fn execute_cargo_with_wrapper(args: &[String]) {
         }
     };
 
+    if status.success() && invocation.cargo_args.first().map(String::as_str) != Some("clean") {
+        if let Err(error) = std::fs::write(&policy_path, policy) {
+            eprintln!("cargo-instrument: could not record build policy: {error}");
+            process::exit(1);
+        }
+    }
     process::exit(status.code().unwrap_or(1));
 }
 
@@ -446,6 +508,23 @@ fn acquire_native_artifacts(
     }
 
     let mut capture_error = if output.status.success() {
+        let shim_messages: Vec<_> = stdout
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+            .filter(|message| {
+                message["reason"] == "compiler-artifact"
+                    && message["package_id"]
+                        .as_str()
+                        .and_then(|id| plan.package_names_by_id.get(id))
+                        .is_some_and(|name| name == "otel-shim")
+            })
+            .collect();
+        plan.shim_metadata_v2 = !shim_messages.is_empty()
+            && shim_messages.iter().all(|message| {
+                message["features"]
+                    .as_array()
+                    .is_some_and(|features| features.iter().any(|feature| feature == "metadata-v2"))
+            });
         let r4_err = plan
             .add_r4_artifacts_from_cargo_json(&metadata, &stdout, None)
             .err();
@@ -475,6 +554,7 @@ fn acquire_native_artifacts(
     // we must not use the partial JSON message stream as proof that absent dependencies are already instrumented.
     let prepass_incomplete_or_failed = capture_error.is_some() || freshly_compiled.is_err();
     if prepass_incomplete_or_failed {
+        plan.shim_metadata_v2 = false;
         plan.r4_native_otel_artifacts.clear();
         plan.tokio_artifacts.clear();
         let empty_retained = std::collections::HashSet::new();
@@ -858,6 +938,7 @@ fn desired_instrumented_package_ids(
             let id = package["id"].as_str()?;
             let name = package["name"].as_str()?;
             if !plan.target_reachable_package_ids.contains(id)
+                || plan.wrapper_excluded_package_ids.contains(id)
                 || name == "opentelemetry"
                 || name.starts_with("opentelemetry_")
                 || name == "otel-shim"
@@ -1006,25 +1087,7 @@ fn invalidate_packages(
         }
     }
 
-    // Extract forwarding flags from cargo_args
-    let mut forward_flags = Vec::new();
-    let mut i = 0;
-    while i < cargo_args.len() {
-        let arg = &cargo_args[i];
-        if matches!(arg.as_str(), "--manifest-path" | "--config") {
-            forward_flags.push(arg.clone());
-            if let Some(val) = cargo_args.get(i + 1) {
-                forward_flags.push(val.clone());
-                i += 1;
-            }
-        } else if arg.starts_with("--manifest-path=")
-            || arg.starts_with("--config=")
-            || matches!(arg.as_str(), "--offline" | "--locked" | "--frozen")
-        {
-            forward_flags.push(arg.clone());
-        }
-        i += 1;
-    }
+    let forward_flags = clean_forward_flags(cargo_args);
 
     for package in packages_by_name.keys() {
         let mut clean_cmd = Command::new("cargo");
@@ -1062,6 +1125,29 @@ fn invalidate_packages(
     Ok(())
 }
 
+fn clean_forward_flags(cargo_args: &[String]) -> Vec<String> {
+    let mut forward_flags = Vec::new();
+    let mut i = 0;
+    while i < cargo_args.len() {
+        let arg = &cargo_args[i];
+        if matches!(arg.as_str(), "--manifest-path" | "--config") {
+            forward_flags.push(arg.clone());
+            if let Some(val) = cargo_args.get(i + 1) {
+                forward_flags.push(val.clone());
+                i += 1;
+            }
+        } else if arg.starts_with("--manifest-path=")
+            || arg.starts_with("--config=")
+            || matches!(arg.as_str(), "--offline" | "--locked" | "--frozen")
+        {
+            forward_flags.push(arg.clone());
+        }
+        i += 1;
+    }
+
+    forward_flags
+}
+
 fn print_help() {
     println!(
         "cargo-instrument {}
@@ -1073,6 +1159,7 @@ USAGE:
     cargo instrument transform <path.rs> [--output <destination.rs>]
 
 OPTIONS:
+    --with-dependencies  Instrument unowned path/registry dependencies; preserve first-party source
     -h, --help       Print help information
     -V, --version    Print version information
 
@@ -1081,6 +1168,7 @@ SUBCOMMANDS:
     transform <path.rs> [--output <dest.rs>] Deterministically transform source file using candidate byte ranges
 
 ENVIRONMENT:
+    CARGO_INSTRUMENT_DEPENDENCIES  Set to 1 for the same dependency-only policy
     INSTRUMENT_DEBUG     Set to 1 to enable candidate debug output during builds
     RUSTC_WRAPPER        Automatically set by 'cargo instrument' to invoke this binary
 ",

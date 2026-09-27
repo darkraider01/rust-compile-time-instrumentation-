@@ -713,6 +713,7 @@ pub enum SpanKind {
 pub struct NativeOtelEmitter {
     /// The crate name used as the OpenTelemetry tracer name (instrumentation scope).
     pub crate_name: String,
+    pub dependency_lifecycle: bool,
 }
 
 impl NativeOtelEmitter {
@@ -720,7 +721,32 @@ impl NativeOtelEmitter {
     pub fn new(crate_name: impl Into<String>) -> Self {
         Self {
             crate_name: crate_name.into(),
+            dependency_lifecycle: false,
         }
+    }
+
+    pub fn for_dependency(crate_name: impl Into<String>) -> Self {
+        Self {
+            crate_name: crate_name.into(),
+            dependency_lifecycle: true,
+        }
+    }
+
+    fn lifecycle_prefix(&self, nl: &str) -> String {
+        if !self.dependency_lifecycle {
+            return String::new();
+        }
+        let key = instrument_semantics::DEPENDENCY_ASYNC_OUTCOME;
+        format!("{nl}    struct __OtelLifecycle {{ cx: opentelemetry::Context, completed: bool }}\
+            {nl}    impl Drop for __OtelLifecycle {{\
+            {nl}        fn drop(&mut self) {{\
+            {nl}            let outcome = if self.completed {{ \"completed\" }} else if std::thread::panicking() {{ \"unwound\" }} else {{ \"cancelled\" }};\
+            {nl}            let span = opentelemetry::trace::TraceContextExt::span(&self.cx);\
+            {nl}            span.set_attribute(opentelemetry::KeyValue::new(\"{key}\", outcome));\
+            {nl}            span.end();\
+            {nl}        }}\
+            {nl}    }}\
+            {nl}    let mut __otel_lifecycle = __OtelLifecycle {{ cx: __otel_cx.clone(), completed: false }};")
     }
 }
 
@@ -731,6 +757,12 @@ impl Emitter for NativeOtelEmitter {
         let nl = line_ending;
 
         if candidate.is_async {
+            let lifecycle = self.lifecycle_prefix(nl);
+            let output_binding = if self.dependency_lifecycle {
+                "let __otel_output = "
+            } else {
+                ""
+            };
             // P1.6: Async functions wrap the body in `FutureExt::with_context(async move { ... })`.
             // Async generators share lifetime bounds with the outer future, so `Result<&mut T, E>`
             // compiles cleanly without closure-escape issues. Thus, `returns_reference_or_lifetime`
@@ -743,6 +775,7 @@ impl Emitter for NativeOtelEmitter {
                      {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
                      {nl}        .start(&__otel_tracer);\
                      {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
+                     {lifecycle}\
                      {nl}    let __otel_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {{"
                 )
             } else {
@@ -753,7 +786,8 @@ impl Emitter for NativeOtelEmitter {
                      {nl}        .with_kind(opentelemetry::trace::SpanKind::Internal)\
                      {nl}        .start(&__otel_tracer);\
                      {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
-                     {nl}    opentelemetry::trace::FutureExt::with_context(async move {{"
+                     {lifecycle}\
+                     {nl}    {output_binding}opentelemetry::trace::FutureExt::with_context(async move {{"
                 )
             }
         } else {
@@ -790,6 +824,11 @@ impl Emitter for NativeOtelEmitter {
     fn emit_body_suffix(&self, candidate: &Candidate, line_ending: &str) -> String {
         let nl = line_ending;
         if candidate.is_async {
+            let completed = if self.dependency_lifecycle {
+                format!("{nl}    __otel_lifecycle.completed = true;")
+            } else {
+                String::new()
+            };
             if candidate.returns_result {
                 format!(
                     "{nl}    }}, __otel_cx.clone()).await;\
@@ -797,10 +836,15 @@ impl Emitter for NativeOtelEmitter {
                      {nl}        opentelemetry::trace::TraceContextExt::span(&__otel_cx)\
                      {nl}            .set_status(opentelemetry::trace::Status::error(\"\"));\
                      {nl}    }}\
+                     {completed}\
                      {nl}    __otel_res{nl}"
                 )
             } else {
-                format!("{nl}    }}, __otel_cx).await{nl}")
+                if self.dependency_lifecycle {
+                    format!("{nl}    }}, __otel_cx).await;{completed}{nl}    __otel_output{nl}")
+                } else {
+                    format!("{nl}    }}, __otel_cx).await{nl}")
+                }
             }
         } else if candidate.returns_result && !candidate.returns_reference_or_lifetime {
             format!(
@@ -844,9 +888,14 @@ pub struct TrampolineEmitter {
     pub crate_name: String,
     pub edition: Option<String>,
     pub unsafe_policy: crate::candidate::UnsafePolicy,
+    pub metadata_v2: bool,
 }
 
 impl TrampolineEmitter {
+    pub fn with_metadata(mut self, enabled: bool) -> Self {
+        self.metadata_v2 = enabled;
+        self
+    }
     pub fn new(
         crate_name: impl Into<String>,
         edition: Option<String>,
@@ -856,6 +905,7 @@ impl TrampolineEmitter {
             crate_name: crate_name.into(),
             edition,
             unsafe_policy,
+            metadata_v2: false,
         }
     }
 }
@@ -883,7 +933,7 @@ impl Emitter for TrampolineEmitter {
             String::new()
         };
 
-        if candidate.returns_result && !candidate.returns_reference_or_lifetime {
+        let generated = if candidate.returns_result && !candidate.returns_reference_or_lifetime {
             // Sync Result: 3 symbols (enter, exit, set_error) + closure wrapper
             format!(
                 "{nl}    /* __cargo_instrument_anchor: \"{name}\" */\
@@ -968,6 +1018,37 @@ impl Emitter for TrampolineEmitter {
                  {nl}        )\
                  {nl}    }});"
             )
+        };
+        if self.metadata_v2 {
+            let scope = format!("{:?}", self.crate_name);
+            let file = format!("{:?}", candidate.source_file.to_string_lossy());
+            let line = fs::read_to_string(&candidate.source_file)
+                .ok()
+                .and_then(|source| {
+                    source
+                        .get(..candidate.byte_range.start)
+                        .map(|prefix| prefix.bytes().filter(|byte| *byte == b'\n').count() + 1)
+                })
+                .unwrap_or(0);
+            generated
+                .replace("__otel_span_enter(", "__otel_span_enter_v2(")
+                .replace(
+                    "name: *const u8,",
+                    &format!("scope: *const u8, scope_len: usize,{nl}            name: *const u8,"),
+                )
+                .replace(
+                    "__otel_name.as_ptr(),",
+                    &format!(
+                        "{scope}.as_ptr(), {scope}.len(),{nl}            __otel_name.as_ptr(),"
+                    ),
+                )
+                .replace(
+                    "let __otel_file = file!();",
+                    &format!("let __otel_file = {file};"),
+                )
+                .replace("line!(),", &format!("{line}u32,"))
+        } else {
+            generated
         }
     }
 

@@ -6,6 +6,10 @@ authors = ["OpenTelemetry Rust Compile-Time Instrumentation Contributors"]
 description = "Runtime trampoline shim providing extern C OpenTelemetry symbols for compile-time instrumented dependencies"
 license = "Apache-2.0"
 
+[features]
+default = ["metadata-v2"]
+metadata-v2 = []
+
 [dependencies]
 opentelemetry = "0.32.0"
 
