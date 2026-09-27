@@ -470,6 +470,7 @@ fn acquire_native_artifacts(
     let prepass_incomplete_or_failed = capture_error.is_some() || freshly_compiled.is_err();
     if prepass_incomplete_or_failed {
         plan.r4_native_otel_artifacts.clear();
+        plan.tokio_artifacts.clear();
         let empty_retained = std::collections::HashSet::new();
         invalidate_packages(
             &desired_instrumented_ids,

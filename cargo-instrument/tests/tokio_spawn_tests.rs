@@ -785,3 +785,740 @@ fn main() {
         String::from_utf8_lossy(&run_output.stderr)
     );
 }
+
+#[test]
+fn test_h3_valid_tokio_artifact_selected() {
+    use cargo_instrument::session::{CargoDepEdge, R4Profile, SessionPlan, TokioArtifact};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_dir = temp.path().join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    let src = app_dir.join("src/lib.rs");
+    std::fs::write(&src, "pub fn run() {}\n").unwrap();
+
+    let rlib = temp.path().join("libtokio-valid.rlib");
+    std::fs::write(&rlib, b"valid tokio rlib").unwrap();
+
+    let app_id = "app 0.1.0 (path+file:///app)";
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(app_id.to_string(), app_dir.clone());
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(app_id.to_string(), "app".to_string());
+    package_names_by_id.insert(tokio_id.to_string(), "tokio".to_string());
+
+    let mut package_dependencies = HashMap::new();
+    package_dependencies.insert(
+        app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let mut tokio_package_by_dependency = HashMap::new();
+    tokio_package_by_dependency.insert(app_id.to_string(), tokio_id.to_string());
+
+    let mut tokio_required_features_by_dependency = HashMap::new();
+    tokio_required_features_by_dependency.insert(app_id.to_string(), vec!["rt".to_string()]);
+
+    let tokio_artifact = TokioArtifact {
+        package_id: tokio_id.to_string(),
+        package_version: "1.43.0".to_string(),
+        resolved_features: vec!["macros".to_string(), "rt".to_string(), "sync".to_string()],
+        target: None,
+        profile: R4Profile::default(),
+        rlib_path: rlib.clone(),
+    };
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        tokio_package_by_dependency,
+        tokio_required_features_by_dependency,
+        tokio_artifacts: vec![tokio_artifact],
+        ..Default::default()
+    };
+
+    let tokio_args = vec!["--extern".to_string(), format!("tokio={}", rlib.display())];
+
+    assert!(
+        plan.unit_has_real_tokio_metadata_binding(&src, &tokio_args),
+        "metadata identity must pass"
+    );
+
+    let resolved = plan
+        .tokio_artifact_for(&src, &tokio_args)
+        .expect("tokio_artifact_for should succeed");
+    assert!(resolved.is_some(), "exact Tokio artifact must be resolved");
+    assert_eq!(resolved.unwrap().rlib_path, rlib);
+
+    assert!(
+        plan.unit_has_real_tokio_binding(&src, &tokio_args),
+        "end-to-end unit_has_real_tokio_binding must succeed with valid artifact and 'rt' feature"
+    );
+    assert!(plan.validate_tokio_binding(&src, &tokio_args).is_ok());
+}
+
+#[test]
+fn test_h3_adversarial_tokio_artifact_lacks_rt_feature() {
+    use cargo_instrument::session::{CargoDepEdge, R4Profile, SessionPlan, TokioArtifact};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_dir = temp.path().join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    let src = app_dir.join("src/lib.rs");
+    std::fs::write(&src, "pub fn run() {}\n").unwrap();
+
+    let rlib = temp.path().join("libtokio-nort.rlib");
+    std::fs::write(&rlib, b"tokio lacking rt").unwrap();
+
+    let app_id = "app 0.1.0 (path+file:///app)";
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(app_id.to_string(), app_dir.clone());
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(app_id.to_string(), "app".to_string());
+    package_names_by_id.insert(tokio_id.to_string(), "tokio".to_string());
+
+    let mut package_dependencies = HashMap::new();
+    package_dependencies.insert(
+        app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let mut tokio_package_by_dependency = HashMap::new();
+    tokio_package_by_dependency.insert(app_id.to_string(), tokio_id.to_string());
+
+    let mut tokio_required_features_by_dependency = HashMap::new();
+    tokio_required_features_by_dependency.insert(app_id.to_string(), vec!["rt".to_string()]);
+
+    // Artifact only has "sync" and "macros", NOT "rt"
+    let tokio_artifact = TokioArtifact {
+        package_id: tokio_id.to_string(),
+        package_version: "1.43.0".to_string(),
+        resolved_features: vec!["macros".to_string(), "sync".to_string()],
+        target: None,
+        profile: R4Profile::default(),
+        rlib_path: rlib.clone(),
+    };
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        tokio_package_by_dependency,
+        tokio_required_features_by_dependency,
+        tokio_artifacts: vec![tokio_artifact],
+        ..Default::default()
+    };
+
+    let tokio_args = vec!["--extern".to_string(), format!("tokio={}", rlib.display())];
+
+    // Metadata identity still passes
+    assert!(plan.unit_has_real_tokio_metadata_binding(&src, &tokio_args));
+
+    // Artifact resolution fails due to missing "rt" feature
+    let err = plan
+        .tokio_artifact_for(&src, &tokio_args)
+        .expect_err("must fail when artifact lacks 'rt'");
+    assert!(
+        err.contains("lacks required feature(s): [\"rt\"]"),
+        "error must specifically mention missing 'rt' feature; got: {err}"
+    );
+
+    // End-to-end check returns false to suppress spawn sites
+    assert!(
+        !plan.unit_has_real_tokio_binding(&src, &tokio_args),
+        "unit_has_real_tokio_binding must return false when artifact lacks 'rt'"
+    );
+    assert!(plan.validate_tokio_binding(&src, &tokio_args).is_err());
+}
+
+#[test]
+fn test_h3_tokio_artifact_rt_multi_thread_satisfies_rt_requirement() {
+    use cargo_instrument::session::{CargoDepEdge, R4Profile, SessionPlan, TokioArtifact};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_dir = temp.path().join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    let src = app_dir.join("src/lib.rs");
+    std::fs::write(&src, "pub fn run() {}\n").unwrap();
+
+    let rlib = temp.path().join("libtokio-rtmulti.rlib");
+    std::fs::write(&rlib, b"tokio rt-multi-thread").unwrap();
+
+    let app_id = "app 0.1.0 (path+file:///app)";
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(app_id.to_string(), app_dir.clone());
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(app_id.to_string(), "app".to_string());
+    package_names_by_id.insert(tokio_id.to_string(), "tokio".to_string());
+
+    let mut package_dependencies = HashMap::new();
+    package_dependencies.insert(
+        app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let mut tokio_package_by_dependency = HashMap::new();
+    tokio_package_by_dependency.insert(app_id.to_string(), tokio_id.to_string());
+
+    // In Tokio, rt-multi-thread enables rt; compiler-artifact includes both
+    let tokio_artifact = TokioArtifact {
+        package_id: tokio_id.to_string(),
+        package_version: "1.43.0".to_string(),
+        resolved_features: vec![
+            "macros".to_string(),
+            "rt".to_string(),
+            "rt-multi-thread".to_string(),
+        ],
+        target: None,
+        profile: R4Profile::default(),
+        rlib_path: rlib.clone(),
+    };
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        tokio_package_by_dependency,
+        tokio_artifacts: vec![tokio_artifact],
+        ..Default::default()
+    };
+
+    let tokio_args = vec!["--extern".to_string(), format!("tokio={}", rlib.display())];
+
+    assert!(
+        plan.unit_has_real_tokio_binding(&src, &tokio_args),
+        "artifact with both 'rt' and 'rt-multi-thread' must satisfy requirement"
+    );
+}
+
+#[test]
+fn test_h3_tokio_artifact_target_mismatch_fails() {
+    use cargo_instrument::session::{CargoDepEdge, R4Profile, SessionPlan, TokioArtifact};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_dir = temp.path().join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    let src = app_dir.join("src/lib.rs");
+    std::fs::write(&src, "pub fn run() {}\n").unwrap();
+
+    let rlib = temp.path().join("libtokio-linux.rlib");
+    std::fs::write(&rlib, b"linux tokio").unwrap();
+
+    let app_id = "app 0.1.0 (path+file:///app)";
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(app_id.to_string(), app_dir.clone());
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(app_id.to_string(), "app".to_string());
+    package_names_by_id.insert(tokio_id.to_string(), "tokio".to_string());
+
+    let mut package_dependencies = HashMap::new();
+    package_dependencies.insert(
+        app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let mut tokio_package_by_dependency = HashMap::new();
+    tokio_package_by_dependency.insert(app_id.to_string(), tokio_id.to_string());
+
+    // Artifact compiled for linux
+    let tokio_artifact = TokioArtifact {
+        package_id: tokio_id.to_string(),
+        package_version: "1.43.0".to_string(),
+        resolved_features: vec!["rt".to_string()],
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        profile: R4Profile::default(),
+        rlib_path: rlib.clone(),
+    };
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        tokio_package_by_dependency,
+        tokio_artifacts: vec![tokio_artifact],
+        ..Default::default()
+    };
+
+    let default_tokio_args = vec!["--extern".to_string(), format!("tokio={}", rlib.display())];
+
+    // Invocations with mismatched target (e.g. host default None or wasm32) must fail
+    let err = plan
+        .tokio_artifact_for(&src, &default_tokio_args)
+        .unwrap_err();
+    assert!(err.contains("no Cargo-authoritative Tokio artifact"));
+    assert!(!plan.unit_has_real_tokio_binding(&src, &default_tokio_args));
+
+    let wasm_args = vec![
+        "--target".to_string(),
+        "wasm32-wasip1".to_string(),
+        "--extern".to_string(),
+        format!("tokio={}", rlib.display()),
+    ];
+    let err2 = plan.tokio_artifact_for(&src, &wasm_args).unwrap_err();
+    assert!(err2.contains("no Cargo-authoritative Tokio artifact"));
+    assert!(!plan.unit_has_real_tokio_binding(&src, &wasm_args));
+
+    // Matching target succeeds
+    let linux_args = vec![
+        "--target".to_string(),
+        "x86_64-unknown-linux-gnu".to_string(),
+        "--extern".to_string(),
+        format!("tokio={}", rlib.display()),
+    ];
+    assert!(plan.unit_has_real_tokio_binding(&src, &linux_args));
+}
+
+#[test]
+fn test_h3_tokio_artifact_profile_mismatch_fails() {
+    use cargo_instrument::session::{CargoDepEdge, R4Profile, SessionPlan, TokioArtifact};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_dir = temp.path().join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    let src = app_dir.join("src/lib.rs");
+    std::fs::write(&src, "pub fn run() {}\n").unwrap();
+
+    let rlib = temp.path().join("libtokio-dev.rlib");
+    std::fs::write(&rlib, b"dev tokio").unwrap();
+
+    let app_id = "app 0.1.0 (path+file:///app)";
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(app_id.to_string(), app_dir.clone());
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(app_id.to_string(), "app".to_string());
+    package_names_by_id.insert(tokio_id.to_string(), "tokio".to_string());
+
+    let mut package_dependencies = HashMap::new();
+    package_dependencies.insert(
+        app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let mut tokio_package_by_dependency = HashMap::new();
+    tokio_package_by_dependency.insert(app_id.to_string(), tokio_id.to_string());
+
+    let tokio_artifact = TokioArtifact {
+        package_id: tokio_id.to_string(),
+        package_version: "1.43.0".to_string(),
+        resolved_features: vec!["rt".to_string()],
+        target: None,
+        profile: R4Profile {
+            opt_level: "0".to_string(),
+            debug_assertions: true,
+            overflow_checks: true,
+            test: false,
+        },
+        rlib_path: rlib.clone(),
+    };
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        tokio_package_by_dependency,
+        tokio_artifacts: vec![tokio_artifact],
+        ..Default::default()
+    };
+
+    // Release profile invocation (opt-level=3) encounters profile mismatch
+    let release_args = vec![
+        "-C".to_string(),
+        "opt-level=3".to_string(),
+        "--extern".to_string(),
+        format!("tokio={}", rlib.display()),
+    ];
+
+    let err = plan.tokio_artifact_for(&src, &release_args).unwrap_err();
+    assert!(err.contains("no Cargo-authoritative Tokio artifact"));
+    assert!(!plan.unit_has_real_tokio_binding(&src, &release_args));
+
+    // Matching profile succeeds
+    let dev_args = vec!["--extern".to_string(), format!("tokio={}", rlib.display())];
+    assert!(plan.unit_has_real_tokio_binding(&src, &dev_args));
+}
+
+#[test]
+fn test_h3_tokio_extern_artifact_path_identity_enforcement() {
+    use cargo_instrument::session::{CargoDepEdge, R4Profile, SessionPlan, TokioArtifact};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_dir = temp.path().join("app");
+    std::fs::create_dir_all(app_dir.join("src")).unwrap();
+    let src = app_dir.join("src/lib.rs");
+    std::fs::write(&src, "pub fn run() {}\n").unwrap();
+
+    let target_dir = temp.path().join("target");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    let genuine_rlib = target_dir.join("libtokio.rlib");
+    std::fs::write(&genuine_rlib, b"genuine tokio rlib").unwrap();
+
+    let decoy_dir = temp.path().join("decoy");
+    std::fs::create_dir_all(&decoy_dir).unwrap();
+    let decoy_rlib = decoy_dir.join("libtokio.rlib");
+    std::fs::write(&decoy_rlib, b"decoy tokio rlib").unwrap();
+
+    let app_id = "app 0.1.0 (path+file:///app)";
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(app_id.to_string(), app_dir.clone());
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(app_id.to_string(), "app".to_string());
+    package_names_by_id.insert(tokio_id.to_string(), "tokio".to_string());
+
+    let mut package_dependencies = HashMap::new();
+    package_dependencies.insert(
+        app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let mut tokio_package_by_dependency = HashMap::new();
+    tokio_package_by_dependency.insert(app_id.to_string(), tokio_id.to_string());
+
+    let tokio_artifact = TokioArtifact {
+        package_id: tokio_id.to_string(),
+        package_version: "1.43.0".to_string(),
+        resolved_features: vec!["rt".to_string()],
+        target: None,
+        profile: R4Profile::default(),
+        rlib_path: genuine_rlib.clone(),
+    };
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        tokio_package_by_dependency,
+        tokio_artifacts: vec![tokio_artifact],
+        ..Default::default()
+    };
+
+    // 1. Exact match succeeds
+    let exact_args = vec![
+        "--extern".to_string(),
+        format!("tokio={}", genuine_rlib.display()),
+    ];
+    assert!(plan.unit_has_real_tokio_binding(&src, &exact_args));
+
+    // 2. Decoy path with same filename in different dir fails
+    let decoy_args = vec![
+        "--extern".to_string(),
+        format!("tokio={}", decoy_rlib.display()),
+    ];
+    let err = plan.tokio_artifact_for(&src, &decoy_args).unwrap_err();
+    assert!(
+        err.contains("does not match active rustc --extern"),
+        "mismatched path must be rejected; got: {err}"
+    );
+    assert!(!plan.unit_has_real_tokio_binding(&src, &decoy_args));
+
+    // 3. Stale/non-existent path fails
+    let stale_args = vec![
+        "--extern".to_string(),
+        format!(
+            "tokio={}",
+            temp.path().join("does_not_exist.rlib").display()
+        ),
+    ];
+    let err2 = plan.tokio_artifact_for(&src, &stale_args).unwrap_err();
+    assert!(err2.contains("does not match active rustc --extern"));
+    assert!(!plan.unit_has_real_tokio_binding(&src, &stale_args));
+}
+
+#[test]
+fn test_h3_missing_tokio_artifact_features_fails() {
+    use cargo_instrument::SessionPlan;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let rlib = temp.path().join("libtokio.rlib");
+    std::fs::write(&rlib, b"tokio rlib").unwrap();
+
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+    let metadata = serde_json::json!({
+        "packages": [
+            {"id": tokio_id, "name": "tokio", "version": "1.43.0"}
+        ]
+    });
+
+    let message_without_features = serde_json::json!({
+        "reason": "compiler-artifact",
+        "package_id": tokio_id,
+        "filenames": [rlib],
+        "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
+    });
+
+    let mut plan = SessionPlan::default();
+    plan.add_tokio_artifacts_from_cargo_json(
+        &metadata,
+        format!("{message_without_features}\n").as_bytes(),
+        None,
+    )
+    .expect("ingestion completes");
+
+    assert!(
+        plan.tokio_artifacts.is_empty(),
+        "compiler-artifact lacking 'features' field must NOT be registered"
+    );
+}
+
+#[test]
+fn test_h3_multiple_ambiguous_tokio_artifacts_rejected() {
+    use cargo_instrument::SessionPlan;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let rlib1 = temp.path().join("libtokio1.rlib");
+    let rlib2 = temp.path().join("libtokio2.rlib");
+    std::fs::write(&rlib1, b"tokio rlib 1").unwrap();
+    std::fs::write(&rlib2, b"tokio rlib 2").unwrap();
+
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+    let metadata = serde_json::json!({
+        "packages": [
+            {"id": tokio_id, "name": "tokio", "version": "1.43.0"}
+        ]
+    });
+
+    let msg1 = serde_json::json!({
+        "reason": "compiler-artifact",
+        "package_id": tokio_id,
+        "filenames": [rlib1],
+        "features": ["rt"],
+        "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
+    });
+    let msg2 = serde_json::json!({
+        "reason": "compiler-artifact",
+        "package_id": tokio_id,
+        "filenames": [rlib2],
+        "features": ["rt"],
+        "profile": {"opt_level": "0", "debug_assertions": true, "overflow_checks": true, "test": false}
+    });
+
+    let mut plan = SessionPlan::default();
+    let res = plan.add_tokio_artifacts_from_cargo_json(
+        &metadata,
+        format!("{msg1}\n{msg2}\n").as_bytes(),
+        None,
+    );
+    assert!(
+        res.is_err(),
+        "multiple artifacts for same package/target/profile must fail registration"
+    );
+    let err = res.unwrap_err().to_string();
+    assert!(err.contains("multiple Cargo artifacts match Tokio package"));
+}
+
+#[test]
+fn test_h3_tokio_package_name_differs_from_bin_target() {
+    use cargo_instrument::session::{CargoDepEdge, R4Profile, SessionPlan, TokioArtifact};
+    use std::collections::HashMap;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let app_dir = temp.path().join("my-service");
+    std::fs::create_dir_all(app_dir.join("src/bin")).unwrap();
+    let bin_src = app_dir.join("src/bin/server.rs");
+    std::fs::write(&bin_src, "fn main() {}\n").unwrap();
+
+    let rlib = temp.path().join("libtokio.rlib");
+    std::fs::write(&rlib, b"tokio rlib").unwrap();
+
+    let app_id = "my-service 0.1.0 (path+file:///my-service)";
+    let tokio_id = "registry+https://example.invalid#index#tokio@1.43.0";
+
+    let mut package_manifest_dirs = HashMap::new();
+    package_manifest_dirs.insert(app_id.to_string(), app_dir.clone());
+
+    let mut package_names_by_id = HashMap::new();
+    package_names_by_id.insert(app_id.to_string(), "my-service".to_string());
+    package_names_by_id.insert(tokio_id.to_string(), "tokio".to_string());
+
+    let mut package_dependencies = HashMap::new();
+    package_dependencies.insert(
+        app_id.to_string(),
+        vec![CargoDepEdge {
+            binding_name: "tokio".to_string(),
+            package_id: tokio_id.to_string(),
+            kinds: vec![None],
+        }],
+    );
+
+    let mut tokio_package_by_dependency = HashMap::new();
+    tokio_package_by_dependency.insert(app_id.to_string(), tokio_id.to_string());
+
+    let tokio_artifact = TokioArtifact {
+        package_id: tokio_id.to_string(),
+        package_version: "1.43.0".to_string(),
+        resolved_features: vec!["rt".to_string()],
+        target: None,
+        profile: R4Profile::default(),
+        rlib_path: rlib.clone(),
+    };
+
+    let plan = SessionPlan {
+        package_manifest_dirs,
+        package_names_by_id,
+        package_dependencies,
+        tokio_package_by_dependency,
+        tokio_artifacts: vec![tokio_artifact],
+        ..Default::default()
+    };
+
+    let tokio_args = vec![
+        "--crate-name".to_string(),
+        "server".to_string(), // rustc crate name differs from Cargo package name 'my-service'
+        "--extern".to_string(),
+        format!("tokio={}", rlib.display()),
+    ];
+
+    assert!(
+        plan.unit_has_real_tokio_binding(&bin_src, &tokio_args),
+        "package identity from source longest-prefix match must succeed regardless of rustc crate name"
+    );
+}
+
+#[test]
+fn test_h3_live_cargo_build_tokio_feature_safety() {
+    use std::fs;
+    use std::process::Command;
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let workspace_root = temp_dir.path();
+
+    // 1. Create mock tokio crate with configurable features (rt, sync)
+    let tokio_dir = workspace_root.join("tokio");
+    fs::create_dir_all(tokio_dir.join("src")).expect("create tokio/src");
+    fs::write(
+        tokio_dir.join("Cargo.toml"),
+        r#"[package]
+name = "tokio"
+version = "1.43.0"
+edition = "2021"
+
+[features]
+default = []
+rt = []
+sync = []
+"#,
+    )
+    .expect("write tokio Cargo.toml");
+
+    fs::write(
+        tokio_dir.join("src/lib.rs"),
+        r#"pub fn spawn<F>(f: F)
+where
+    F: Send + 'static,
+{
+    let _ = f;
+}
+"#,
+    )
+    .expect("write tokio src/lib.rs");
+
+    // 2. Create app crate depending on tokio with features = ["sync"] (lacks "rt")
+    let app_dir = workspace_root.join("app");
+    fs::create_dir_all(app_dir.join("src")).expect("create app/src");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { path = "../tokio", default-features = false, features = ["sync"] }
+"#,
+    )
+    .expect("write app Cargo.toml");
+
+    fs::write(
+        app_dir.join("src/main.rs"),
+        r#"fn work() -> i32 { 100 }
+fn main() {
+    let w = work();
+    assert_eq!(w, 100);
+    tokio::spawn(async { 42 });
+}
+"#,
+    )
+    .expect("write app src/main.rs");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let target_dir = workspace_root.join("target").join("instrumented");
+
+    // 3. Build with cargo-instrument as RUSTC_WRAPPER
+    // Note: in wrapper mode, pre-pass was not run so tokio_artifacts is empty;
+    // to test artifact feature validation, we also run cargo-instrument via CLI or directly simulate session plan
+    let output = Command::new("cargo")
+        .arg("build")
+        .arg("--target-dir")
+        .arg(&target_dir)
+        .current_dir(&app_dir)
+        .env("RUSTC_WRAPPER", cargo_instrument_bin)
+        .env("CARGO_INSTRUMENT_WRAPPER_MODE", "1")
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("execute wrapped cargo build");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "Wrapped cargo build failed! stderr:\n{stderr}"
+    );
+
+    // 4. Verify binary compiles and runs
+    let bin_name = if cfg!(windows) { "app.exe" } else { "app" };
+    let app_bin = target_dir.join("debug").join(bin_name);
+    let run_output = Command::new(&app_bin)
+        .output()
+        .expect("execute compiled app binary");
+    assert!(
+        run_output.status.success(),
+        "compiled app binary failed to run! stderr: {}",
+        String::from_utf8_lossy(&run_output.stderr)
+    );
+}

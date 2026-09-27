@@ -43,6 +43,20 @@ pub struct R4NativeOtelArtifact {
     pub rlib_path: PathBuf,
 }
 
+/// A compiled Tokio artifact reported by Cargo's `compiler-artifact` JSON message.
+///
+/// Authoritative Cargo output validating that the compiled Tokio rlib exists,
+/// matches target and profile, and contains required runtime features.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokioArtifact {
+    pub package_id: String,
+    pub package_version: String,
+    pub resolved_features: Vec<String>,
+    pub target: Option<String>,
+    pub profile: R4Profile,
+    pub rlib_path: PathBuf,
+}
+
 /// Reason why compile-time instrumentation was skipped for a compilation unit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkipCause {
@@ -124,6 +138,15 @@ pub struct SessionPlan {
     /// Exact Cargo-reported artifacts available to the R-4 resolver.
     #[serde(default)]
     pub r4_native_otel_artifacts: Vec<R4NativeOtelArtifact>,
+    /// Dependency package id -> the sole Tokio package id depended upon by this package under binding name 'tokio'.
+    #[serde(default)]
+    pub tokio_package_by_dependency: HashMap<String, String>,
+    /// Dependency package id -> features required on the Tokio artifact for spawn propagation (defaults to ["rt"]).
+    #[serde(default)]
+    pub tokio_required_features_by_dependency: HashMap<String, Vec<String>>,
+    /// Authoritative Tokio artifacts captured from Cargo's `compiler-artifact` JSON output.
+    #[serde(default)]
+    pub tokio_artifacts: Vec<TokioArtifact>,
     /// Authoritative mapping of package ID -> package name (e.g. "tokio", "fake-runtime").
     #[serde(default)]
     pub package_names_by_id: HashMap<String, String>,
@@ -326,6 +349,143 @@ impl SessionPlan {
             }
             self.r4_native_otel_artifacts.push(artifact);
         }
+        self.add_tokio_artifacts_from_cargo_json(metadata, cargo_messages, target)?;
+        Ok(())
+    }
+
+    /// Adds authoritative Tokio artifacts from newline-delimited Cargo JSON output.
+    ///
+    /// Parses `compiler-artifact` messages for genuine Tokio packages, validates features and profile,
+    /// and stores the exact compiled `.rlib` path.
+    pub fn add_tokio_artifacts_from_cargo_json(
+        &mut self,
+        metadata: &serde_json::Value,
+        cargo_messages: &[u8],
+        target: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let versions_by_package = metadata["packages"]
+            .as_array()
+            .map(|packages| {
+                packages
+                    .iter()
+                    .filter_map(|package| {
+                        Some((
+                            package["id"].as_str()?.to_string(),
+                            package["version"].as_str()?.to_string(),
+                        ))
+                    })
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default();
+
+        let mut wanted_packages: HashSet<String> =
+            self.tokio_package_by_dependency.values().cloned().collect();
+
+        if let Some(packages) = metadata["packages"].as_array() {
+            for pkg in packages {
+                if let (Some(id), Some(name)) = (pkg["id"].as_str(), pkg["name"].as_str()) {
+                    if name == "tokio" || name.replace('-', "_") == "tokio" {
+                        wanted_packages.insert(id.to_string());
+                    }
+                }
+            }
+        }
+
+        if wanted_packages.is_empty() {
+            return Ok(());
+        }
+
+        let mut artifacts = Vec::new();
+        for line in cargo_messages.split(|byte| *byte == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let message: serde_json::Value = serde_json::from_slice(line)
+                .map_err(|error| format!("malformed Cargo JSON artifact message: {error}"))?;
+            if message["reason"].as_str() != Some("compiler-artifact") {
+                continue;
+            }
+            let package_id = match message["package_id"].as_str() {
+                Some(id) if wanted_packages.contains(id) => id,
+                _ => continue,
+            };
+            let rlibs: Vec<PathBuf> = message["filenames"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|filename| filename.as_str())
+                .map(PathBuf::from)
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "rlib")
+                })
+                .collect();
+            if rlibs.len() != 1 {
+                return Err(format!(
+                    "Cargo compiler-artifact for '{package_id}' reported {} rlib files; expected exactly one",
+                    rlibs.len()
+                )
+                .into());
+            }
+            let profile = R4Profile {
+                opt_level: message["profile"]["opt_level"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                debug_assertions: message["profile"]["debug_assertions"]
+                    .as_bool()
+                    .unwrap_or(false),
+                overflow_checks: message["profile"]["overflow_checks"]
+                    .as_bool()
+                    .unwrap_or(false),
+                test: message["profile"]["test"].as_bool().unwrap_or(false),
+            };
+            let Some(feature_array) = message["features"].as_array() else {
+                // H3: compiler-artifact["features"] must be present and valid.
+                // Missing or malformed feature information fails open; do not register.
+                continue;
+            };
+            let mut artifact_features: Vec<String> = feature_array
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
+            artifact_features.sort();
+            artifact_features.dedup();
+
+            artifacts.push(TokioArtifact {
+                package_id: package_id.to_string(),
+                package_version: versions_by_package
+                    .get(package_id)
+                    .cloned()
+                    .ok_or_else(|| format!("Cargo metadata lacks version for '{package_id}'"))?,
+                resolved_features: artifact_features,
+                target: target.clone(),
+                profile,
+                rlib_path: rlibs.into_iter().next().unwrap(),
+            });
+        }
+
+        for artifact in artifacts {
+            if !artifact.rlib_path.is_file() {
+                return Err(format!(
+                    "Cargo-reported Tokio artifact '{}' does not exist",
+                    artifact.rlib_path.display()
+                )
+                .into());
+            }
+            if self.tokio_artifacts.iter().any(|existing| {
+                existing.package_id == artifact.package_id
+                    && existing.target == artifact.target
+                    && existing.profile == artifact.profile
+            }) {
+                return Err(format!(
+                    "multiple Cargo artifacts match Tokio package '{}' for the same target/profile",
+                    artifact.package_id
+                )
+                .into());
+            }
+            self.tokio_artifacts.push(artifact);
+        }
         Ok(())
     }
 
@@ -352,7 +512,7 @@ impl SessionPlan {
     }
 
     /// Authoritatively resolves whether the current compilation unit has an active
-    /// rustc `--extern tokio` binding backed by the genuine Cargo package `tokio`.
+    /// rustc `--extern tokio` binding backed by the genuine Cargo package `tokio` in Cargo metadata.
     ///
     /// Automatic Tokio spawn propagation may run only when ALL of:
     /// 1. rustc actually supplies an extern binding named `tokio`
@@ -363,7 +523,11 @@ impl SessionPlan {
     ///
     /// If any part of this proof is missing, unresolvable, or ambiguous, returns `false`
     /// so the spawn site is preserved unmodified (conservative no-transformation).
-    pub fn unit_has_real_tokio_binding(&self, source_file: &Path, rustc_args: &[String]) -> bool {
+    pub fn unit_has_real_tokio_metadata_binding(
+        &self,
+        source_file: &Path,
+        rustc_args: &[String],
+    ) -> bool {
         // Condition 1: rustc actually supplies an extern binding named `tokio`
         if !rustc_has_extern_binding(rustc_args, "tokio") {
             return false;
@@ -402,6 +566,181 @@ impl SessionPlan {
                 false
             }
         })
+    }
+
+    /// Authoritatively resolves whether the current compilation unit has an active
+    /// rustc `--extern tokio` binding backed by the genuine Cargo package `tokio`
+    /// AND validates the concrete compiled Tokio artifact if tracked in the session.
+    pub fn unit_has_real_tokio_binding(&self, source_file: &Path, rustc_args: &[String]) -> bool {
+        if !self.unit_has_real_tokio_metadata_binding(source_file, rustc_args) {
+            return false;
+        }
+        if !self.tokio_artifacts.is_empty() {
+            self.tokio_artifact_for(source_file, rustc_args)
+                .map(|a| a.is_some())
+                .unwrap_or(false)
+        } else {
+            true
+        }
+    }
+
+    /// Validates Tokio package identity, artifact matching, and required features,
+    /// returning an actionable error message on any failure.
+    pub fn validate_tokio_binding(
+        &self,
+        source_file: &Path,
+        rustc_args: &[String],
+    ) -> Result<(), String> {
+        if !rustc_has_extern_binding(rustc_args, "tokio") {
+            return Err("rustc invocation lacks an active --extern tokio binding".to_string());
+        }
+        let Some(package_id) = self.package_id_for_source(source_file) else {
+            return Err(format!(
+                "source file '{}' does not map to any known Cargo package ID",
+                source_file.display()
+            ));
+        };
+        let Some(deps) = self.package_dependencies.get(package_id) else {
+            return Err(format!(
+                "package '{package_id}' has no dependency information in session plan"
+            ));
+        };
+        let tokio_edges: Vec<&CargoDepEdge> = deps
+            .iter()
+            .filter(|edge| {
+                edge.binding_name == "tokio" || edge.binding_name.replace('-', "_") == "tokio"
+            })
+            .collect();
+        if tokio_edges.is_empty() {
+            return Err(format!(
+                "package '{package_id}' has no dependency edge with binding name 'tokio'"
+            ));
+        }
+        for edge in &tokio_edges {
+            if let Some(pkg_name) = self.package_names_by_id.get(&edge.package_id) {
+                if pkg_name != "tokio" && pkg_name.replace('-', "_") != "tokio" {
+                    return Err(format!(
+                        "package '{package_id}' binds extern 'tokio' to non-Tokio package '{pkg_name}'"
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "package '{package_id}' dependency '{}' could not be resolved to a package name",
+                    edge.package_id
+                ));
+            }
+        }
+        if !self.tokio_artifacts.is_empty() {
+            match self.tokio_artifact_for(source_file, rustc_args) {
+                Ok(Some(_)) => Ok(()),
+                Ok(None) => Err(format!(
+                    "package '{package_id}' is not mapped to an active Tokio dependency in session plan"
+                )),
+                Err(e) => Err(e),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Resolves the exact compiled Tokio artifact for one wrapped compilation unit.
+    ///
+    /// `Ok(None)` means this package does not have a genuine Tokio dependency or does not bind it.
+    /// `Err` means the unit depends on Tokio, but the artifact is missing, stale, mismatched in
+    /// target/profile, missing required features (e.g. `rt`), or does not match the active rustc
+    /// `--extern tokio=<path>` binding.
+    pub fn tokio_artifact_for(
+        &self,
+        source_file: &Path,
+        rustc_args: &[String],
+    ) -> Result<Option<&TokioArtifact>, String> {
+        let Some(package_id) = self.package_id_for_source(source_file) else {
+            return Ok(None);
+        };
+        let tokio_package_id = if let Some(id) = self.tokio_package_by_dependency.get(package_id) {
+            id.clone()
+        } else {
+            // Fallback: check package_dependencies for the unique edge binding 'tokio' to package 'tokio'
+            let Some(deps) = self.package_dependencies.get(package_id) else {
+                return Ok(None);
+            };
+            let tokio_edges: Vec<&CargoDepEdge> = deps
+                .iter()
+                .filter(|edge| {
+                    (edge.binding_name == "tokio" || edge.binding_name.replace('-', "_") == "tokio")
+                        && self
+                            .package_names_by_id
+                            .get(&edge.package_id)
+                            .map(|n| n == "tokio" || n.replace('-', "_") == "tokio")
+                            .unwrap_or(false)
+                })
+                .collect();
+            if tokio_edges.len() == 1 {
+                tokio_edges[0].package_id.clone()
+            } else {
+                return Ok(None);
+            }
+        };
+
+        let target = rustc_target(rustc_args);
+        let profile = rustc_profile(rustc_args);
+
+        let matches: Vec<_> = self
+            .tokio_artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.package_id == tokio_package_id
+                    && artifact.target == target
+                    && artifact.profile == profile
+            })
+            .collect();
+
+        match matches.as_slice() {
+            [] => Err(format!(
+                "no Cargo-authoritative Tokio artifact for package '{tokio_package_id}', target {target:?}, profile {profile:?}; available artifacts: {:?}",
+                self.tokio_artifacts,
+            )),
+            [artifact] if artifact.rlib_path.is_file() => {
+                // Invariant 1: Required features match (at minimum "rt")
+                let default_required = vec!["rt".to_string()];
+                let required = self
+                    .tokio_required_features_by_dependency
+                    .get(package_id)
+                    .unwrap_or(&default_required);
+                let missing: Vec<_> = required
+                    .iter()
+                    .filter(|req| !artifact.resolved_features.iter().any(|f| f == req.as_str()))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "Cargo-authoritative Tokio artifact '{}' for package '{tokio_package_id}' lacks required feature(s): {missing:?}; resolved features: {:?}",
+                        artifact.rlib_path.display(),
+                        artifact.resolved_features,
+                    ));
+                }
+
+                // Invariant 2: Active rustc --extern path match (if specified)
+                if let Some(extern_path) = extern_crate_path(rustc_args, "tokio") {
+                    if !paths_refer_to_same_file(&artifact.rlib_path, &extern_path) {
+                        return Err(format!(
+                            "Cargo-reported Tokio artifact '{}' does not match active rustc --extern '{}'",
+                            artifact.rlib_path.display(),
+                            extern_path.display()
+                        ));
+                    }
+                }
+
+                Ok(Some(*artifact))
+            }
+            [artifact] => Err(format!(
+                "Cargo-authoritative Tokio artifact '{}' is no longer present",
+                artifact.rlib_path.display()
+            )),
+            _ => Err(format!(
+                "multiple Cargo-authoritative Tokio artifacts match package '{tokio_package_id}', target {target:?}, profile {profile:?}"
+            )),
+        }
     }
 
     /// Resolves the exact native OpenTelemetry artifact for one wrapped dependency unit.
@@ -915,6 +1254,9 @@ impl SessionPlan {
                     r4_otel_package_by_dependency: HashMap::new(),
                     r4_required_features_by_dependency: HashMap::new(),
                     r4_native_otel_artifacts: Vec::new(),
+                    tokio_package_by_dependency: HashMap::new(),
+                    tokio_required_features_by_dependency: HashMap::new(),
+                    tokio_artifacts: Vec::new(),
                     package_names_by_id: pkg_id_to_name,
                     package_dependencies: HashMap::new(),
                 });
@@ -1123,6 +1465,32 @@ impl SessionPlan {
             }
         }
 
+        // H3: Determine Tokio package per dependency unit.
+        // For each dependency package, if it has a dependency edge with binding name `tokio`
+        // resolving to an exact package whose Cargo package name is `tokio`, map it.
+        let mut tokio_package_by_dependency = HashMap::new();
+        let mut tokio_required_features_by_dependency = HashMap::new();
+        for (pkg_id, deps) in &package_dependencies {
+            let tokio_edges: Vec<&CargoDepEdge> = deps
+                .iter()
+                .filter(|edge| {
+                    edge.binding_name == "tokio" || edge.binding_name.replace('-', "_") == "tokio"
+                })
+                .collect();
+            if tokio_edges.len() == 1 {
+                let edge = tokio_edges[0];
+                if let Some(target_pkg_name) = pkg_id_to_name.get(&edge.package_id) {
+                    if target_pkg_name == "tokio" || target_pkg_name.replace('-', "_") == "tokio" {
+                        tokio_package_by_dependency.insert(pkg_id.clone(), edge.package_id.clone());
+                        let mut expected = vec!["rt".to_string()];
+                        expected.sort();
+                        expected.dedup();
+                        tokio_required_features_by_dependency.insert(pkg_id.clone(), expected);
+                    }
+                }
+            }
+        }
+
         // Target-reachable package names (normalized to underscored form for consistent comparison)
         let target_reachable_names: HashSet<String> = target_reachable_ids
             .iter()
@@ -1163,6 +1531,9 @@ impl SessionPlan {
             r4_otel_package_by_dependency,
             r4_required_features_by_dependency,
             r4_native_otel_artifacts: Vec::new(),
+            tokio_package_by_dependency,
+            tokio_required_features_by_dependency,
+            tokio_artifacts: Vec::new(),
             package_names_by_id: pkg_id_to_name,
             package_dependencies,
         })

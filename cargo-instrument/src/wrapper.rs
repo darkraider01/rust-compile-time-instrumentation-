@@ -164,19 +164,35 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                 // 3. that Cargo package has a dependency edge whose binding name is `tokio`
                                 // 4. that dependency edge resolves to an exact Cargo package ID
                                 // 5. that package's Cargo package name is `tokio`
-                                // 6. the spawn site passes lexical/shadowing checks (already checked by AST analyzer)
+                                // 6. the compiled Tokio artifact matches target, profile, required features ('rt'),
+                                //    and active --extern tokio=<rlib> path (when artifacts are tracked).
+                                // 7. the spawn site passes lexical/shadowing checks (already checked by AST analyzer)
                                 // If any part of this proof is missing or ambiguous, clear spawn_sites so no
                                 // rewriting occurs (conservative no-transformation).
                                 if !session_plan
                                     .unit_has_real_tokio_binding(&resolved_path, &config.rustc_args)
                                 {
-                                    if !report.spawn_sites.is_empty() && config.debug_output {
-                                        eprintln!(
-                                            "[cargo-instrument PID={} crate={}] suppressed {} tokio::spawn site(s): unit lacks Cargo-authoritative Tokio package binding",
-                                            std::process::id(),
-                                            crate_name,
-                                            report.spawn_sites.len()
-                                        );
+                                    if !report.spawn_sites.is_empty() {
+                                        if config.debug_output {
+                                            eprintln!(
+                                                "[cargo-instrument PID={} crate={}] suppressed {} tokio::spawn site(s): unit lacks Cargo-authoritative Tokio package binding",
+                                                std::process::id(),
+                                                crate_name,
+                                                report.spawn_sites.len()
+                                            );
+                                        }
+                                        if !session_plan.tokio_artifacts.is_empty() {
+                                            if let Err(reason) = session_plan.tokio_artifact_for(
+                                                &resolved_path,
+                                                &config.rustc_args,
+                                            ) {
+                                                eprintln!(
+                                                    "warning: cargo-instrument: crate '{crate_name}' Tokio artifact validation failed: {reason}. \
+                                                     Suppressing {} tokio::spawn site(s) per conservative no-transformation.",
+                                                    report.spawn_sites.len()
+                                                );
+                                            }
+                                        }
                                     }
                                     report.spawn_sites.clear();
                                 }

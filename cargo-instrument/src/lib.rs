@@ -11,7 +11,7 @@ pub use candidate::{Candidate, DiscoveryReport, FunctionKind, SpawnSite, UnsafeP
 pub use discovery::{CompilationUnit, CrateInvocation, CrateRole, DiscoveryError};
 pub use session::{
     paths_refer_to_same_file, resolve_package_spec, rustc_has_extern_binding, CargoDepEdge,
-    SessionPlan, SkipCause, SESSION_ENV,
+    SessionPlan, SkipCause, TokioArtifact, SESSION_ENV,
 };
 pub use transform::{
     detect_line_ending, paths_are_identical, transform_source_file, transform_source_file_scoped,
