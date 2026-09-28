@@ -59,6 +59,7 @@ fn run_cli(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
         .args(args)
         .current_dir(root)
+        .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_NET_OFFLINE", "true")
         .env("INSTRUMENT_DEBUG", "1")
         .env_remove("CARGO_INSTRUMENT_DEPENDENCIES")
@@ -80,12 +81,36 @@ fn assert_success(output: &Output, context: &str) {
 }
 
 fn compiled_packages(output: &Output) -> HashSet<String> {
+    let re_strip = |s: &str| -> String {
+        let mut res = String::new();
+        let mut in_escape = false;
+        for c in s.chars() {
+            if c == '\x1b' {
+                in_escape = true;
+            } else if in_escape {
+                if c == 'm' {
+                    in_escape = false;
+                }
+            } else {
+                res.push(c);
+            }
+        }
+        res
+    };
+
     String::from_utf8_lossy(&output.stderr)
         .lines()
         .chain(String::from_utf8_lossy(&output.stdout).lines())
-        .filter_map(|line| line.trim_start().strip_prefix("Compiling "))
-        .filter_map(|line| line.split_whitespace().next())
-        .map(str::to_owned)
+        .map(re_strip)
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if let Some(pos) = trimmed.find("Compiling ") {
+                let rest = &trimmed[pos + "Compiling ".len()..];
+                rest.split_whitespace().next().map(str::to_owned)
+            } else {
+                None
+            }
+        })
         .collect()
 }
 
@@ -96,6 +121,8 @@ fn run_verbose(root: &Path) -> Output {
             "--with-dependencies",
             "--",
             "run",
+            "--color",
+            "never",
             "--verbose",
             "--offline",
             "--",
@@ -957,6 +984,16 @@ fn test_first_party_lint_apply_scale_measurement() {
         .output()
         .unwrap();
     assert_success(&git_init, "git init");
+    Command::new("git")
+        .args(["config", "user.name", "P2.3 Fixture"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.email", "p23@example.invalid"])
+        .current_dir(root)
+        .output()
+        .unwrap();
     let git_add = Command::new("git")
         .args(["add", "."])
         .current_dir(root)
@@ -964,7 +1001,15 @@ fn test_first_party_lint_apply_scale_measurement() {
         .unwrap();
     assert_success(&git_add, "git add");
     let git_commit = Command::new("git")
-        .args(["commit", "-m", "init"])
+        .args([
+            "-c",
+            "user.name=P2.3 Fixture",
+            "-c",
+            "user.email=p23@example.invalid",
+            "commit",
+            "-m",
+            "init",
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -1008,11 +1053,20 @@ fn test_first_party_lint_apply_scale_measurement() {
             .current_dir(root)
             .output()
             .unwrap();
-        Command::new("git")
-            .args(["commit", "-m", &format!("apply {pkg_name}")])
+        let commit_res = Command::new("git")
+            .args([
+                "-c",
+                "user.name=P2.3 Fixture",
+                "-c",
+                "user.email=p23@example.invalid",
+                "commit",
+                "-m",
+                &format!("apply {pkg_name}"),
+            ])
             .current_dir(root)
             .output()
             .unwrap();
+        assert_success(&commit_res, "git commit apply");
     }
     let elapsed = start.elapsed();
     println!(
