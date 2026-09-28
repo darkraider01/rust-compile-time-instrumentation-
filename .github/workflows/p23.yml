@@ -43,4 +43,4 @@ jobs:
           cargo +"$toolchain" test --manifest-path tools/cargo-instrument-rust-driver/Cargo.toml
 
       - name: Prove real Cargo subcommand apply round trip
-        run: cargo +stable test -p cargo-instrument --test p23_apply_tests -- --ignored --nocapture
+        run: cargo +stable test -p cargo-instrument --test source_instrumentation_apply_tests -- --ignored --nocapture

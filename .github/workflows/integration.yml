@@ -63,7 +63,7 @@ jobs:
 
       - name: Run P2.4 R-4 / #5 deterministic cross-thread proof (Linux only)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --nocapture
+        run: cargo test -p cargo-instrument --test native_artifact_injection_tests -- --ignored --nocapture
 
 
       # Documents precisely what the tests above do and do not prove.

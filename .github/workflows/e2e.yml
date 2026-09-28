@@ -50,11 +50,11 @@ jobs:
         run: cargo test --workspace --test trampoline_tests test_registry_source_cache_immutability -- --ignored --nocapture
 
       - name: P2.4 public opt-in and lifecycle acceptance
-        run: cargo test -p cargo-instrument --test p24_closeout_tests -- --nocapture --test-threads=2
+        run: cargo test -p cargo-instrument --test dependency_instrumentation_e2e_tests -- --nocapture --test-threads=2
 
       - name: P2.4 isolated R-4 migration proof (Linux)
         if: runner.os == 'Linux'
-        run: cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --nocapture
+        run: cargo test -p cargo-instrument --test native_artifact_injection_tests -- --ignored --nocapture
 
       - name: Run overhead benchmarks (A17)
         run: cargo bench --bench bench_overhead
