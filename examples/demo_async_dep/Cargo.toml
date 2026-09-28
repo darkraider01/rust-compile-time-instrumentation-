@@ -1,0 +1,10 @@
+[package]
+name = "demo-async-dep"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+opentelemetry = "0.32.0"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }

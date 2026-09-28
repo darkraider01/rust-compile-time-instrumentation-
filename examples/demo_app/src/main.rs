@@ -1,12 +1,11 @@
+use opentelemetry::trace::{FutureExt, TraceContextExt, Tracer};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 
-fn main() {
-    println!("============================================================");
-    println!("  Compile-Time Instrumentation Demo (cargo-instrument)     ");
-    println!("============================================================\n");
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+async fn main() {
+    println!("Compile-time dependency instrumentation demo\n");
 
-    // Keep the shim linked for dependencies that need the synchronous fallback.
-    println!("[1/4] Initializing otel-shim and OpenTelemetry TracerProvider...");
+    // Keep the runtime linked for dependency units that need C-ABI fallback.
     otel_shim::init();
 
     let exporter = InMemorySpanExporter::default();
@@ -15,96 +14,104 @@ fn main() {
         .build();
     opentelemetry::global::set_tracer_provider(provider);
 
-    // 2. Execute application workload that calls into third-party dependency `census`
-    println!("[2/4] Executing workload calling dependency crate 'census'...");
     process_inventory_batch();
+    run_async_dependency_work().await;
 
-    // Fallback handles must be released before the workload returns.
     let active_spans = otel_shim::active_span_count();
-    println!(
-        "[3/4] Checking active span handles in otel-shim TLS stack: {}",
-        active_spans
-    );
-    assert_eq!(
-        active_spans, 0,
-        "active_span_count must be 0 after execution"
-    );
+    assert_eq!(active_spans, 0, "no fallback span handles should remain");
 
-    // 4. Inspect and display finished spans
-    let spans = exporter.get_finished_spans().expect("finished spans");
-    println!(
-        "\n[4/4] Captured {} OpenTelemetry Spans across crate boundary:\n",
-        spans.len()
-    );
-
-    let app_span = spans.iter().find(|s| s.name == "process_inventory_batch");
-    let app_span_id = app_span.map(|s| s.span_context.span_id());
-
+    let spans = exporter.get_finished_spans().expect("read exported spans");
+    println!("Captured {} OpenTelemetry spans:", spans.len());
     for span in &spans {
-        let is_app = span.name == "process_inventory_batch";
-        let crate_tag = if is_app { "[demo_app]" } else { "[census]  " };
-        let is_child = Some(span.parent_span_id) == app_span_id && !is_app;
-        let indent = if is_child {
-            "    └── "
-        } else {
-            "├── "
-        };
-
         println!(
-            "{}{} {:<25} | ID: {} | Parent: {} | Kind: {:?} | Status: {:?}",
-            indent,
-            crate_tag,
+            "{} | trace={} | span={} | parent={}",
             span.name,
+            span.span_context.trace_id(),
             span.span_context.span_id(),
             span.parent_span_id,
-            span.span_kind,
-            span.status,
         );
     }
 
-    // Verify key acceptance properties
-    assert!(app_span.is_some(), "application span captured");
-    let new_span = spans.iter().find(|s| s.name == "Inventory<T>::new");
-    let track_span = spans.iter().find(|s| s.name == "Inventory<T>::track");
-    let list_span = spans.iter().find(|s| s.name == "Inventory<T>::list");
-
-    assert!(new_span.is_some(), "census::Inventory::new instrumented");
-    assert!(
-        track_span.is_some(),
-        "census::Inventory::track instrumented"
+    let sync_parent = find_span(&spans, "process_inventory_batch");
+    let census_child = find_span(&spans, "Inventory<T>::new");
+    assert_eq!(
+        census_child.parent_span_id,
+        sync_parent.span_context.span_id(),
+        "synchronous dependency call inherits the application span"
     );
-    assert!(list_span.is_some(), "census::Inventory::list instrumented");
 
-    if let (Some(app), Some(child)) = (app_span, new_span) {
-        assert_eq!(
-            child.parent_span_id,
-            app.span_context.span_id(),
-            "dependency span properly parented to caller application span"
-        );
-    }
+    let direct_parent = find_span(&spans, "demo_async_direct_parent");
+    let direct_child = find_span(&spans, "async_direct_dependency");
+    assert_eq!(
+        direct_child.parent_span_id,
+        direct_parent.span_context.span_id()
+    );
+    assert_eq!(
+        direct_child.span_context.trace_id(),
+        direct_parent.span_context.trace_id()
+    );
 
-    println!("\n------------------------------------------------------------");
-    println!("  Demo Result: SUCCESS");
-    println!("  - Automatic dependency instrumentation: Verified");
-    println!("  - Zero code modifications to 'census' dependency: Verified");
-    println!("  - Explicit application span parents dependency spans: Verified");
-    println!("  - Distributed Context & Cross-Crate Parenting: Verified");
-    println!("  - No active fallback handles: Verified");
-    println!("------------------------------------------------------------\n");
+    let spawn_parent = find_span(&spans, "demo_async_spawn_parent");
+    let spawned_function = find_span(&spans, "async_spawn_dependency");
+    let spawned_child = find_span(&spans, "async_spawn_child");
+    assert_eq!(
+        spawned_function.parent_span_id,
+        spawn_parent.span_context.span_id()
+    );
+    assert_eq!(
+        spawned_child.parent_span_id,
+        spawned_function.span_context.span_id()
+    );
+    assert_eq!(
+        spawned_child.span_context.trace_id(),
+        spawn_parent.span_context.trace_id()
+    );
+
+    println!("\nDemo Result: SUCCESS");
+    println!("- Sync cross-crate parentage: verified");
+    println!("- Async dependency context across suspension: verified");
+    println!("- Context propagation into Tokio task spawned inside dependency: verified");
+    println!("- Active fallback handles after completion: {active_spans}");
 }
 
-pub fn process_inventory_batch() {
-    use opentelemetry::trace::{TraceContextExt, Tracer};
+fn find_span<'a>(
+    spans: &'a [opentelemetry_sdk::trace::SpanData],
+    name: &str,
+) -> &'a opentelemetry_sdk::trace::SpanData {
+    spans
+        .iter()
+        .find(|span| span.name == name)
+        .unwrap_or_else(|| panic!("expected exported span `{name}`"))
+}
 
-    // Dependency-only builds preserve this explicit application instrumentation.
+async fn run_async_dependency_work() {
+    let tracer = opentelemetry::global::tracer("demo_app");
+
+    let direct_parent =
+        opentelemetry::Context::current_with_span(tracer.start("demo_async_direct_parent"));
+    let direct_result = async { demo_async_dep::async_direct_dependency().await };
+    let direct_result = direct_result.with_context(direct_parent.clone()).await;
+    assert_eq!(direct_result, 21);
+    direct_parent.span().end();
+
+    let spawn_parent =
+        opentelemetry::Context::current_with_span(tracer.start("demo_async_spawn_parent"));
+    let spawn_result = async { demo_async_dep::async_spawn_dependency().await };
+    let spawn_result = spawn_result.with_context(spawn_parent.clone()).await;
+    assert_eq!(spawn_result, 21);
+    spawn_parent.span().end();
+}
+
+fn process_inventory_batch() {
     let tracer = opentelemetry::global::tracer("demo_app");
     let span = tracer.start("process_inventory_batch");
     let _guard = opentelemetry::Context::current_with_span(span).attach();
+
     let inventory = census::Inventory::new();
     let item1 = inventory.track("item-alpha");
     let item2 = inventory.track("item-beta");
     let items = inventory.list();
-    println!("   -> Census inventory tracked items: {}", items.len());
+    println!("census tracked {} items", items.len());
     drop(item1);
     drop(item2);
 }

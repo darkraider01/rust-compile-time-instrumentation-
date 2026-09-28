@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 census = "=0.4.2"
+demo-async-dep = { path = "../demo_async_dep" }
 opentelemetry = "0.32.0"
 opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
 otel-shim = { path = "../../otel-shim" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

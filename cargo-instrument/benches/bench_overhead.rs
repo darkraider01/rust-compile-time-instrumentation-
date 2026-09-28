@@ -54,7 +54,8 @@ fn main() {
 
     // Create benchmark workspace with a multi-function library and application
     let ws_cargo_toml = r#"[workspace]
-members = ["bench_dep", "bench_app"]
+members = ["bench_app"]
+exclude = ["bench_dep"]
 resolver = "2"
 "#;
     fs::write(bench_root.join("Cargo.toml"), ws_cargo_toml).expect("write ws Cargo.toml");
@@ -93,6 +94,7 @@ edition = "2021"
 bench_dep = {{ path = "../bench_dep" }}
 otel-shim = {{ path = "{otel_shim_path_escaped}" }}
 opentelemetry = "0.32.0"
+opentelemetry_sdk = "0.32.0"
 "#
     );
     fs::write(app_dir.join("Cargo.toml"), &app_cargo).expect("write app Cargo.toml");
@@ -101,6 +103,8 @@ opentelemetry = "0.32.0"
 
 fn main() {
     otel_shim::init();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    opentelemetry::global::set_tracer_provider(provider);
 
     let iterations: u64 = 100_000;
     let start = Instant::now();
@@ -376,7 +380,7 @@ fn main() {
         N
     );
     println!(
-        "\n* Note: Incremental build delta is within run-to-run noise variance (±~5-10% at N={N}, sign flips across runs, indistinguishable from baseline variance). Clean build (+3.7% to +5.3%) and runtime overhead (~200 ns/call) are resolvable empirical findings."
+        "\n* Note: Incremental build delta is within run-to-run noise variance (±~5-10% at N={N}, sign flips across runs, indistinguishable from baseline variance). Runtime uses generated dependency spans with the OpenTelemetry SDK provider and no exporter; it is a synchronous microbenchmark, not an async application measurement."
     );
 
     println!("\n#### Runtime Overhead (M=100,000 loop iterations, 500,000 calls)\n");

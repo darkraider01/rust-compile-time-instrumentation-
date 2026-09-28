@@ -1,21 +1,28 @@
 # Dependency Instrumentation Demo
 
-This application configures an in-memory OpenTelemetry exporter and creates an
-explicit application span. The dependency wrapper adds spans inside `census`
-without changing its source or manifest. The demo checks selected dependency
-spans, their parentage, and fallback handle cleanup.
+The demo uses the real registry crate `census` for synchronous cross-crate
+parenting and a separate local dependency for async context propagation and
+Tokio task propagation. The local async dependency has its own Cargo workspace,
+so the wrapper treats it as unowned dependency source and instruments it without
+editing its source or manifest.
 
 From the repository root, using stable Rust:
 
 ```sh
-cargo run -p cargo-instrument --bin cargo-instrument -- --with-dependencies -- run --manifest-path examples/demo_app/Cargo.toml
+cargo run -p cargo-instrument --bin cargo-instrument -- --with-dependencies -- run --manifest-path examples/demo_app/Cargo.toml --offline
 ```
 
-Native emission is preferred when compatible artifacts are available. The
-application also references `otel_shim::init()` to support the synchronous
-fallback. The output does not establish which emitter handled every dependency;
-set `INSTRUMENT_DEBUG=1` to inspect wrapper selection diagnostics.
+The app creates explicit parent spans, calls an instrumented async dependency
+function that suspends, then calls another dependency function that starts a
+Tokio task. It checks the exported parent IDs and trace IDs for each path and
+asserts that no fallback span handles remain active. With `INSTRUMENT_DEBUG=1`,
+the log also shows the selected emitter and transformed dependency units.
 
-Running the application with ordinary Cargo does not instrument `census` and
-will fail the demo's dependency-span assertions. This example does not require
-the first-party HIR driver or a source-apply step.
+This checks functional async context propagation for one controlled workload.
+It does not measure runtime overhead or establish behavior across real
+applications. The separate [runtime overhead benchmark](../../cargo-instrument/benches/bench_overhead.rs)
+compares baseline and instrumented synchronous calls.
+
+The first-party source apply driver is not required. The app's span calls are
+explicit because the `--with-dependencies` workflow instruments dependencies,
+not workspace application source.
