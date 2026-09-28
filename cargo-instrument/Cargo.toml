@@ -32,6 +32,10 @@ tracing-opentelemetry = "0.33"
 name = "bench_overhead"
 harness = false
 
+[[bench]]
+name = "bench_scale"
+harness = false
+
 [[bin]]
 name = "cargo-instrument-rust"
 path = "src/bin/instrument_rust.rs"

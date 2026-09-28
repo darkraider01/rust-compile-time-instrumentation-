@@ -59,6 +59,9 @@ jobs:
       - name: Run overhead benchmarks (A17)
         run: cargo bench --bench bench_overhead
 
+      - name: Run scale and performance budget benchmarks (P2.5)
+        run: cargo bench --bench bench_scale
+
       - name: Document E2E results
         if: always()
         shell: bash

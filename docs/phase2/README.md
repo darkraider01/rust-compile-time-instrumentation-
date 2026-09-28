@@ -565,21 +565,9 @@ members remain owned by `cargo instrument-rust --apply`.
    - Native dependency lifecycle outcomes distinguish completed, cancelled, and unwound futures.
 3. **Opt-In CLI Integration:** Implemented public dependency-only orchestration connecting first-party lint-applied crates with dependency wrapper builds, including registry opt-in and policy-aware cache invalidation.
 
-### 6.5 P2.5 - Large Graphs & Cross-Platform Validation (Planned)
+### 6.5 P2.5 - Large Graphs and Performance Validation (In Progress)
 
-**Objective:** Validate performance, build caching, and cross-platform correctness across both hybrid modes at scale.
-
-#### Key Focus Areas
-
-1. **Scale Benchmarking:**
-   - First-party lint-apply: analysis speed across large multi-crate workspaces.
-   - Opt-in dependency wrapper: build-time overhead on ≥100-unit dependency graphs with atomic session plan caching.
-2. **Tracer Caching (`OnceLock`):** Re-baseline and implement tracer caching per §16.3.
-3. **Cross-Platform Verification:**
-   - Windows (`x86_64-pc-windows-msvc`) with MAX_PATH mitigation.
-   - Linux (`x86_64-unknown-linux-gnu`, ELF dynamic linking).
-   - macOS (`aarch64-apple-darwin`, Mach-O).
-
+See [p2.5/README.md](p2.5/README.md) for acceptance criteria and [p2.5/closeout.md](p2.5/closeout.md) for current evidence. Synthetic planning, legacy wrapper scale fixtures, public dependency benchmarks, and deterministic tracer profiling are implemented. Broader live public graph coverage, representative budget baselines, and remote platform/toolchain certification remain pending.
 ---
 
 ## 7. Milestone Ordering and Phase-1 Deferrals
@@ -592,18 +580,18 @@ P2.2 Macro Expansion Resilience & Coexistence ✅
   │
   ├────────────────────────────────────────────────────────┐
   ▼                                                        ▼
-P2.3 First-Party Lint-Apply (Semantic Complete) ✅        P2.4 Opt-In Dependency Pipeline & Async — see closeout record
+P2.3 First-Party Lint-Apply (Semantic Complete) ✅        P2.4 Opt-In Dependency Pipeline & Async ✅
   │                                                        │
   └───────────────────────────┬────────────────────────────┘
                               ▼
-            P2.5 Large Graphs & Cross-Platform Validation
+            P2.5 Large Graphs, Budgets & Platform Certification (In Progress)
 ```
 
 P2.1 is a hard prerequisite: it established unique unit identity and mirror isolation, without which multi-unit builds collided.
 P2.2 proved coexistence with explicit instrumentation and demonstrated hybrid parenting across `#[async_trait]` boundaries.
 P2.2 directly enabled the ADR-012 feasibility spike: confirming that `#[async_trait]` method bodies preserve call-site spans, clearing P2.3 to build the new default first-party lint-apply path without fear of coverage regression.
-P2.3 semantic instrumentation is complete: the `cargo instrument-rust` lint driver delivers verified, zero-overhead, reviewable instrumentation for first-party crates. P2.4 now exposes the opt-in track through `--with-dependencies`, validates native and fallback artifacts, propagates Tokio spawn context, distinguishes native dependency cancellation, and excludes Stream/Sink poll boundaries. Current acceptance evidence is in [closeout.md](p2.4/closeout.md); the next milestone is P2.5.
-P2.5 brings both paths together for large-scale graph benchmarking and cross-platform verification.
+P2.3 semantic instrumentation is complete: the `cargo instrument-rust` lint driver delivers verified, zero-overhead, reviewable instrumentation for first-party crates. P2.4 delivered the opt-in track through `--with-dependencies`, validated native and fallback artifacts, propagated Tokio spawn context, distinguished native dependency cancellation, and excluded Stream/Sink poll boundaries (see [p2.4/closeout.md](p2.4/closeout.md)).
+P2.5 is validating graph scaling, performance budgets, tracer acquisition, and platform support (see [p2.5/closeout.md](p2.5/closeout.md)).
 
 | Phase-1 deferral | Lands in | Rationale |
 |---|---|---|
