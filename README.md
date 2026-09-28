@@ -53,7 +53,7 @@ The six frozen architecture decisions are documented in [ADR-001–ADR-006](docs
 - [x] **P1.5 - Native OpenTelemetry code generation** - COMPLETE
   Generates native OpenTelemetry 0.32.0 API calls for synchronous functions with zero dependencies on tracing abstractions, handling tracer acquisition per-crate (`opentelemetry::global::tracer("{crate_name}")`), RAII context attachment, Result error recording with pinned `Result<_, _>`, clippy-clean closure wrapping, `--extern` dependency gating with S11 fail-open, and normalized span naming.
 - [x] **P1.6 - Async instrumentation** - COMPLETE
-  Instruments async functions using `opentelemetry::trace::FutureExt::with_context`, preserving trace context across future suspension points and multi-threaded executor task migration without holding `!Send` guards. Features Send-bound preservation, `#[async_trait]` compatibility, cancellation-on-drop span export, post-await Result error status recording, wall-clock duration measurement (§16.7), and zero clippy warnings.
+  Instruments async functions using `opentelemetry::trace::FutureExt::with_context`, preserving trace context across future suspension points and multi-threaded executor task migration without holding `!Send` guards. Features Send-bound preservation, `#[async_trait]` compatibility, cancellation-on-drop span export, post-await Result error status recording, wall-clock duration measurement, and zero clippy warnings.
 - [x] **P1.7 - Dependency instrumentation / `extern "C"` trampolines** - COMPLETE
   Extends instrumentation across third-party Cargo crate boundaries without manifest mutation or Cargo dependency injection using `extern "C"` ABI trampolines (`__otel_span_enter`, `__otel_span_exit`, `__otel_span_set_error`). Includes standalone `otel-shim` runtime crate exporting C ABI on native OpenTelemetry SDK with thread-local LIFO matching, compile-time application preflight checking (`otel_shim::init()`) to prevent extern-crate pruning (ADR-003 / E-10), edition 2021 vs 2024 awareness, `UnsafePolicy` handling, and live multi-threaded end-to-end integration proof.
 - [x] **P1.8 - End-to-end validation** - COMPLETE
@@ -191,7 +191,7 @@ cargo run --bin cargo-instrument -- -- check
 Validate the complete 145-test suite across unit, integration, and registry fixtures, or run empirical benchmarks:
 
 ```bash
-# Run offline test suite (154 tests pass; 13 network/topology tests gated behind --ignored)
+# Run offline test suite (some integration scenarios require --ignored)
 cargo test --workspace
 
 # Run live crates.io registry E2E validation suite
