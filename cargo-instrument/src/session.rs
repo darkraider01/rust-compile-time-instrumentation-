@@ -1631,7 +1631,7 @@ impl SessionPlan {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data = serde_json::to_vec(self)?;
+        let data = serde_json::to_vec_pretty(self)?;
         static SESSION_TEMP_COUNTER: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
         let counter = SESSION_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
