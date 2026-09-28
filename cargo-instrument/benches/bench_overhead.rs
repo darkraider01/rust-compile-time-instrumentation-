@@ -99,11 +99,30 @@ opentelemetry_sdk = "0.32.0"
     );
     fs::write(app_dir.join("Cargo.toml"), &app_cargo).expect("write app Cargo.toml");
 
-    let app_main = r#"use std::time::Instant;
+    let app_main = r#"use std::time::{Duration, Instant};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use opentelemetry_sdk::trace::{Span, SpanData, SpanProcessor};
+use opentelemetry_sdk::error::OTelSdkResult;
+
+#[derive(Debug)]
+struct CountingProcessor(Arc<AtomicU64>);
+
+impl SpanProcessor for CountingProcessor {
+    fn on_start(&self, _: &mut Span, _: &opentelemetry::Context) {}
+    fn on_end(&self, span: SpanData) {
+        if span.name.starts_with("compute_step_") {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    fn force_flush(&self) -> OTelSdkResult { Ok(()) }
+    fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult { Ok(()) }
+}
 
 fn main() {
     otel_shim::init();
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+    let span_count = Arc::new(AtomicU64::new(0));
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_span_processor(CountingProcessor(span_count.clone())).build();
     opentelemetry::global::set_tracer_provider(provider);
 
     let iterations: u64 = 100_000;
@@ -118,6 +137,9 @@ fn main() {
     }
     let elapsed = start.elapsed();
     let total_calls = iterations * 5;
+    let expected: u64 = std::env::var("EXPECTED_SPANS").unwrap().parse().unwrap();
+    assert_eq!(span_count.load(Ordering::Relaxed), expected, "timed dependency span count");
+    println!("SPAN_COUNT {} expected={}", span_count.load(Ordering::Relaxed), expected);
     let ns_per_call = (elapsed.as_nanos() as f64) / (total_calls as f64);
     println!("RUNTIME_RESULT total_ms={:.2} ns_per_call={:.2} total_calls={}", elapsed.as_secs_f64() * 1000.0, ns_per_call, total_calls);
     assert!(acc != 0);
@@ -309,15 +331,31 @@ fn main() {
 
     for _ in 0..N {
         let out1 = Command::new(&bin_base_path)
+            .env("EXPECTED_SPANS", "0")
             .output()
             .expect("run baseline bin");
+        assert!(
+            out1.status.success(),
+            "baseline failed: {}",
+            String::from_utf8_lossy(&out1.stderr)
+        );
         let s1 = String::from_utf8_lossy(&out1.stdout);
+        print!("Baseline: {s1}");
         if let Some(ns) = parse_ns_per_call(&s1) {
             runtime_base_ns.push(ns);
         }
 
-        let out2 = Command::new(&bin_inst_path).output().expect("run inst bin");
+        let out2 = Command::new(&bin_inst_path)
+            .env("EXPECTED_SPANS", "500000")
+            .output()
+            .expect("run inst bin");
+        assert!(
+            out2.status.success(),
+            "instrumented failed: {}",
+            String::from_utf8_lossy(&out2.stderr)
+        );
         let s2 = String::from_utf8_lossy(&out2.stdout);
+        print!("Instrumented: {s2}");
         if let Some(ns) = parse_ns_per_call(&s2) {
             runtime_inst_ns.push(ns);
         }
@@ -373,18 +411,17 @@ fn main() {
         rep_delta
     );
     println!(
-        "| Incremental Build (app) | {} | {} | {:+.1}% (within noise: ±~5-10% at N={}) |",
+        "| Incremental Build (app) | {} | {} | {:+.1}% |",
         format_stats(&baseline_inc),
         format_stats(&instrumented_inc),
-        inc_delta,
-        N
+        inc_delta
     );
     println!(
-        "\n* Note: Incremental build delta is within run-to-run noise variance (±~5-10% at N={N}, sign flips across runs, indistinguishable from baseline variance). Runtime uses generated dependency spans with the OpenTelemetry SDK provider and no exporter; it is a synchronous microbenchmark, not an async application measurement."
+        "\n* Runtime measures generated dependency spans with an OpenTelemetry SDK counting processor and no exporter. Each instrumented sample verifies 500,000 completed dependency spans; each baseline verifies zero. The counting processor cost is included. This synchronous microbenchmark does not measure async application overhead. Compile-time ranges show the observed variation."
     );
 
     println!("\n#### Runtime Overhead (M=100,000 loop iterations, 500,000 calls)\n");
-    println!("| Metric | Baseline | Instrumented (otel-shim) | Delta / Overhead |");
+    println!("| Metric | Baseline | Instrumented (SDK counting processor) | Delta / Overhead |");
     println!("|---|---|---|---|");
     println!(
         "| Latency per call | {:.2} ns | {:.2} ns | {:+.2} ns/call |",

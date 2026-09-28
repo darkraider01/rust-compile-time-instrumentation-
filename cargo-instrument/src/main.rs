@@ -1146,6 +1146,8 @@ fn invalidate_packages(
 }
 
 fn clean_forward_flags(cargo_args: &[String]) -> Vec<String> {
+    // Cargo clean defaults to dev artifacts. Keep the requested profile so the
+    // final build cannot reuse uninstrumented artifacts from the pre-pass.
     let mut forward_flags = Vec::new();
     let mut i = 0;
     while i < cargo_args.len() {
@@ -1158,9 +1160,19 @@ fn clean_forward_flags(cargo_args: &[String]) -> Vec<String> {
             }
         } else if arg.starts_with("--manifest-path=")
             || arg.starts_with("--config=")
-            || matches!(arg.as_str(), "--offline" | "--locked" | "--frozen")
+            || arg.starts_with("--profile=")
+            || matches!(
+                arg.as_str(),
+                "--offline" | "--locked" | "--frozen" | "--release"
+            )
         {
             forward_flags.push(arg.clone());
+        } else if arg == "--profile" {
+            forward_flags.push(arg.clone());
+            if let Some(val) = cargo_args.get(i + 1) {
+                forward_flags.push(val.clone());
+                i += 1;
+            }
         }
         i += 1;
     }
