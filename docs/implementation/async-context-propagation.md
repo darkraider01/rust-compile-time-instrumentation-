@@ -1,14 +1,14 @@
-# P2.4 — Async Dependency Instrumentation & Context Propagation
+# Async Dependency Instrumentation & Context Propagation
 
 **Status:** Complete. Empirical regression and deterministic cross-thread migration proof verified.
 **Result:** The existing native P1.6 `FutureExt::with_context` implementation correctly preserves OpenTelemetry context across suspension, resumption, and cross-thread migration without production changes.
 
 This record provides the evidence for [Issue #5](https://github.com/darkraider01/rust-compile-time-instrumentation-/issues/5).
 
-**P2.4 closeout follow-up:** Native dependency emission now also owns a lifecycle
+**Dependency lifecycle follow-up:** Native dependency emission also owns a lifecycle
 guard distinguishing completed/cancelled/unwound outcomes without changing poll-time
-context propagation. Public CLI evidence and accepted fallback limits are in
-[closeout.md](closeout.md).
+context propagation. The public dependency build path is described in the
+[dependency build orchestration guide](dependency-build-orchestration.md).
 
 ---
 
@@ -20,7 +20,7 @@ In an asynchronous Rust runtime, an instrumented dependency future may:
 3. be migrated by the executor (or transferred across threads) to Thread B;
 4. resume on Thread B and poll to completion (`Poll::Ready`).
 
-Under [ADR-011](../decision-records.md#adr-011---the-tier-2-c-abi-is-provisional), compatible third-party dependencies are instrumented via native OpenTelemetry injection (`--extern opentelemetry=<rlib>`). The native emitter (`NativeEmitter` in `transform.rs`) wraps async function bodies in:
+Under [ADR-011](../decisions/adr-007-013.md#adr-011---the-tier-2-c-abi-is-provisional), compatible third-party dependencies are instrumented via native OpenTelemetry injection (`--extern opentelemetry=<rlib>`). The native emitter (`NativeEmitter` in `transform.rs`) wraps async function bodies in:
 
 ```rust
 let __otel_tracer = opentelemetry::global::tracer("<crate_name>");

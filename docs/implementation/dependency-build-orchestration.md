@@ -1,8 +1,7 @@
-# P2.4 / H1 — Native R-4 Production Orchestration & Incomplete Pre-Pass Recovery
+# Native Dependency Build Orchestration & Pre-Pass Recovery
 
 **Status:** H1 RESOLVED.  
-**Acceptance Baseline:** [`p2.4-validation-audit.md`](p2.4-validation-audit.md) (historical baseline preserved).  
-**Related Documents:** [ADR-011 (Hybrid Fallback)](../decision-records.md#adr-011---the-tier-2-c-abi-is-provisional), [`r4-extern-injection-spike.md`](r4-extern-injection-spike.md), [`tokio-spawn-propagation.md`](tokio-spawn-propagation.md).
+**Related Documents:** [ADR-011 (Hybrid Fallback)](../decisions/adr-007-013.md#adr-011---the-tier-2-c-abi-is-provisional), [`tokio-spawn-propagation.md`](tokio-spawn-propagation.md).
 
 ---
 
@@ -13,14 +12,14 @@ Milestone H1 establishes production-grade, ordinary CLI orchestration for native
 Following the initial H1 review, a critical correctness issue was identified and resolved:
 > **Incomplete Pre-Pass Vulnerability:** When the same-target Cargo JSON pre-pass fails mid-build (e.g. compile error in the binary, syntax error, or process termination) or emits truncated/malformed JSON, uninstrumented dependency artifacts already written to `target/` could be omitted from Cargo's JSON stream. Relying solely on the pre-pass JSON stream to identify dirty packages would allow these uninstrumented artifacts to persist into subsequent wrapper invocations, silently bypassing telemetry instrumentation.
 
-This document details the confirmed root cause, the architecture of the complete invalidation recovery mechanism, the full 13-test regression matrix in [`native_instrumentation_orchestration_tests.rs`](../../../cargo-instrument/tests/native_instrumentation_orchestration_tests.rs), and empirical validation results across the workspace.
+This guide details the confirmed root cause, the architecture of the complete invalidation recovery mechanism, the full 13-test regression matrix in [`native_instrumentation_orchestration_tests.rs`](../../cargo-instrument/tests/native_instrumentation_orchestration_tests.rs), and empirical validation results across the workspace.
 
 ```text
 H1 native R-4 production orchestration  RESOLVED
 H2 feature-safe native selection        RESOLVED
 H3 Tokio package identity               RESOLVED
 Cross-target and all-target CLI modes   wrapper-only behavior retained
-Overall P2.4 status                    See closeout.md for current acceptance
+Overall implementation status          Resolved; see the acceptance matrix below
 ```
 
 ---
@@ -44,7 +43,7 @@ then dependency packages compiled before the failure would exist on disk as unin
 
 ### 2.2 Mechanism of the Fix
 
-The orchestration logic in [`cargo-instrument/src/main.rs`](../../../cargo-instrument/src/main.rs) was hardened to prevent any reliance on partial pre-pass output:
+The orchestration logic in [`cargo-instrument/src/main.rs`](../../cargo-instrument/src/main.rs) was hardened to prevent any reliance on partial pre-pass output:
 
 1. **Metadata-Driven Desired Set:**
    The full set of packages desired for instrumentation (`desired_instrumented_ids`) is derived strictly from Cargo metadata (`desired_instrumented_package_ids(plan, &metadata)`) before inspecting the pre-pass outcome.
@@ -97,7 +96,7 @@ flowchart TD
 
 ## 4. Test Matrix & Verification Coverage
 
-The end-to-end orchestration suite in [`cargo-instrument/tests/native_instrumentation_orchestration_tests.rs`](../../../cargo-instrument/tests/native_instrumentation_orchestration_tests.rs) provides 13 dedicated integration tests validating every path:
+The end-to-end orchestration suite in [`cargo-instrument/tests/native_instrumentation_orchestration_tests.rs`](../../cargo-instrument/tests/native_instrumentation_orchestration_tests.rs) provides 13 dedicated integration tests validating every path:
 
 | # | Test Identifier | Scenario & Invariant Verified | Result |
 |---|---|---|:---:|
@@ -148,10 +147,10 @@ cargo test --workspace                                              PASS (100% p
 H1 is resolved. Related workstreams and retained invocation limits are tracked below:
 
 1. **H2 — Feature-Safe Native Selection:**
-   RESOLVED (see [`p2.4-validation-audit.md`](p2.4-validation-audit.md#h2-resolution--feature-safe-native-opentelemetry-selection)). Authoritative feature extraction from Cargo JSON messages, mandatory `"trace"` verification, and exact canonical artifact path matching are enforced.
+   RESOLVED. Authoritative feature extraction from Cargo JSON messages, mandatory `"trace"` verification, and exact canonical artifact path matching are enforced.
 2. **H3 — Tokio Package Identity:**
    RESOLVED (see [`tokio-spawn-propagation.md`](tokio-spawn-propagation.md#27-h3-cargo-authoritative-tokio-package-identity-verification)). Cargo package/binding name and rename identity, concrete Tokio compiler-artifact path identity (`paths_refer_to_same_file`), target/profile consistency, and required feature profiles (`"rt"`, including via `"rt-multi-thread"`) are fully verified.
 3. **Cross-Target / Multi-Target Invocations:**
    CLI invocations targeting multiple targets simultaneously (e.g. `--target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu`) or `--all-targets` retain wrapper-only behavior.
 4. **Overall Milestone Status:**
-   H1, H2, and H3 are **RESOLVED**. The public opt-in policy, native async cancellation outcomes, Stream/Sink exclusion decision, and final acceptance evidence are recorded in [closeout.md](closeout.md).
+   H1, H2, and H3 are **RESOLVED**. The public opt-in policy, native async cancellation outcomes, Stream/Sink exclusion decision, are described in this guide and the linked async implementation guides.

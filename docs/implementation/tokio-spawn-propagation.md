@@ -1,4 +1,4 @@
-# P2.4 — Tokio Spawn Context Propagation
+# Tokio Spawn Context Propagation
 
 **Status:** Complete. Red/green verified, comprehensive unit tests, and multi-crate integration proof passing.  
 **Result:** Native OpenTelemetry compilation units automatically preserve OpenTelemetry context across `tokio::spawn` task-creation boundaries via call-site context capture without introducing synthetic task spans or modifying Tier-2 C-ABI units.
@@ -138,7 +138,7 @@ If any link in this proof is missing, foreign, ambiguous, or lacks the required 
 #### Status & Resolution: H3 Complete
 
 - **Status:** **COMPLETE**
-- **Production pipelining follow-up (2026-09-28):** Cargo-reported `.rmeta` companions are validated alongside `.rlib` artifacts. Missing artifact records suppress wrapper rewrites even when package metadata proves a Tokio binding. The real public CLI regression in [closeout.md](closeout.md) proves spawn parenting through this path.
+- **Production pipelining follow-up (2026-09-28):** Cargo-reported `.rmeta` companions are validated alongside `.rlib` artifacts. Missing artifact records suppress wrapper rewrites even when package metadata proves a Tokio binding. Integration tests exercise spawn parenting through this path.
 - **Cargo Package/Binding/Rename Identity:** The 6-point check establishes that the current unit's Cargo dependency edge named `tokio` maps to a genuine Cargo package whose package name is `tokio`. This decisively eliminates the dependency-rename vulnerability (`tokio = { package = "fake-runtime" }`), rejects packages that rename Tokio away, and protects units lacking a direct dependency on Tokio.
 - **Authoritative Artifact & Feature Profile Identity:** During the same-target pre-pass, Cargo `compiler-artifact` JSON records are captured for `tokio` packages into `SessionPlan::tokio_artifacts`. In `SessionPlan::tokio_artifact_for`, the compiler wrapper validates:
   - Exact artifact match for target and profile;
