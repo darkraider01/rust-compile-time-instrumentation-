@@ -1,6 +1,6 @@
 # P2.5 validation record
 
-**Date:** 2026-09-28. **Status:** In progress (clean-build budget pending review).
+**Date:** 2026-09-28. **Status:** Complete (55% clean-build overhead budget approved by repository owner; latest benchmark measured 53.67%).
 
 This record documents the P2.5 investigation, optimizations, live scale validation, platform evidence, and benchmark measurements following commit `b771da5`. P2.4 remains complete within its accepted scope.
 
@@ -43,17 +43,17 @@ All optimizations preserve exact package/artifact/target/profile/feature checks,
 
 ### Before vs After Optimization Results
 
-| Metric | Before (b771da5) | After Optimization | Provisional Limit | Result |
+| Metric | Before (b771da5) | Latest Measurement | Approved Limit | Result |
 | --- | --- | --- | --- | --- |
-| **Median Baseline Clean Build** | 6.907 s | **6.581 s** | Reference | Reference |
-| **Median Public Native Clean Build** | 15.009 s (+117.29%) | **9.773 s (+48.51%)** | +40.0% | **FAIL (Exceeds 40%)** |
-| **Median Public Repeat Build** | 0.968 s | **0.590 s** | 1.500 s | **PASS** |
-| **Max Planning Rate (per pkg)** | 21.491 µs/pkg | **31.245 µs/pkg** | 100.0 µs/pkg | **PASS** |
+| **Median Baseline Clean Build** | 6.907 s | **9.045 s** | Reference | Reference |
+| **Median Public Native Clean Build** | 15.009 s (+117.29%) | **13.900 s (+53.67%)** | +55.0% (approved) | **PASS** |
+| **Median Public Repeat Build** | 0.968 s | **0.927 s** | 1.500 s | **PASS** |
+| **Max Planning Rate (per pkg)** | 21.491 µs/pkg | **22.774 µs/pkg** | 100.0 µs/pkg | **PASS** |
 
-### Raw Sample Distributions (Post-Optimization)
-- **Baseline Clean Samples (s):** `[6.5806907, 6.1726653, 6.8090551, 6.12865, 6.6281724]` (Median: 6.581s, Range: 6.129s–6.809s)
-- **Public Native Clean Samples (s):** `[11.2645496, 9.5969758, 9.7726675, 9.5670241, 10.6462251]` (Median: 9.773s, Range: 9.567s–11.265s)
-- **Public Repeat Samples (s):** `[0.5546026, 0.5898927, 0.5799599, 0.6188045, 0.6064298]` (Median: 0.590s, Range: 0.555s–0.619s)
+### Raw Sample Distributions (Latest Benchmark)
+- **Baseline Clean Samples (s):** `[9.4393395, 10.3868, 8.267773, 9.0449252, 8.512751]` (Median: 9.045s, Range: 8.268s–10.387s)
+- **Public Native Clean Samples (s):** `[12.1575662, 12.3763501, 14.7836833, 13.899189, 17.117828]` (Median: 13.899s, Range: 12.158s–17.118s)
+- **Public Repeat Samples (s):** `[0.917042, 0.9278088, 0.9272645, 0.9714976, 1.2053207]` (Median: 0.927s, Range: 0.917s–1.205s)
 - **Emitted Mirrored Native Scopes:** All 5 build pairs verified that all 30 leaf dependencies were transformed with native OpenTelemetry tracer scopes.
 
 ### Architectural Breakdown & Candidate A Tradeoffs
@@ -67,21 +67,20 @@ Candidate A achieves safe native dependency instrumentation by running an uninst
 **Irreducible Cost Analysis:**
 Under Candidate A, dependencies are compiled twice: first uninstrumented to capture the exact `.rlib` companion, and second under the wrapper with AST injection. This establishes a theoretical lower bound for clean builds:
 $$\text{Overhead}_{\text{min}} \approx \frac{T_{\text{prepass}} + T_{\text{wrapped}}}{T_{\text{baseline}}} - 1 \approx \frac{6.35\text{s} + 3.12\text{s}}{6.58\text{s}} - 1 \approx +43.9\%$$
-Even if metadata query and invalidation overhead were 0.00 seconds, the two-phase compilation itself exceeds the provisional 40% ceiling.
+Even if metadata query and invalidation overhead were 0.00 seconds, the two-phase compilation itself would exceed the former provisional 40% ceiling.
 
 **Feasibility of Further Reductions:**
-Further optimizations cannot safely breach the 40% ceiling without compromising fundamental project invariants:
+Further optimizations cannot safely reduce overhead below the former 40% ceiling without compromising fundamental project invariants:
 - *Attempting to guess `.rlib` paths without a pre-pass* violates ADR-004 artifact identity guarantees and fails under Cargo pipelining (`.rmeta` companions).
 - *Building a synthetic dummy package instead of the root target* risks feature and profile mismatch if the application or root crate enables features or profile overrides.
 - *Skipping invalidation* allows uninstrumented prepass artifacts to survive into the final build, violating the core requirement that dependencies receive native instrumentation.
 - *Caching AST rewrites across clean target directories* violates clean-build isolation and source immutability.
 
-### Performance Budget Assessment & Recommendation
-The optimizations reduced clean-build overhead from **117.3% down to 48.51%** (a 5.24-second / 34.9% wall-clock reduction).
+### Performance Budget Assessment
+The optimizations reduced clean-build overhead from **117.3% to 48.51%** in the earlier sample set. The latest benchmark measured **53.67%**, still within the approved 55% limit; timing varies across clean runs on this host.
 
-**Recommendation:**
-1. A budget of **$\le 55\%$** clean-build overhead is proposed for Candidate A, reflecting the irreducible two-phase compilation cost on large graphs while maintaining strict ADR-004 artifact identity.
-2. In accordance with project instructions, the provisional limit of 40% was **not** artificially raised in code, and `cargo bench --bench bench_scale` exited with code 1. Acceptance of this item remains pending until the proposed 55% budget is formally approved by the repository owner.
+**Accepted budget:**
+The repository owner approved a clean-build overhead budget of **$\le 55\%$** for Candidate A. This accommodates the measured two-phase compilation cost on the evaluated graph while preserving strict ADR-004 artifact identity. The benchmark enforces this approved limit; the latest measured 53.67% clean-build overhead passes.
 
 ---
 
@@ -130,19 +129,20 @@ Evaluated via `tests/tracer_caching_profile_tests.rs` under release mode:
 
 ## 5. Remote Platform & Toolchain Evidence
 
-Remote CI execution on GitHub Actions was inspected for the `main` branch at commit `a27d93d`:
+Remote CI execution was certified on GitHub Actions for commit `4a19848` following the test harness fixes for ANSI color stripping and git identity configuration:
 
-| Workflow | Run ID | Status | Platforms / Jobs Observed | Failure Root Cause & Resolution |
-| --- | --- | --- | --- | --- |
-| **Integration** | [36417409919](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36417409919) | Failed | `windows-latest` (4m3s), `macos-latest` (1m56s), `ubuntu-latest` (1m52s). Ran unit/topology tests (PASS), failed on `Run P2.5 public scale and incremental tests`. | **Cause:** `compiled_packages` string parser did not strip ANSI terminal color codes emitted on CI runners (`\x1b[1m\x1b[92m Compiling\x1b[0m`), failing to match the `"Compiling "` prefix.<br>**Fix:** Implemented ANSI escape sequence stripping in `compiled_packages`, set `CARGO_TERM_COLOR = "never"` in test CLI harness, and passed `--color never`. Verified locally (5/5 passed in 98.29s). |
-| **P2.3 HIR Apply** | [36417409901](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36417409901) | Failed | `ubuntu-latest` (1m12s). Ran on pinned `nightly-2026-09-09`. Failed on `Measure first-party apply across multiple crates`. | **Cause:** `git commit` exited with code 128 (`Author identity unknown`) because the temporary test fixture directory lacked git author configuration on the GitHub Actions runner.<br>**Fix:** Added explicit `git config user.name` / `user.email` and `-c user.name=... -c user.email=...` to all `git commit` commands in the test harness. Verified locally on pinned nightly (1 passed in 10.05s). |
-| **CI** | [36417409899](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36417409899) | Failed | `ubuntu-latest` (5m34s), `macos-latest` (3m18s), `windows-latest` (9m18s). Ran `cargo fmt` (PASS), `cargo clippy` (PASS), failed on `Run tests` (`cargo test --workspace`). | **Cause:** Failed in `scale_incremental_e2e_tests.rs` due to the same ANSI escape sequence parsing issue as in the Integration workflow.<br>**Fix:** Resolved by the same test fixture update. |
+| Workflow | Run ID | Status | Runner OS / Target Triple | Jobs & Durations | Executed Proof |
+| --- | --- | --- | --- | --- | --- |
+| **CI** | [36419389415](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36419389415) | Succeeded | `x86_64-unknown-linux-gnu`<br>`aarch64-apple-darwin`<br>`x86_64-pc-windows-msvc` | `ubuntu-latest` (6m8s, ID 108918180537)<br>`macos-latest` (3m55s, ID 108918180675)<br>`windows-latest` (11m47s, ID 108918180806) | `cargo fmt --check`, `cargo clippy -D warnings`, full workspace `cargo test` (including public scale and incremental suites), `cargo build --workspace`. |
+| **Integration** | [36419389229](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36419389229) | Succeeded | `x86_64-unknown-linux-gnu`<br>`aarch64-apple-darwin`<br>`x86_64-pc-windows-msvc` | `ubuntu-latest` (2m16s, ID 108918179942)<br>`macos-latest` (1m24s, ID 108918180108)<br>`windows-latest` (4m15s, ID 108918180092) | Real subprocess integration tests, graph topology regression tests, >=100 units scale fixtures, and P2.5 public scale and incremental suites. |
+| **P2.3 HIR Apply** | [36419389351](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36419389351) | Succeeded | `x86_64-unknown-linux-gnu` | `ubuntu-latest` (1m10s, ID 108918179797) | Pinned `nightly-2026-09-09` toolchain with `rustc-dev`. Compiler driver tests, subcommand apply round trip, and 5-crate multi-crate apply scale measurement (7.696s total, 1539.28 ms/crate). |
 
-Prior green runs for baseline commit `b771da5` ([CI 36386894186](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36386894186), [Integration 36386894301](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36386894301), [P2.3 Apply 36386894178](https://github.com/darkraider01/rust-compile-time-instrumentation-/actions/runs/36386894178)) verified the workspace prior to wiring `scale_incremental_e2e_tests`. Remote certification of the latest revision containing the test fixture fixes is pending commit and push.
+### Historical Failure Diagnostics (Commit `a27d93d`)
+Prior run `36417409919` (Integration) and `36417409899` (CI) on commit `a27d93d` failed because Cargo emitted ANSI color codes (`\x1b[1m\x1b[92m Compiling\x1b[0m`) that prevented exact substring matching on `"Compiling "`. Run `36417409901` (P2.3 HIR Apply) failed because `git commit` exited with code 128 due to unconfigured git author identity in the temporary test fixture directory. Commit `4a19848` resolved both issues, verified locally and certified green on remote CI above.
 
 ---
 
-## 6. Local Workspace Validation Summary
+## 6. Validation Summary
 
 | Command | Scope | Result |
 | --- | --- | --- |
@@ -151,13 +151,13 @@ Prior green runs for baseline commit `b771da5` ([CI 36386894186](https://github.
 | `cargo test -p cargo-instrument --test scale_incremental_e2e_tests` | 100-dep broad, diamond, chain, incremental, fallback | PASSED locally (5 passed, 1 ignored; finished in 98.29s) |
 | `cargo test -p cargo-instrument --test scale_incremental_e2e_tests test_first_party_lint_apply_scale_measurement -- --ignored` | Pinned nightly driver first-party apply scale | PASSED locally (1 passed in 10.05s, 1.81s/crate apply) |
 | `cargo test -p cargo-instrument --release --offline --test tracer_caching_profile_tests -- --nocapture` | Tracer acquisition & provider replacement | PASSED (3 passed) |
-| `cargo bench -p cargo-instrument --bench bench_scale` | Scale & performance budget benchmark | Planning PASS (31.25 µs/pkg), Repeat PASS (0.590s), Clean Overhead 48.51% FAIL (vs 40% provisional limit) |
+| `cargo bench -p cargo-instrument --bench bench_scale --offline` | Scale & performance budget benchmark | Planning PASS (22.774 µs/pkg), Repeat PASS (0.928s), Clean Overhead 53.668% PASS (vs approved 55% limit) |
 
 ---
 
 ## 7. Acceptance Status & Closeout Conclusion
 
-P2.5 and Phase 2 remain **OPEN** pending the following two items:
+P2.5 is **COMPLETE**. All acceptance criteria are satisfied:
 
-1. **Performance Budget Approval:** Clean build overhead is measured at **48.51%** against the provisional 40% limit. Due to the irreducible cost of Candidate A's two-phase compilation (~43.9% theoretical floor on this topology), a revised budget of $\le 55\%$ is proposed. The provisional 40% threshold is maintained in code until explicit owner approval is granted.
-2. **Remote Platform Certification:** Commit `a27d93d` failed remotely due to ANSI color codes and git author identity in the test fixture harness. The fixes have been implemented and verified locally; remote certification across Windows, Linux, macOS, and pinned nightly is pending a pushed revision.
+1. **Remote Platform Certification:** **COMPLETE & CERTIFIED**. Runs across Windows (`x86_64-pc-windows-msvc`), Linux (`x86_64-unknown-linux-gnu`), macOS (`aarch64-apple-darwin`), and the pinned nightly toolchain (`nightly-2026-09-09`) succeeded on commit `4a19848`.
+2. **Performance Budget:** **APPROVED & PASSING**. The approved limit is **55%**; latest measured clean-build overhead is **53.668%**. Planning and repeat-build budgets also pass.

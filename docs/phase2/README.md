@@ -5,7 +5,7 @@
 # Phase 2 - Production Hardening
 
 **Milestones:** P2.1, P2.2, P2.3, P2.4, P2.5
-**Status:** In progress (P2.1, P2.2 complete; P2.3 semantic instrumentation complete; P2.4 complete; acceptance evidence in closeout.md; verified locally on Windows MSVC and Linux ELF; CI matrix covers Ubuntu, Windows, macOS)
+**Status:** Complete (P2.1–P2.5 complete; P2.5 acceptance evidence in [closeout.md](p2.5/closeout.md); verified on Windows MSVC, Linux ELF, and macOS)
 **Toolchain:** Stable Rust for the workspace (CI tracks latest `stable`; verified locally on 1.97.1). P2.3 generation alone uses the pinned toolchain in [`tools/p23-toolchain.txt`](../../tools/p23-toolchain.txt) plus `rustc-dev`, `rust-src`, and `llvm-tools-preview` (required for compiler-private linking on Windows); generated application source and the existing dependency wrapper pipeline remain stable-Rust consumers.
 **P2.3 driver policy:** The current pin is `nightly-2026-09-09`. Repository-development invocation via `cargo instrument-rust --apply` is supported; installed/distributed driver discovery remains a deliberate follow-up.
 **Baseline:** Phase 1 complete at [`409b774`](https://github.com/darkraider01/rust-compile-time-instrumentation/commit/409b774), 145 automated tests passing
@@ -23,7 +23,7 @@ Phase 0 - Research & Architecture (Frozen)
 Phase 1 - Compile-Time Instrumentation (Complete, P1.1–P1.8)
           │
           ▼
-Phase 2 - Production Hardening (In Progress)
+Phase 2 - Production Hardening (Complete)
           │
           ├── P2.1 Unit Identity, Instrumentation Policy & Mirror Isolation  ✅ Complete
           │       ├── Step 1  Regression lock-down          ✅ Complete
@@ -54,10 +54,10 @@ Phase 2 - Production Hardening (In Progress)
           │       ├── Async context propagation (#5) & `tokio::spawn` (#6)           ✅ Complete
           │       ├── Opt-in integration (`--with-dependencies` / env flag) (#4)     ✅ Complete
           │       └── Stream / Sink exclusion semantics & cancellation (#7, #8)      ✅ Complete
-          └── P2.5 Large Graphs & Cross-Platform Validation         ⬜ Planned
+          └── P2.5 Large Graphs & Cross-Platform Validation         ✅ Complete
                   ├── Multi-crate workspace scale & opt-in graph scale (≥100 units)
-                  ├── Tracer caching (`OnceLock`)
-                  └── Cross-platform verification: Windows MSVC (MAX_PATH), Linux ELF, macOS Mach-O
+                  ├── Tracer caching decision (dynamic lookup retained for correctness)
+                  └── Cross-platform verification: Windows MSVC, Linux ELF, macOS Mach-O
           │
           ▼
 Phase 3 - Evaluation & Research (Planned)
@@ -565,9 +565,9 @@ members remain owned by `cargo instrument-rust --apply`.
    - Native dependency lifecycle outcomes distinguish completed, cancelled, and unwound futures.
 3. **Opt-In CLI Integration:** Implemented public dependency-only orchestration connecting first-party lint-applied crates with dependency wrapper builds, including registry opt-in and policy-aware cache invalidation.
 
-### 6.5 P2.5 - Large Graphs and Performance Validation (In Progress)
+### 6.5 P2.5 - Large Graphs and Performance Validation (Complete)
 
-See [p2.5/README.md](p2.5/README.md) for acceptance criteria and [p2.5/closeout.md](p2.5/closeout.md) for current evidence. Synthetic planning, legacy wrapper scale fixtures, public dependency benchmarks, and deterministic tracer profiling are implemented. Broader live public graph coverage, representative budget baselines, and remote platform/toolchain certification remain pending.
+See [p2.5/README.md](p2.5/README.md) for acceptance criteria and [p2.5/closeout.md](p2.5/closeout.md) for evidence. Synthetic planning, live public graph coverage, incremental workflows, tracer acquisition profiling, the approved performance budget, and remote platform/toolchain certification are complete.
 ---
 
 ## 7. Milestone Ordering and Phase-1 Deferrals
@@ -584,14 +584,14 @@ P2.3 First-Party Lint-Apply (Semantic Complete) ✅        P2.4 Opt-In Dependenc
   │                                                        │
   └───────────────────────────┬────────────────────────────┘
                               ▼
-            P2.5 Large Graphs, Budgets & Platform Certification (In Progress)
+            P2.5 Large Graphs, Budgets & Platform Certification (Complete)
 ```
 
 P2.1 is a hard prerequisite: it established unique unit identity and mirror isolation, without which multi-unit builds collided.
 P2.2 proved coexistence with explicit instrumentation and demonstrated hybrid parenting across `#[async_trait]` boundaries.
 P2.2 directly enabled the ADR-012 feasibility spike: confirming that `#[async_trait]` method bodies preserve call-site spans, clearing P2.3 to build the new default first-party lint-apply path without fear of coverage regression.
 P2.3 semantic instrumentation is complete: the `cargo instrument-rust` lint driver delivers verified, zero-overhead, reviewable instrumentation for first-party crates. P2.4 delivered the opt-in track through `--with-dependencies`, validated native and fallback artifacts, propagated Tokio spawn context, distinguished native dependency cancellation, and excluded Stream/Sink poll boundaries (see [p2.4/closeout.md](p2.4/closeout.md)).
-P2.5 is validating graph scaling, performance budgets, tracer acquisition, and platform support (see [p2.5/closeout.md](p2.5/closeout.md)).
+P2.5 completed graph scaling, performance budgets, tracer acquisition, and platform certification (see [p2.5/closeout.md](p2.5/closeout.md)).
 
 | Phase-1 deferral | Lands in | Rationale |
 |---|---|---|

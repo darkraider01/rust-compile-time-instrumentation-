@@ -9,7 +9,7 @@
 [![Rust](https://img.shields.io/badge/rust-stable-orange?logo=rust)](https://www.rust-lang.org)
 [![Stable output](https://img.shields.io/badge/instrumented%20source-stable%20Rust-brightgreen)](docs/phase2/README.md)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Phase](https://img.shields.io/badge/phase-2%20in%20progress-blue)](#status)
+[![Phase](https://img.shields.io/badge/phase-2%20complete-brightgreen)](#status)
 
 </div>
 
@@ -21,7 +21,7 @@ Instruments Rust applications *and their dependencies* at build time - no source
 | --- | --- | --- |
 | **Phase 0 - Landscape Research & Architecture** | **Complete** (Frozen) | Six frozen architecture decisions ([ADR-001 … ADR-006](docs/research/17-decision-records.md)), normative correctness spec ([§16](docs/research/16-instrumentation-semantics.md)), experiment matrix ([Appendix E](docs/research/appendix-e-experiment-matrix.md)) |
 | **Phase 1 - `cargo-instrument` Tool** | **Complete** | Stable Rust compile-time instrumentation pipeline: P1.1–P1.8 complete (end-to-end registry instrumentation, universal AST reconciliation, Cargo 5-pass correctness, and overhead benchmarks verified across the automated suite) |
-| **Phase 2 - Production Hardening** | **In Progress** | Unit identity & mirror isolation (P2.1 complete), macro expansion resilience & coexistence (P2.2 complete), first-party lint-apply driver (P2.3 semantic instrumentation complete), async dependency lifecycle & opt-in pipeline (P2.4 complete), large graphs & cross-platform validation (P2.5 planned). Decisions recorded as [ADR-007 … ADR-013](docs/phase2/decision-records.md) |
+| **Phase 2 - Production Hardening** | **Complete** | P2.1–P2.5 complete, including large graph validation, the approved 55% clean-build overhead budget (53.67% measured in the latest benchmark), and Windows/Linux/macOS certification. Decisions recorded as [ADR-007 … ADR-013](docs/phase2/decision-records.md) |
 | **Phase 3 - Evaluation & Research** | **Planned** | Empirical evaluation: overhead, binary size, async correctness, build-cache behavior, comparison against existing approaches |
 
 ## Project Phases
@@ -73,7 +73,7 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
 ---
 
 ### Phase 2 - Production Hardening
-**Status:** IN PROGRESS
+**Status:** COMPLETE
 
 **Goal:** Establish the reliability, usability, and scale required for production build environments.
 
@@ -85,8 +85,8 @@ Phase 0 is frozen. All historical records, ADRs, and verification logs are archi
   `cargo instrument-rust --apply` clean-tree-gates a first-party-only `cargo fix` run, puts the isolated nightly `rustc_driver` HIR frontend in `RUSTC`, and leaves Cargo's `RUSTC_WRAPPER` diagnostics proxy intact. It emits genuine `MachineApplicable` edits for supported semantic forms: ordinary free functions, inherent methods, trait implementation methods, native `async fn` bodies, and verified `#[async_trait]` methods when `opentelemetry` is present. Result status recording captures `Status::error("")` for semantic `core::result::Result` types, explicit user instrumentation takes precedence, and direct self-recursion on `self` is excluded. Deliberate exclusions: nested local functions, default trait method bodies, macro/expansion-owned source, const functions, closures, and foreign ABIs. The persistent marker `/* __cargo_instrument_rust:p23 */` makes the command idempotent. The process fixture proves edit, dependency-source immutability, stable rebuild, dirty-tree refusal, and a committed no-op second run. The stable workspace does not depend on `rustc_private`; the driver requires nightly plus `rustc-dev`. Operational packaging and preview UX (`--show`) remain deliberate follow-ups.
 - [x] **P2.4 - Opt-In Dependency Pipeline & Async Trampolines** - COMPLETE
   Exposes `--with-dependencies` and completes the **Hybrid Fallback** architecture: native `--extern` injection for compatible units, with the synchronous Tier-2 C ABI retained as fallback. Validates Cargo artifact identity, propagates Tokio spawn context, distinguishes native dependency cancellation from completion, and excludes Stream/Sink polling boundaries. [Closeout and acceptance evidence](docs/phase2/p2.4/closeout.md) records the tested workflow and accepted limits.
-- [ ] **P2.5 - Large Dependency Graphs & Cross-Platform Validation** - PLANNED
-  Validates both hybrid modes across large multi-crate workspaces and ≥100-unit dependency graphs. Implements tracer caching (`OnceLock`) per §16.3, and verifies cross-platform execution on Windows (MSVC with MAX_PATH mitigation), Linux (ELF), and macOS (Mach-O).
+- [x] **P2.5 - Large Dependency Graphs & Cross-Platform Validation** - COMPLETE
+  Validates both hybrid modes across large multi-crate workspaces and ≥100-unit dependency graphs. Records the approved 55% clean-build overhead budget (53.67% measured in the latest benchmark), confirms dynamic tracer lookup preserves provider replacement semantics, and certifies Windows (MSVC), Linux (ELF), and macOS (Mach-O).
 
 ---
 
@@ -109,7 +109,7 @@ Planned evaluation:
 
 ### Current Focus: Phase 2 - Production Hardening
 
-Phase 1 (Milestones P1.1–P1.8) is **COMPLETE**. Phase 2 Milestones P2.1 (Unit Identity, Instrumentation Policy & Mirror Isolation), P2.2 (Macro Expansion Resilience & Coexistence), and P2.3 (First-Party Lint-Apply Driver — Semantic Instrumentation Complete) are **COMPLETE**.
+Phase 1 (Milestones P1.1–P1.8) and Phase 2 Milestones P2.1–P2.5 are **COMPLETE**.
 
 Architecture decisions [ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional), [ADR-012](docs/phase2/decision-records.md#adr-012---hybrid-first-partydependency-instrumentation-architecture), and [ADR-013](docs/phase2/decision-records.md#adr-013---p23p24-architecture-freeze-and-cargo-fix-integration) establish and freeze a hybrid architecture: first-party lint-apply (`cargo instrument-rust`) becomes the default workflow, while compile-time wrapper dependency instrumentation is preserved as an explicit opt-in mode. ADR-013 records the proven Cargo-fix invariant: the P2.3 driver runs as `RUSTC`, while Cargo retains `RUSTC_WRAPPER` for its diagnostics proxy. In P2.4, R-4 is resolved with the **Hybrid Fallback** architecture ([ADR-011](docs/phase2/decision-records.md#adr-011---the-tier-2-c-abi-is-provisional)), and focus advances to async dependency context propagation and trampolines on the opt-in track.
 

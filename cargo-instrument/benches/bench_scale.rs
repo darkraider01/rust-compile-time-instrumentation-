@@ -524,7 +524,7 @@ fn main() {
     let mut failed = false;
     for (name, observed, limit) in [
         ("Planning µs/package", planning_rate, 100.0),
-        ("Clean build overhead %", delta_pct, 40.0),
+        ("Clean build overhead %", delta_pct, 55.0),
         ("Repeat build seconds", repeat_s, 1.5),
     ] {
         let passed = observed <= limit;
