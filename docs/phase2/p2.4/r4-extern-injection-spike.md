@@ -35,7 +35,7 @@ The JSON pre-pass remains deliberately test-spike orchestration: it is not expos
 The runnable evidence is deliberately gated because it builds an isolated multi-crate Cargo workspace:
 
 ```powershell
-cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --nocapture
+cargo test -p cargo-instrument --test native_artifact_injection_tests -- --ignored --nocapture
 ```
 
 ## Result

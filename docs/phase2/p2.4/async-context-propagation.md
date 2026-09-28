@@ -48,7 +48,7 @@ The objective of Issue #5 is to prove that once a future is created and instrume
 
 ## 2. Deterministic Cross-Thread Migration Proof
 
-Rather than relying on non-deterministic work-stealing schedulers or cooperative runtime yields (`tokio::task::yield_now()`), the regression fixture in `cargo-instrument/tests/r4_extern_injection_tests.rs` constructs a fully deterministic cross-thread execution test:
+Rather than relying on non-deterministic work-stealing schedulers or cooperative runtime yields (`tokio::task::yield_now()`), the regression fixture in `cargo-instrument/tests/native_artifact_injection_tests.rs` constructs a fully deterministic cross-thread execution test:
 
 ```rust
 /// Compile-time generic bound asserting that the future itself implements Send.
@@ -171,7 +171,7 @@ The deterministic migration test was executed against both plain async dependenc
 The test suite executed with:
 
 ```powershell
-cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --nocapture
+cargo test -p cargo-instrument --test native_artifact_injection_tests -- --ignored --nocapture
 ```
 
 Test result: `test r4_extern_injection_path_dependency_proof ... ok (52.83s)`.

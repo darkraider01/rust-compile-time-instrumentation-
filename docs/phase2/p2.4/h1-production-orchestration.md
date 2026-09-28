@@ -13,7 +13,7 @@ Milestone H1 establishes production-grade, ordinary CLI orchestration for native
 Following the initial H1 review, a critical correctness issue was identified and resolved:
 > **Incomplete Pre-Pass Vulnerability:** When the same-target Cargo JSON pre-pass fails mid-build (e.g. compile error in the binary, syntax error, or process termination) or emits truncated/malformed JSON, uninstrumented dependency artifacts already written to `target/` could be omitted from Cargo's JSON stream. Relying solely on the pre-pass JSON stream to identify dirty packages would allow these uninstrumented artifacts to persist into subsequent wrapper invocations, silently bypassing telemetry instrumentation.
 
-This document details the confirmed root cause, the architecture of the complete invalidation recovery mechanism, the full 13-test regression matrix in [`r4_production_orchestration_tests.rs`](../../../cargo-instrument/tests/r4_production_orchestration_tests.rs), and empirical validation results across the workspace.
+This document details the confirmed root cause, the architecture of the complete invalidation recovery mechanism, the full 13-test regression matrix in [`native_instrumentation_orchestration_tests.rs`](../../../cargo-instrument/tests/native_instrumentation_orchestration_tests.rs), and empirical validation results across the workspace.
 
 ```text
 H1 native R-4 production orchestration  RESOLVED
@@ -97,7 +97,7 @@ flowchart TD
 
 ## 4. Test Matrix & Verification Coverage
 
-The end-to-end orchestration suite in [`cargo-instrument/tests/r4_production_orchestration_tests.rs`](../../../cargo-instrument/tests/r4_production_orchestration_tests.rs) provides 13 dedicated integration tests validating every path:
+The end-to-end orchestration suite in [`cargo-instrument/tests/native_instrumentation_orchestration_tests.rs`](../../../cargo-instrument/tests/native_instrumentation_orchestration_tests.rs) provides 13 dedicated integration tests validating every path:
 
 | # | Test Identifier | Scenario & Invariant Verified | Result |
 |---|---|---|:---:|
@@ -128,9 +128,9 @@ Command                                                             Status
 cargo fmt -- --check                                                PASS (0 diffs)
 cargo check -p cargo-instrument                                     PASS (0 warnings)
 cargo test -p cargo-instrument --lib                                PASS (14 passed)
-cargo test -p cargo-instrument --test r4_production_orchestration_tests -- --nocapture
+cargo test -p cargo-instrument --test native_instrumentation_orchestration_tests -- --nocapture
                                                                     PASS (13 passed)
-cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored --nocapture
+cargo test -p cargo-instrument --test native_artifact_injection_tests -- --ignored --nocapture
                                                                     PASS (1 passed)
 cargo test -p cargo-instrument --test tokio_spawn_tests             PASS (9 passed)
 cargo test -p cargo-instrument --test wrapper_tests                 PASS (5 passed)

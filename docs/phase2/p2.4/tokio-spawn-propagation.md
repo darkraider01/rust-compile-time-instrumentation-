@@ -176,7 +176,7 @@ A dedicated integration test suite in `cargo-instrument/tests/tokio_spawn_tests.
 19. `test_h3_tokio_package_name_differs_from_bin_target`: Proves binary targets whose name differs from package name (e.g. package `my-service` with `[[bin]] name = "server"`) correctly validate active Tokio artifacts.
 20. `test_h3_live_cargo_build_tokio_feature_safety`: End-to-end live Cargo build proof executing `cargo build` with `cargo-instrument` as `RUSTC_WRAPPER` against a real crate depending on real Tokio with only `features = ["sync", "macros"]` (lacking `rt`). Asserts suppression is logged, function candidates are transformed, the spawn site is left untouched, and the resulting binary runs and passes assertions.
 
-### 3.2 End-to-End Multi-Crate Integration Proof (`r4_extern_injection_tests.rs`)
+### 3.2 End-to-End Multi-Crate Integration Proof (`native_artifact_injection_tests.rs`)
 
 The full end-to-end integration proof (`r4_extern_injection_path_dependency_proof`) compiles real multi-crate workspaces with `cargo-instrument` as the compiler wrapper:
 

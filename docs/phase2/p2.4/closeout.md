@@ -58,7 +58,7 @@ Cargo pipelining may pass `--extern tokio=<rmeta>` rather than an rlib. Both pat
 
 | Coverage | Retained executable evidence |
 | --- | --- |
-| Public flag and environment opt-in, forwarded app flags | `p24_closeout_tests` |
+| Public flag and environment opt-in, forwarded app flags | `dependency_instrumentation_e2e_tests` |
 | First-party source preservation and manual span coexistence | Public runtime fixture; P2.3 apply suite |
 | Sync/async path dependencies and real census registry spans | Public runtime fixture |
 | Spawn parenting across workers and valid parent IDs | Public runtime fixture; `tokio_spawn_tests`; R-4 migration proof |
@@ -99,8 +99,8 @@ remote run or broad platform certification has passed.
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --offline -- -D warnings
 cargo test --workspace --offline -- --test-threads=2
-cargo test -p cargo-instrument --test p23_apply_tests -- --ignored
-cargo test -p cargo-instrument --test r4_extern_injection_tests -- --ignored
+cargo test -p cargo-instrument --test source_instrumentation_apply_tests -- --ignored
+cargo test -p cargo-instrument --test native_artifact_injection_tests -- --ignored
 cargo test -p cargo-instrument --test e2e_registry_tests -- --ignored
 cargo test -p cargo-instrument --test trampoline_tests test_registry_source_cache_immutability -- --ignored
 ```
