@@ -79,6 +79,31 @@ fn assert_success(output: &Output, context: &str) {
     );
 }
 
+fn compiled_packages(output: &Output) -> HashSet<String> {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .chain(String::from_utf8_lossy(&output.stdout).lines())
+        .filter_map(|line| line.trim_start().strip_prefix("Compiling "))
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn run_verbose(root: &Path) -> Output {
+    run_cli(
+        root,
+        &[
+            "--with-dependencies",
+            "--",
+            "run",
+            "--verbose",
+            "--offline",
+            "--",
+            "--with-dependencies",
+        ],
+    )
+}
+
 fn find_mirror_root(target_dir: &Path) -> PathBuf {
     let instrumented = target_dir.join("instrumented/debug/deps/instrumented_sources");
     if instrumented.is_dir() {
@@ -605,20 +630,19 @@ fn test_public_workflow_incremental_cycles_at_scale() {
     let original_snapshot = snapshot(root);
 
     // Cycle 1: Clean build
-    let out = run_cli(
-        root,
-        &[
-            "--with-dependencies",
-            "--",
-            "run",
-            "--offline",
-            "--",
-            "--with-dependencies",
-        ],
-    );
+    let out = run_verbose(root);
     assert_success(&out, "cycle 1: clean build");
-    assert!(String::from_utf8_lossy(&out.stdout).contains("INC_SUM="));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("INC_SUM=55"));
     assert_eq!(count_mirrors(&root.join("target")), width);
+    let initially_compiled = compiled_packages(&out);
+    for i in 0..width {
+        assert!(
+            initially_compiled.contains(&format!("inc_leaf_{i}")),
+            "initial build must compile inc_leaf_{i}: {initially_compiled:?}; stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     assert_eq!(
         original_snapshot,
         snapshot(root),
@@ -627,20 +651,15 @@ fn test_public_workflow_incremental_cycles_at_scale() {
 
     // Cycle 2: Repeat build (no-op)
     let start_repeat = Instant::now();
-    let out_repeat = run_cli(
-        root,
-        &[
-            "--with-dependencies",
-            "--",
-            "run",
-            "--offline",
-            "--",
-            "--with-dependencies",
-        ],
-    );
+    let out_repeat = run_verbose(root);
     let repeat_elapsed = start_repeat.elapsed();
     assert_success(&out_repeat, "cycle 2: repeat build");
-    assert!(String::from_utf8_lossy(&out_repeat.stdout).contains("INC_SUM="));
+    assert!(String::from_utf8_lossy(&out_repeat.stdout).contains("INC_SUM=55"));
+    assert!(
+        compiled_packages(&out_repeat).is_disjoint(&initially_compiled),
+        "repeat build recompiled packages: {:?}",
+        compiled_packages(&out_repeat)
+    );
     assert_eq!(
         original_snapshot,
         snapshot(root),
@@ -652,49 +671,61 @@ fn test_public_workflow_incremental_cycles_at_scale() {
     );
 
     // Cycle 3: Application-only edit
-    let modified_app_main = format!("{main_template}\n// edited app main\n");
+    let modified_app_main = main_template.replace("INC_SUM=", "INC_EDIT=");
     write_file(&app_dir.join("src/main.rs"), &modified_app_main);
-    let out_app_edit = run_cli(
-        root,
-        &[
-            "--with-dependencies",
-            "--",
-            "run",
-            "--offline",
-            "--",
-            "--with-dependencies",
-        ],
-    );
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let app_snapshot = snapshot(root);
+    let out_app_edit = run_verbose(root);
     assert_success(&out_app_edit, "cycle 3: app-only edit");
-    assert!(String::from_utf8_lossy(&out_app_edit.stdout).contains("INC_SUM="));
-    // Verify dependencies were not re-instrumented or deleted
+    assert!(String::from_utf8_lossy(&out_app_edit.stdout).contains("INC_EDIT=55"));
+    let app_compiled = compiled_packages(&out_app_edit);
+    assert!(
+        String::from_utf8_lossy(&out_app_edit.stdout).contains("INC_EDIT=55"),
+        "edited application should run its changed code: stdout={}",
+        String::from_utf8_lossy(&out_app_edit.stdout)
+    );
+    assert!(
+        app_compiled
+            .iter()
+            .all(|name| !name.starts_with("inc_leaf_")),
+        "app edit must not rebuild dependencies: {app_compiled:?}"
+    );
+    assert_eq!(
+        app_snapshot,
+        snapshot(root),
+        "app-only build must not modify dependency inputs"
+    );
     assert_eq!(count_mirrors(&root.join("target")), width);
 
     // Cycle 4: Dependency-only edit
     let modified_dep = "pub fn work_inc_leaf_0(x: u32) -> u32 { x + 999 }\n";
     write_file(&root.join("inc_leaf_0/src/lib.rs"), modified_dep);
-    let out_dep_edit = run_cli(
-        root,
-        &[
-            "--with-dependencies",
-            "--",
-            "run",
-            "--offline",
-            "--",
-            "--with-dependencies",
-        ],
-    );
-    eprintln!(
-        "CYCLE 4 STDERR:\n{}",
-        String::from_utf8_lossy(&out_dep_edit.stderr)
-    );
-    eprintln!(
-        "CYCLE 4 STDOUT:\n{}",
-        String::from_utf8_lossy(&out_dep_edit.stdout)
-    );
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let dep_snapshot = snapshot(root);
+    let out_dep_edit = run_verbose(root);
     assert_success(&out_dep_edit, "cycle 4: dep-only edit");
     let stdout_dep = String::from_utf8_lossy(&out_dep_edit.stdout);
-    assert!(stdout_dep.contains("INC_SUM="));
+    assert!(
+        stdout_dep.contains("INC_EDIT=1054"),
+        "dependency edit must affect the program result: {stdout_dep}"
+    );
+    let dep_compiled = compiled_packages(&out_dep_edit);
+    assert!(
+        dep_compiled.contains("inc_leaf_0"),
+        "edited dependency should rebuild: {dep_compiled:?}; stderr={}",
+        String::from_utf8_lossy(&out_dep_edit.stderr)
+    );
+    assert!(
+        dep_compiled
+            .iter()
+            .all(|name| !name.starts_with("inc_leaf_") || name == "inc_leaf_0"),
+        "unmodified dependencies should remain fresh: {dep_compiled:?}"
+    );
+    assert_eq!(
+        dep_snapshot,
+        snapshot(root),
+        "dependency build must not modify other inputs"
+    );
     let mirror_dir = find_mirror_root(&root.join("target"));
     assert!(
         mirror_contains_text(&mirror_dir, "999"),
@@ -708,19 +739,16 @@ fn test_public_workflow_incremental_cycles_at_scale() {
         .output()
         .unwrap();
     assert_success(&clean_out, "cargo clean");
-    let out_rebuild = run_cli(
-        root,
-        &[
-            "--with-dependencies",
-            "--",
-            "run",
-            "--offline",
-            "--",
-            "--with-dependencies",
-        ],
-    );
+    let out_rebuild = run_verbose(root);
     assert_success(&out_rebuild, "cycle 5: clean rebuild");
-    assert!(String::from_utf8_lossy(&out_rebuild.stdout).contains("INC_SUM="));
+    assert!(String::from_utf8_lossy(&out_rebuild.stdout).contains("INC_EDIT=1054"));
+    let rebuilt = compiled_packages(&out_rebuild);
+    for i in 0..width {
+        assert!(
+            rebuilt.contains(&format!("inc_leaf_{i}")),
+            "clean rebuild must compile inc_leaf_{i}: {rebuilt:?}"
+        );
+    }
     assert_eq!(count_mirrors(&root.join("target")), width);
 }
 

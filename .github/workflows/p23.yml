@@ -44,3 +44,6 @@ jobs:
 
       - name: Prove real Cargo subcommand apply round trip
         run: cargo +stable test -p cargo-instrument --test source_instrumentation_apply_tests -- --ignored --nocapture
+
+      - name: Measure first-party apply across multiple crates
+        run: cargo +stable test -p cargo-instrument --test scale_incremental_e2e_tests test_first_party_lint_apply_scale_measurement -- --ignored --nocapture

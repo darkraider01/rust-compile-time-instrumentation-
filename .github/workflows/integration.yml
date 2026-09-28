@@ -30,7 +30,7 @@ jobs:
   wrapper-integration:
     name: Real Cargo/rustc integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +60,9 @@ jobs:
 
       - name: Run Phase 2 scale fixture tests (>=100 units)
         run: cargo test --test graph_scale_tests -- --nocapture
+
+      - name: Run P2.5 public scale and incremental tests
+        run: cargo test -p cargo-instrument --test scale_incremental_e2e_tests -- --nocapture
 
       - name: Run P2.4 R-4 / #5 deterministic cross-thread proof (Linux only)
         if: matrix.os == 'ubuntu-latest'
