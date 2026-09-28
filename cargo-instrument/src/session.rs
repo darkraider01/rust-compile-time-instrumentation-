@@ -99,6 +99,8 @@ pub struct CargoDepEdge {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionPlan {
     #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
     pub shim_metadata_v2: bool,
     #[serde(default)]
     pub workspace_package_ids: HashSet<String>,
@@ -1127,22 +1129,27 @@ impl SessionPlan {
 
     /// Load existing session plan from file, or query `cargo metadata` once and cache it.
     pub fn load_or_create(current_dir: &Path, out_dir: Option<&Path>) -> Self {
-        let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
-
         // 1. Check CARGO_INSTRUMENT_SESSION env var (preferred path from CLI / D3)
         if let Ok(path_str) = std::env::var(SESSION_ENV) {
             let path = PathBuf::from(path_str);
             if path.exists() {
                 if let Ok(plan) = Self::load_from_file(&path) {
+                    if let Ok(active_id) = std::env::var("CARGO_INSTRUMENT_SESSION_ID") {
+                        if !active_id.is_empty() && plan.session_id == active_id {
+                            return plan;
+                        }
+                    }
                     let public_policy = std::env::var("CARGO_INSTRUMENT_DEPENDENCIES")
                         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
                         .unwrap_or(false);
+                    let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
                     if !public_policy || plan.is_fresh(&best_dir) {
                         return plan;
                     }
                     eprintln!("warning: cargo-instrument: stale dependency session; rebuilding metadata and discarding captured artifacts");
                 }
             }
+            let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
             match Self::build_from_metadata(&best_dir) {
                 Ok(plan) => {
                     let _ = plan.save_to_file(&path);
@@ -1157,6 +1164,8 @@ impl SessionPlan {
                 }
             }
         }
+
+        let best_dir = Self::find_best_manifest_dir(current_dir, out_dir);
 
         // 2. Check cache file in out_dir (fallback for raw RUSTC_WRAPPER invocations)
         if let Some(out) = out_dir {
@@ -1311,6 +1320,7 @@ impl SessionPlan {
                 });
                 let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
                 return Ok(Self {
+                    session_id: String::new(),
                     shim_metadata_v2: false,
                     workspace_package_ids: workspace_members,
                     wrapper_excluded_package_ids: HashSet::new(),
@@ -1592,6 +1602,7 @@ impl SessionPlan {
         let fingerprint = Self::compute_fingerprint(&workspace_root, &manifest_paths);
 
         Ok(Self {
+            session_id: String::new(),
             has_otel_shim_provider,
             shim_metadata_v2: false,
             workspace_package_ids: workspace_members,
@@ -1620,7 +1631,7 @@ impl SessionPlan {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data = serde_json::to_vec_pretty(self)?;
+        let data = serde_json::to_vec(self)?;
         static SESSION_TEMP_COUNTER: std::sync::atomic::AtomicU64 =
             std::sync::atomic::AtomicU64::new(0);
         let counter = SESSION_TEMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

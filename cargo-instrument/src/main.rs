@@ -357,7 +357,15 @@ fn execute_cargo_with_wrapper(args: &[String]) {
     // and export via CARGO_INSTRUMENT_SESSION for all wrapper child processes (D3 / D4).
     let session_file = resolved_target_dir.join("cargo_instrument_session.json");
     match build_session_plan(&invocation.cargo_args, &current_dir) {
-        Ok(mut plan) => {
+        Ok((mut plan, metadata)) => {
+            plan.session_id = format!(
+                "{}_{:x}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
             if invocation.with_dependencies {
                 plan.configure_dependency_only_policy();
             }
@@ -371,6 +379,7 @@ fn execute_cargo_with_wrapper(args: &[String]) {
                     &resolved_target_dir,
                     &current_dir,
                     &mut plan,
+                    &metadata,
                 ) {
                     Ok(NativeAcquisition::Available) => {}
                     Ok(NativeAcquisition::Tier2Only(reason)) => {
@@ -386,6 +395,7 @@ fn execute_cargo_with_wrapper(args: &[String]) {
                 eprintln!("warning: cargo-instrument: failed to save session plan: {e}");
             }
             cargo_cmd.env(SESSION_ENV, &session_file);
+            cargo_cmd.env("CARGO_INSTRUMENT_SESSION_ID", &plan.session_id);
         }
         Err(e) => {
             eprintln!(
@@ -439,6 +449,7 @@ fn acquire_native_artifacts(
     target_dir: &Path,
     invocation_dir: &Path,
     plan: &mut SessionPlan,
+    metadata: &serde_json::Value,
 ) -> Result<NativeAcquisition, String> {
     let mut prepass_args = without_message_format(cargo_args);
     if prepass_args.first().is_some_and(|arg| arg == "run") {
@@ -463,15 +474,6 @@ fn acquire_native_artifacts(
         .env_remove(WRAPPER_MODE_ENV)
         .output()
         .map_err(|e| format!("failed to run same-target artifact pre-pass: {e}"))?;
-    let metadata_output = cargo_metadata_output(cargo_args, invocation_dir)?;
-    if !metadata_output.status.success() {
-        return Err(format!(
-            "Cargo metadata failed while preparing recovery: {}",
-            String::from_utf8_lossy(&metadata_output.stderr)
-        ));
-    }
-    let metadata: serde_json::Value = serde_json::from_slice(&metadata_output.stdout)
-        .map_err(|e| format!("metadata for pre-pass recovery is invalid: {e}"))?;
 
     let mut stdout = output.stdout;
     // Test hook: Fault injection to simulate truncated/corrupted Cargo JSON
@@ -526,10 +528,10 @@ fn acquire_native_artifacts(
                     .is_some_and(|features| features.iter().any(|feature| feature == "metadata-v2"))
             });
         let r4_err = plan
-            .add_r4_artifacts_from_cargo_json(&metadata, &stdout, None)
+            .add_r4_artifacts_from_cargo_json(metadata, &stdout, None)
             .err();
         let tokio_err = plan
-            .add_tokio_artifacts_from_cargo_json(&metadata, &stdout, None)
+            .add_tokio_artifacts_from_cargo_json(metadata, &stdout, None)
             .err();
         r4_err
             .or(tokio_err)
@@ -548,7 +550,7 @@ fn acquire_native_artifacts(
     }
 
     let freshly_compiled = freshly_compiled_package_ids(&stdout);
-    let desired_instrumented_ids = desired_instrumented_package_ids(plan, &metadata);
+    let desired_instrumented_ids = desired_instrumented_package_ids(plan, metadata);
 
     // If pre-pass failed or output cannot establish complete coverage (e.g. malformed JSON),
     // we must not use the partial JSON message stream as proof that absent dependencies are already instrumented.
@@ -561,7 +563,7 @@ fn acquire_native_artifacts(
         invalidate_packages(
             &desired_instrumented_ids,
             &empty_retained,
-            &metadata,
+            metadata,
             cargo_args,
             target_dir,
             invocation_dir,
@@ -574,7 +576,7 @@ fn acquire_native_artifacts(
         return Ok(NativeAcquisition::Tier2Only(reason));
     }
 
-    let retained_ids = retained_artifact_closure(plan, &metadata);
+    let retained_ids = retained_artifact_closure(plan, metadata);
     let retained_overlap: std::collections::HashSet<String> = desired_instrumented_ids
         .intersection(&retained_ids)
         .cloned()
@@ -587,7 +589,7 @@ fn acquire_native_artifacts(
         invalidate_packages(
             &desired_instrumented_ids,
             &empty_retained,
-            &metadata,
+            metadata,
             cargo_args,
             target_dir,
             invocation_dir,
@@ -611,7 +613,7 @@ fn acquire_native_artifacts(
         invalidate_packages(
             &dirty_instrumented_ids,
             &empty_retained,
-            &metadata,
+            metadata,
             cargo_args,
             target_dir,
             invocation_dir,
@@ -628,7 +630,7 @@ fn acquire_native_artifacts(
     invalidate_packages(
         &clean_ids,
         &retained_ids,
-        &metadata,
+        metadata,
         cargo_args,
         target_dir,
         invocation_dir,
@@ -652,7 +654,7 @@ fn acquire_native_artifacts(
         invalidate_packages(
             &desired_instrumented_ids,
             &empty_retained,
-            &metadata,
+            metadata,
             cargo_args,
             target_dir,
             invocation_dir,
@@ -707,7 +709,10 @@ fn extract_package_specs(args: &[String]) -> Vec<String> {
     specs
 }
 
-fn build_session_plan(cargo_args: &[String], invocation_dir: &Path) -> Result<SessionPlan, String> {
+fn build_session_plan(
+    cargo_args: &[String],
+    invocation_dir: &Path,
+) -> Result<(SessionPlan, serde_json::Value), String> {
     let output = cargo_metadata_output(cargo_args, invocation_dir)?;
     if !output.status.success() {
         return Err(format!(
@@ -749,8 +754,10 @@ fn build_session_plan(cargo_args: &[String], invocation_dir: &Path) -> Result<Se
         None
     };
 
-    SessionPlan::from_metadata_json_scoped(&metadata, selected_ids.as_ref())
-        .map_err(|error| error.to_string())
+    let plan = SessionPlan::from_metadata_json_scoped(&metadata, selected_ids.as_ref())
+        .map_err(|error| error.to_string())?;
+
+    Ok((plan, metadata))
 }
 
 fn cargo_metadata_output(
@@ -1088,36 +1095,49 @@ fn invalidate_packages(
     }
 
     let forward_flags = clean_forward_flags(cargo_args);
+    let package_keys: Vec<_> = packages_by_name.keys().collect();
 
-    for package in packages_by_name.keys() {
+    // Batch packages into cargo clean invocations to eliminate repeated process spawning overhead
+    for chunk in package_keys.chunks(50) {
         let mut clean_cmd = Command::new("cargo");
         clean_cmd
             .current_dir(invocation_dir)
             .arg("clean")
-            .arg("--package")
-            .arg(package)
             .arg("--target-dir")
             .arg(target_dir)
             .args(&forward_flags);
 
+        for package in chunk {
+            clean_cmd.arg("--package").arg(package);
+        }
+
         let status = clean_cmd
             .status()
-            .map_err(|e| format!("failed to invoke cargo clean for package '{package}': {e}"))?;
+            .map_err(|e| format!("failed to invoke cargo clean: {e}"))?;
         if !status.success() {
             return Err(format!(
-                "selective invalidation failed for package '{package}': cargo clean exited with {status}"
+                "selective invalidation failed: cargo clean exited with {status}"
             ));
         }
-        let norm = package.replace('-', "_");
-        let prefix = format!(".cargo-instrument-transformed-{norm}");
-        for profile in ["debug", "release"] {
-            let deps = target_dir.join(profile).join("deps");
-            if let Ok(entries) = std::fs::read_dir(&deps) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with(&prefix) || name == format!(".instrumented_{norm}") {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
+    }
+
+    // Consolidated single-pass removal of transformed stamps and marker files
+    let prefixes: Vec<String> = package_keys
+        .iter()
+        .map(|pkg| format!(".cargo-instrument-transformed-{}", pkg.replace('-', "_")))
+        .collect();
+    let exact_stamps: std::collections::HashSet<String> = package_keys
+        .iter()
+        .map(|pkg| format!(".instrumented_{}", pkg.replace('-', "_")))
+        .collect();
+
+    for profile in ["debug", "release"] {
+        let deps = target_dir.join(profile).join("deps");
+        if let Ok(entries) = std::fs::read_dir(&deps) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if exact_stamps.contains(&name) || prefixes.iter().any(|p| name.starts_with(p)) {
+                    let _ = std::fs::remove_file(entry.path());
                 }
             }
         }
