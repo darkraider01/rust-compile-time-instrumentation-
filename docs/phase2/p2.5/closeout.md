@@ -19,7 +19,7 @@ Prior to this work, `cargo instrument --with-dependencies -- build` exhibited **
    When `cargo-instrument` executed as `RUSTC_WRAPPER` for each compilation unit, `SessionPlan::load_or_create` walked directory parents to locate the nearest manifest and computed hashes across workspace manifests to find the matching plan.
 4. **Candidate A Two-Phase Compilation (Architectural Irreducible Cost):**
    In the Candidate A architecture, Cargo executes an uninstrumented pre-pass on the application root to compile the exact OpenTelemetry `.rlib` with matching compiler flags, features, and target triples. Because the application depends on the leaf libraries, Cargo compiles all leaf libraries uninstrumented during this pre-pass (~6.4s). The leaf crates are then selectively invalidated and recompiled under `RUSTC_WRAPPER` with AST transformation (~3.7s).
-   Therefore, any clean build under Candidate A compiles unowned dependencies **twice** ($6.4\text{s} + 3.7\text{s} \approx 10.1\text{s}$ vs $6.6\text{s}$ baseline). Even with instantaneous invalidation, zero AST parsing overhead, and zero wrapper overhead, compiling dependencies twice establishes an architectural lower bound of $+45\%\text{--}55\%$ clean-build overhead.
+   The 30-dependency benchmark observed substantial repeated work, but this sample does not establish a universal lower bound for other graph sizes or machines.
 
 ### Implemented Optimizations
 All optimizations preserve exact package/artifact/target/profile/feature checks, freshness invalidation, recovery from failed prepasses, fail-open behavior, Native/Tier-2 selection, and input/cache immutability:
@@ -27,12 +27,9 @@ All optimizations preserve exact package/artifact/target/profile/feature checks,
 - **Batched Package Invalidation:**
   `invalidate_packages` in `cargo-instrument/src/main.rs` now groups package names into chunks of up to 50 `--package <name>` arguments in a single `cargo clean` command, reducing 30 process spawns to 1.
 - **Single-Pass Metadata Ingestion:**
-  `acquire_native_artifacts` now accepts `Option<&serde_json::Value>`, reusing the metadata already parsed during session planning.
+  `build_session_plan` returns parsed Cargo metadata with the plan, and `acquire_native_artifacts` reuses it instead of invoking `cargo metadata` again.
 - **Parent-to-Child Session ID Fast Path:**
-  `cargo-instrument` now exports `CARGO_INSTRUMENT_SESSION_ID` containing the active session UUID. Child wrapper processes check this environment variable and load the session file directly via `target_dir.join(format!(".cargo-instrument-session-{session_id}.json"))`, completely bypassing directory walking and manifest hashing.
-- **Compact Session Serialization:**
-  `SessionPlan::save_to_file` now uses compact `serde_json::to_vec` instead of pretty-printed JSON, speeding up serialization and deserialization across wrapper invocations.
-
+  `cargo-instrument` sets `CARGO_INSTRUMENT_SESSION_ID` for child wrappers. When it matches the ID in the shared session file, `SessionPlan::load_or_create` returns the plan without repeating manifest discovery and fingerprint checks. The session file remains `cargo_instrument_session.json`; the ID is a process/time-derived token, not a UUID.
 ---
 
 ## 2. Benchmark Methodology & Results
@@ -60,10 +57,10 @@ All optimizations preserve exact package/artifact/target/profile/feature checks,
 - **Emitted Mirrored Native Scopes:** All 5 build pairs verified that all 30 leaf dependencies were transformed with native OpenTelemetry tracer scopes.
 
 ### Performance Budget Assessment & Recommendation
-The optimizations reduced clean-build overhead from **117.3% down to 48.5%** (a 5.19-second / 34.6% wall-clock reduction). However, because Candidate A compiles unowned dependencies twice (once in the pre-pass to resolve authoritative OpenTelemetry `.rlib` metadata, and once in the instrumented pass), a $+40\%$ clean overhead budget is mathematically impossible for dependency instrumentation in non-trivial graphs.
+The optimizations reduced clean-build overhead from **117.3% down to 48.5%** (a 5.19-second / 34.6% wall-clock reduction). This fixture exceeds the 40% limit; it does not establish that the limit is impossible for other graph sizes or machines.
 
 **Recommendation:**
-1. A defensible, realistic clean-build budget for Candidate A is **$\le 55\%$** (or $\le 60\%$).
+1. A 55% budget is proposed from this fixture's measured 48.5% median, but needs representative workloads and owner acceptance before it replaces the provisional 40% limit.
 2. In accordance with project instructions, the provisional limit of 40% was **not** artificially raised in code, and `cargo bench --bench bench_scale` exited with code 1. Acceptance of this item remains pending until the proposed 55% budget is formally approved.
 
 ---
@@ -79,15 +76,15 @@ A new dedicated test suite was added at `cargo-instrument/tests/scale_incrementa
 2. **Layered Diamond Graph (100 Dependencies):**
    - 4 layers of 25 crates each ($25 \times 4 = 100$ unowned crates) with multiple converging dependency paths.
    - Built under parallel compilation (`-j 4`).
-   - Verified mirror isolation, DAG build ordering, and span emission.
+   - Verified mirror creation and selected native instrumentation scopes across the layers; the fixture runs the app but does not assert exported spans.
 3. **Deep Linear Chain (20 Dependencies):**
    - Strict linear dependency chain ($A \to B \to C \to \dots \to \text{leaf}$).
    - Verified recursive discovery, deep dependency resolution, and native mirror instrumentation.
 4. **Incremental Cycles at Scale (10 Dependencies):**
    - **Cycle 1 (Clean Build):** Initial compile, verified all 10 leaf mirrors created, input tree snapshots identical.
    - **Cycle 2 (Repeat Build / No-op):** Sub-second build, zero mirror modifications, exact snapshot match.
-   - **Cycle 3 (Application-only Edit):** Modified binary root `main.rs`. Verified dependencies were neither re-cleaned nor re-instrumented.
-   - **Cycle 4 (Dependency-only Edit):** Modified `inc_leaf_0/src/lib.rs`. Verified that only `inc_leaf_0` and the application were recompiled and re-instrumented into the mirror with the updated code.
+   - **Cycle 3 (Application-only Edit):** Changing the app output label changes the executed result to `INC_EDIT=55`; the final build output contains no recompilation of leaf crates.
+   - **Cycle 4 (Dependency-only Edit):** Verbose Cargo output verifies the edited leaf recompiles while the other leaves remain fresh. The test checks `INC_SUM=55` changes to `INC_EDIT=55`, then `INC_EDIT=1054` and the edited source appears in the mirror.
    - **Cycle 5 (Clean Rebuild):** Ran `cargo clean` and rebuilt with `--with-dependencies`. Verified complete restoration of all 10 leaf mirrors.
 5. **Tier-2 Fallback at Scale (10 Dependencies):**
    - Profile mismatch (`opt-level = 1` vs `opt-level = 0`) forcing Tier-2 fallback across 10 unowned dependencies.
@@ -97,7 +94,7 @@ A new dedicated test suite was added at `cargo-instrument/tests/scale_incrementa
    - Applied AST rewrite using `cargo instrument-rust --apply` with pinned driver `nightly-2026-09-09`.
    - Verified insertion of `/* __cargo_instrument_rust:p23 */` markers and clean-worktree safety invariant.
    - Verified idempotency (second apply run produced zero diffs).
-   - Timing: Completed 5 crates in **9.339s** (~1.87s per crate).
+   - Timing on the current Windows host: completed 5 crates in **14.064s** (~2.81s per crate).
 
 ---
 
@@ -130,8 +127,8 @@ Remote CI execution on GitHub Actions was inspected for the `main` branch at com
 | `cargo fmt --all -- --check` | Entire workspace | PASSED (0 formatting diffs) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | All targets, all crates | PASSED (0 warnings) |
 | `cargo test --workspace -- --test-threads=2` | Full workspace test suite | PASSED (all tests passed) |
-| `cargo test -p cargo-instrument --test scale_incremental_e2e_tests` | 100-dep broad, diamond, chain, incremental, fallback | PASSED (5 passed, 1 ignored) |
-| `cargo test -p cargo-instrument --test scale_incremental_e2e_tests test_first_party_lint_apply_scale_measurement -- --ignored` | Pinned nightly driver first-party apply scale | PASSED (1 passed, 9.34s) |
+| `cargo test -p cargo-instrument --test scale_incremental_e2e_tests` | 100-dep broad, diamond, chain, incremental, fallback | PASSED locally (5 passed, 1 ignored; ignored case separately run below) |
+| `cargo test -p cargo-instrument --test scale_incremental_e2e_tests test_first_party_lint_apply_scale_measurement -- --ignored` | Pinned nightly driver first-party apply scale | PASSED locally (1 passed, 14.06s) |
 | `cargo test -p cargo-instrument --release --offline --test tracer_caching_profile_tests -- --nocapture` | Tracer acquisition & provider replacement | PASSED (3 passed) |
 | `cargo bench -p cargo-instrument --bench bench_scale` | Scale & performance budget benchmark | Planning PASS, Repeat PASS, Clean Overhead 48.5% FAIL (vs 40% provisional limit) |
 
@@ -140,8 +137,8 @@ Remote CI execution on GitHub Actions was inspected for the `main` branch at com
 ## 7. Acceptance Status & Closeout Conclusion
 
 - **Graph Scale & Topologies:** Complete and validated up to 100 unowned dependencies in broad, deep, and layered diamond graphs.
-- **Incremental Workflow:** Complete and validated across all 5 cycle stages.
-- **First-Party Apply Scale:** Complete and validated using pinned toolchain (1.87s/crate).
+- **Incremental Workflow:** Passed locally on the current revision across all 5 cycle stages; remote platform verification pending.
+- **First-Party Apply Scale:** Passed locally using pinned toolchain (2.81s/crate); remote platform verification pending.
 - **Tracer Acquisition & Safety:** Complete; caching rejected for correctness reasons.
-- **Platform Evidence:** Complete; verified green remote runs on Linux, Windows, macOS, and pinned nightly driver.
+- **Platform Evidence:** Prior CI runs verified baseline commit `b771da5`; they predate the P2.5 orchestration and scale-test changes. Current-revision platform and pinned-nightly certification remains pending.
 - **Clean-Build Overhead Budget:** Overhead significantly reduced from 117.3% to 48.5%. A budget of $\le 55\%$ is proposed based on Candidate A two-phase compilation realities. Because the provisional 40% limit was intentionally preserved, P2.5 remains open until the 55% budget is formally approved.
