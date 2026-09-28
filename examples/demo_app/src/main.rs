@@ -5,7 +5,7 @@ fn main() {
     println!("  Compile-Time Instrumentation Demo (cargo-instrument)     ");
     println!("============================================================\n");
 
-    // 1. Initialize otel-shim runtime (ADR-003 / E-10)
+    // Keep the shim linked for dependencies that need the synchronous fallback.
     println!("[1/4] Initializing otel-shim and OpenTelemetry TracerProvider...");
     otel_shim::init();
 
@@ -19,14 +19,23 @@ fn main() {
     println!("[2/4] Executing workload calling dependency crate 'census'...");
     process_inventory_batch();
 
-    // 3. Verify zero handle leaks (A8 / S5)
+    // Fallback handles must be released before the workload returns.
     let active_spans = otel_shim::active_span_count();
-    println!("[3/4] Checking active span handles in otel-shim TLS stack: {}", active_spans);
-    assert_eq!(active_spans, 0, "active_span_count must be 0 after execution");
+    println!(
+        "[3/4] Checking active span handles in otel-shim TLS stack: {}",
+        active_spans
+    );
+    assert_eq!(
+        active_spans, 0,
+        "active_span_count must be 0 after execution"
+    );
 
     // 4. Inspect and display finished spans
     let spans = exporter.get_finished_spans().expect("finished spans");
-    println!("\n[4/4] Captured {} OpenTelemetry Spans across crate boundary:\n", spans.len());
+    println!(
+        "\n[4/4] Captured {} OpenTelemetry Spans across crate boundary:\n",
+        spans.len()
+    );
 
     let app_span = spans.iter().find(|s| s.name == "process_inventory_batch");
     let app_span_id = app_span.map(|s| s.span_context.span_id());
@@ -35,7 +44,11 @@ fn main() {
         let is_app = span.name == "process_inventory_batch";
         let crate_tag = if is_app { "[demo_app]" } else { "[census]  " };
         let is_child = Some(span.parent_span_id) == app_span_id && !is_app;
-        let indent = if is_child { "    └── " } else { "├── " };
+        let indent = if is_child {
+            "    └── "
+        } else {
+            "├── "
+        };
 
         println!(
             "{}{} {:<25} | ID: {} | Parent: {} | Kind: {:?} | Status: {:?}",
@@ -56,7 +69,10 @@ fn main() {
     let list_span = spans.iter().find(|s| s.name == "Inventory<T>::list");
 
     assert!(new_span.is_some(), "census::Inventory::new instrumented");
-    assert!(track_span.is_some(), "census::Inventory::track instrumented");
+    assert!(
+        track_span.is_some(),
+        "census::Inventory::track instrumented"
+    );
     assert!(list_span.is_some(), "census::Inventory::list instrumented");
 
     if let (Some(app), Some(child)) = (app_span, new_span) {
@@ -69,15 +85,21 @@ fn main() {
 
     println!("\n------------------------------------------------------------");
     println!("  Demo Result: SUCCESS");
-    println!("  - Automatic compile-time AST instrumentation: Verified");
+    println!("  - Automatic dependency instrumentation: Verified");
     println!("  - Zero code modifications to 'census' dependency: Verified");
-    println!("  - C-ABI trampoline runtime bridge (otel-shim): Verified");
+    println!("  - Explicit application span parents dependency spans: Verified");
     println!("  - Distributed Context & Cross-Crate Parenting: Verified");
-    println!("  - S5 LIFO Stack Cleanup & Zero Leaks: Verified");
+    println!("  - No active fallback handles: Verified");
     println!("------------------------------------------------------------\n");
 }
 
 pub fn process_inventory_batch() {
+    use opentelemetry::trace::{TraceContextExt, Tracer};
+
+    // Dependency-only builds preserve this explicit application instrumentation.
+    let tracer = opentelemetry::global::tracer("demo_app");
+    let span = tracer.start("process_inventory_batch");
+    let _guard = opentelemetry::Context::current_with_span(span).attach();
     let inventory = census::Inventory::new();
     let item1 = inventory.track("item-alpha");
     let item2 = inventory.track("item-beta");
