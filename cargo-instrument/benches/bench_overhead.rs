@@ -3,6 +3,14 @@
 //! Runnable on stable Rust via `cargo bench --bench bench_overhead`.
 //! Measures compile-time (clean, repeat, incremental) across N=5 runs,
 //! runtime overhead across M=100,000 invocations, and binary size deltas.
+//!
+//! Instrumented builds exercise the public dependency workflow explicitly:
+//! `cargo-instrument --with-dependencies -- build` (policy `dependencies-v1`),
+//! and the release build asserts that `bench_dep` selected the native R-4
+//! emitter while the workspace application was left uninstrumented. Ambient
+//! `CARGO_INSTRUMENT_*`, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, and fault-injection
+//! environment variables are removed from every child process so the ambient
+//! environment cannot change the experiment.
 
 use std::fs;
 use std::path::PathBuf;
@@ -34,6 +42,40 @@ fn format_stats(values: &[f64]) -> String {
         min_val(values),
         max_val(values)
     )
+}
+
+/// Child processes must not inherit ambient instrumentation settings: an
+/// inherited `CARGO_INSTRUMENT_DEPENDENCIES`, `CARGO_INSTRUMENT_SESSION`, or
+/// `RUSTC_WRAPPER` would silently change the workflow under measurement.
+/// Mirrors the `env_remove` pattern used by the e2e test CLI helper.
+fn sanitize_instrument_env(cmd: &mut Command) {
+    for name in [
+        "CARGO_INSTRUMENT_DEPENDENCIES",
+        "CARGO_INSTRUMENT_REGISTRY",
+        "CARGO_INSTRUMENT_SESSION",
+        "CARGO_INSTRUMENT_SESSION_ID",
+        "CARGO_INSTRUMENT_WRAPPER_MODE",
+        "CARGO_INSTRUMENT_SENTINEL_MODE",
+        "CARGO_INSTRUMENT_NATIVE_OTEL",
+        "INSTRUMENT_DEBUG",
+        "RUSTC_WRAPPER",
+        "__CARGO_INSTRUMENT_FAULT_INJECT_CORRUPT_JSON",
+        "__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_OMIT_PKG",
+        "__CARGO_INSTRUMENT_FAULT_INJECT_PREPASS_FAIL",
+        "__CARGO_INSTRUMENT_FAULT_INJECT_DELETE_RETAINED",
+        "__CARGO_INSTRUMENT_FAULT_INJECT_CLEAN_FAIL",
+    ] {
+        cmd.env_remove(name);
+    }
+}
+
+/// Every build subprocess must be checked: an unchecked failed setup build
+/// would leave stale or missing artifacts and silently corrupt the samples.
+fn run_checked(cmd: &mut Command, what: &str) {
+    let status = cmd
+        .status()
+        .unwrap_or_else(|error| panic!("{what} spawn failed: {error}"));
+    assert!(status.success(), "{what} failed with {status}");
 }
 
 fn main() {
@@ -148,11 +190,10 @@ fn main() {
     fs::write(app_src.join("main.rs"), app_main).expect("write app main.rs");
 
     // Pre-fetch/lock
-    Command::new("cargo")
-        .args(["generate-lockfile"])
-        .current_dir(bench_root)
-        .status()
-        .expect("lockfile");
+    let mut lockfile = Command::new("cargo");
+    lockfile.args(["generate-lockfile"]).current_dir(bench_root);
+    sanitize_instrument_env(&mut lockfile);
+    run_checked(&mut lockfile, "generate-lockfile");
 
     const N: usize = 5;
 
@@ -167,83 +208,98 @@ fn main() {
     for run in 0..N {
         // Baseline clean build
         let target_base = bench_root.join(format!("target_base_{run}"));
+        let mut cmd = Command::new("cargo");
+        cmd.args(["build", "--target-dir", target_base.to_str().unwrap()])
+            .current_dir(bench_root);
+        sanitize_instrument_env(&mut cmd);
         let start = Instant::now();
-        let status = Command::new("cargo")
-            .args(["build", "--target-dir", target_base.to_str().unwrap()])
-            .current_dir(bench_root)
-            .status()
-            .expect("cargo build baseline");
-        assert!(status.success());
+        run_checked(&mut cmd, "baseline clean build");
         baseline_clean.push(start.elapsed().as_secs_f64());
 
-        // Instrumented clean build
+        // Instrumented clean build (public dependency workflow)
         let target_inst = bench_root.join(format!("target_inst_{run}"));
+        let mut cmd = Command::new(cargo_instrument_bin);
+        cmd.args([
+            "--with-dependencies",
+            "--",
+            "build",
+            "--target-dir",
+            target_inst.to_str().unwrap(),
+        ])
+        .current_dir(bench_root);
+        sanitize_instrument_env(&mut cmd);
         let start = Instant::now();
-        let status = Command::new(cargo_instrument_bin)
-            .args(["--", "build", "--target-dir", target_inst.to_str().unwrap()])
-            .current_dir(bench_root)
-            .status()
-            .expect("cargo-instrument build");
-        assert!(status.success());
+        run_checked(&mut cmd, "instrumented clean build");
         instrumented_clean.push(start.elapsed().as_secs_f64());
+
+        println!(
+            "RAW sample {run}: baseline_clean={:.3}s instrumented_clean={:.3}s",
+            baseline_clean[run], instrumented_clean[run]
+        );
     }
 
     // ------------------------------------------------------------------------
     // 2. COMPILE TIME: Repeat Builds (no-op)
     // ------------------------------------------------------------------------
     let target_base_repeat = bench_root.join("target_base_repeat");
-    Command::new("cargo")
+    let mut setup_base = Command::new("cargo");
+    setup_base
         .args([
             "build",
             "--target-dir",
             target_base_repeat.to_str().unwrap(),
         ])
-        .current_dir(bench_root)
-        .status()
-        .expect("setup baseline repeat");
+        .current_dir(bench_root);
+    sanitize_instrument_env(&mut setup_base);
+    run_checked(&mut setup_base, "setup baseline repeat");
 
     let target_inst_repeat = bench_root.join("target_inst_repeat");
-    Command::new(cargo_instrument_bin)
-        .args([
+    let mut setup_inst = Command::new(cargo_instrument_bin);
+    setup_inst.args([
+        "--with-dependencies",
+        "--",
+        "build",
+        "--target-dir",
+        target_inst_repeat.to_str().unwrap(),
+    ]);
+    setup_inst.current_dir(bench_root);
+    sanitize_instrument_env(&mut setup_inst);
+    run_checked(&mut setup_inst, "setup instrumented repeat");
+
+    let mut baseline_repeat = Vec::with_capacity(N);
+    let mut instrumented_repeat = Vec::with_capacity(N);
+
+    for run in 0..N {
+        let mut cmd = Command::new("cargo");
+        cmd.args([
+            "build",
+            "--target-dir",
+            target_base_repeat.to_str().unwrap(),
+        ])
+        .current_dir(bench_root);
+        sanitize_instrument_env(&mut cmd);
+        let start = Instant::now();
+        run_checked(&mut cmd, "baseline repeat build");
+        baseline_repeat.push(start.elapsed().as_secs_f64());
+
+        let mut cmd = Command::new(cargo_instrument_bin);
+        cmd.args([
+            "--with-dependencies",
             "--",
             "build",
             "--target-dir",
             target_inst_repeat.to_str().unwrap(),
         ])
-        .current_dir(bench_root)
-        .status()
-        .expect("setup inst repeat");
-
-    let mut baseline_repeat = Vec::with_capacity(N);
-    let mut instrumented_repeat = Vec::with_capacity(N);
-
-    for _ in 0..N {
+        .current_dir(bench_root);
+        sanitize_instrument_env(&mut cmd);
         let start = Instant::now();
-        let s1 = Command::new("cargo")
-            .args([
-                "build",
-                "--target-dir",
-                target_base_repeat.to_str().unwrap(),
-            ])
-            .current_dir(bench_root)
-            .status()
-            .unwrap();
-        assert!(s1.success());
-        baseline_repeat.push(start.elapsed().as_secs_f64());
-
-        let start = Instant::now();
-        let s2 = Command::new(cargo_instrument_bin)
-            .args([
-                "--",
-                "build",
-                "--target-dir",
-                target_inst_repeat.to_str().unwrap(),
-            ])
-            .current_dir(bench_root)
-            .status()
-            .unwrap();
-        assert!(s2.success());
+        run_checked(&mut cmd, "instrumented repeat build");
         instrumented_repeat.push(start.elapsed().as_secs_f64());
+
+        println!(
+            "RAW sample {run}: baseline_repeat={:.3}s instrumented_repeat={:.3}s",
+            baseline_repeat[run], instrumented_repeat[run]
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -258,32 +314,36 @@ fn main() {
         let touched_main = format!("{}\n// modification {run}\n", app_main);
         fs::write(app_src.join("main.rs"), touched_main).unwrap();
 
+        let mut cmd = Command::new("cargo");
+        cmd.args([
+            "build",
+            "--target-dir",
+            target_base_repeat.to_str().unwrap(),
+        ])
+        .current_dir(bench_root);
+        sanitize_instrument_env(&mut cmd);
         let start = Instant::now();
-        let s1 = Command::new("cargo")
-            .args([
-                "build",
-                "--target-dir",
-                target_base_repeat.to_str().unwrap(),
-            ])
-            .current_dir(bench_root)
-            .status()
-            .unwrap();
-        assert!(s1.success());
+        run_checked(&mut cmd, "baseline incremental build");
         baseline_inc.push(start.elapsed().as_secs_f64());
 
+        let mut cmd = Command::new(cargo_instrument_bin);
+        cmd.args([
+            "--with-dependencies",
+            "--",
+            "build",
+            "--target-dir",
+            target_inst_repeat.to_str().unwrap(),
+        ])
+        .current_dir(bench_root);
+        sanitize_instrument_env(&mut cmd);
         let start = Instant::now();
-        let s2 = Command::new(cargo_instrument_bin)
-            .args([
-                "--",
-                "build",
-                "--target-dir",
-                target_inst_repeat.to_str().unwrap(),
-            ])
-            .current_dir(bench_root)
-            .status()
-            .unwrap();
-        assert!(s2.success());
+        run_checked(&mut cmd, "instrumented incremental build");
         instrumented_inc.push(start.elapsed().as_secs_f64());
+
+        println!(
+            "RAW sample {run}: baseline_inc={:.3}s instrumented_inc={:.3}s",
+            baseline_inc[run], instrumented_inc[run]
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -293,30 +353,59 @@ fn main() {
 
     // Build release binary baseline
     let target_rel_base = bench_root.join("target_rel_base");
-    Command::new("cargo")
+    let mut rel_base_cmd = Command::new("cargo");
+    rel_base_cmd
         .args([
             "build",
             "--release",
             "--target-dir",
             target_rel_base.to_str().unwrap(),
         ])
-        .current_dir(bench_root)
-        .status()
-        .expect("build baseline release");
+        .current_dir(bench_root);
+    sanitize_instrument_env(&mut rel_base_cmd);
+    run_checked(&mut rel_base_cmd, "build baseline release");
 
-    // Build release binary instrumented
+    // Build release binary instrumented; capture diagnostics so the emitter
+    // route of this experiment is recorded (and asserted) rather than assumed.
     let target_rel_inst = bench_root.join("target_rel_inst");
-    Command::new(cargo_instrument_bin)
+    let mut rel_inst_cmd = Command::new(cargo_instrument_bin);
+    rel_inst_cmd
         .args([
+            "--with-dependencies",
             "--",
             "build",
             "--release",
             "--target-dir",
             target_rel_inst.to_str().unwrap(),
         ])
-        .current_dir(bench_root)
-        .status()
-        .expect("build inst release");
+        .current_dir(bench_root);
+    sanitize_instrument_env(&mut rel_inst_cmd);
+    let rel_inst_output = rel_inst_cmd
+        .output()
+        .expect("build instrumented release spawn");
+    assert!(
+        rel_inst_output.status.success(),
+        "instrumented release build failed:\n{}",
+        String::from_utf8_lossy(&rel_inst_output.stderr)
+    );
+    let inst_stderr = String::from_utf8_lossy(&rel_inst_output.stderr);
+    let route_lines: Vec<&str> = inst_stderr
+        .lines()
+        .filter(|line| line.contains("selecting ") || line.contains("transformed"))
+        .collect();
+    for line in &route_lines {
+        println!("EMITTER: {line}");
+    }
+    assert!(
+        route_lines
+            .iter()
+            .any(|line| line.contains("crate=bench_dep] selecting native R-4 emitter")),
+        "expected bench_dep to select the native R-4 emitter for this experiment; emitter lines: {route_lines:#?}"
+    );
+    assert!(
+        !route_lines.iter().any(|line| line.contains("crate=bench_app")),
+        "workspace application must be excluded under --with-dependencies; emitter lines: {route_lines:#?}"
+    );
 
     #[cfg(windows)]
     let bin_name = "bench_app.exe";
@@ -341,9 +430,8 @@ fn main() {
         );
         let s1 = String::from_utf8_lossy(&out1.stdout);
         print!("Baseline: {s1}");
-        if let Some(ns) = parse_ns_per_call(&s1) {
-            runtime_base_ns.push(ns);
-        }
+        let ns = parse_ns_per_call(&s1).expect("baseline RUNTIME_RESULT line");
+        runtime_base_ns.push(ns);
 
         let out2 = Command::new(&bin_inst_path)
             .env("EXPECTED_SPANS", "500000")
@@ -356,9 +444,8 @@ fn main() {
         );
         let s2 = String::from_utf8_lossy(&out2.stdout);
         print!("Instrumented: {s2}");
-        if let Some(ns) = parse_ns_per_call(&s2) {
-            runtime_inst_ns.push(ns);
-        }
+        let ns = parse_ns_per_call(&s2).expect("instrumented RUNTIME_RESULT line");
+        runtime_inst_ns.push(ns);
     }
 
     // ------------------------------------------------------------------------
@@ -417,7 +504,7 @@ fn main() {
         inc_delta
     );
     println!(
-        "\n* Runtime measures generated dependency spans with an OpenTelemetry SDK counting processor and no exporter. Each instrumented sample verifies 500,000 completed dependency spans; each baseline verifies zero. The counting processor cost is included. This synchronous microbenchmark does not measure async application overhead. Compile-time ranges show the observed variation."
+        "\n* Instrumented builds use the explicit public dependency workflow `cargo instrument --with-dependencies -- build` (policy `dependencies-v1`) with ambient `CARGO_INSTRUMENT_*`, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, and fault-injection variables removed; instrumented compile times are public-command wall time including the JSON pre-pass, orchestration, mirroring, and rewriting. The release build asserts and prints the emitter route (`EMITTER:` lines above): native R-4 for `bench_dep`, no wrapper instrumentation for `bench_app`. Runtime measures generated dependency spans with an OpenTelemetry SDK counting processor and no exporter; provider setup and `otel_shim::init()` run before the timed loop. Each instrumented sample asserts 500,000 completed dependency spans inside the application; each baseline asserts zero. Raw per-run samples are printed as `RAW sample` lines; only medians feed the tables. This synchronous microbenchmark does not measure async application overhead, and parent-child ancestry of the counted spans is not verified here."
     );
 
     println!("\n#### Runtime Overhead (M=100,000 loop iterations, 500,000 calls)\n");
