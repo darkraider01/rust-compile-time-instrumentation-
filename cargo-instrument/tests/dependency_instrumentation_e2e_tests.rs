@@ -215,6 +215,15 @@ fn main() {
     println!("METADATA_V2_OK");
 }
 "#).unwrap();
+    // Prime the registry cache online first (see p24/phase3 tests): the offline
+    // run below must not depend on a pre-warmed cargo cache.
+    success(
+        &Command::new("cargo")
+            .args(["fetch"])
+            .current_dir(root)
+            .output()
+            .unwrap(),
+    );
     let output = cli(root, &["--with-dependencies", "--", "run", "--offline"]);
     success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("METADATA_V2_OK"));
@@ -283,6 +292,17 @@ fn public_opt_in_cli_proves_dependency_lifecycle_registry_and_build_cycles() {
     fs::write(root.join("dep/src/lib.rs"), DEPENDENCY).unwrap();
     fs::write(root.join("app/Cargo.toml"), "[package]\nname=\"p24-app\"\nversion=\"0.1.0\"\nedition=\"2021\"\n[dependencies]\np24-dep={path=\"../dep\"}\ncensus=\"=0.4.2\"\nopentelemetry=\"=0.32.0\"\nopentelemetry_sdk={version=\"0.32.0\",features=[\"testing\"]}\ntokio={version=\"1\",features=[\"rt-multi-thread\",\"macros\",\"sync\"]}\n").unwrap();
     fs::write(root.join("app/src/main.rs"), APPLICATION).unwrap();
+    // Prime the registry cache online: CI runners can start with a cold cargo
+    // cache, and the offline cycles below would otherwise fail to download
+    // .crate files that `cargo metadata` needs for the full multi-target graph
+    // (e.g. a newly published libc, or target-gated portable-atomic).
+    success(
+        &Command::new("cargo")
+            .args(["fetch"])
+            .current_dir(root)
+            .output()
+            .unwrap(),
+    );
     // Resolve the lockfile once, before the immutable-input baseline.
     success(
         &Command::new("cargo")
@@ -554,6 +574,17 @@ fn phase3_coverage_baseline_static_expectations_and_runtime_trace_oracle() {
     )
     .unwrap();
     fs::write(root.join("app/src/main.rs"), P31_APPLICATION).unwrap();
+    // Prime the registry cache online: CI runners can start with a cold cargo
+    // cache, and the offline cycles below would otherwise fail to download
+    // .crate files that `cargo metadata` needs for the full multi-target graph
+    // (e.g. a newly published libc, or target-gated portable-atomic).
+    success(
+        &Command::new("cargo")
+            .args(["fetch"])
+            .current_dir(root)
+            .output()
+            .unwrap(),
+    );
     // Resolve the lockfile once, before the immutable-input baseline.
     success(
         &Command::new("cargo")
