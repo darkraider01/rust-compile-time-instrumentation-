@@ -2,7 +2,9 @@
 
 [Project README](../../README.md)
 
-Status: proposed execution roadmap, 2026-10-05. Evaluation runs have not started under this roadmap. Phase 2 evidence is a starting point, not a Phase 3 result.
+Status: proposed execution roadmap, 2026-10-05. Phase 2 evidence is a starting point, not a Phase 3 result.
+
+First evidence under this roadmap: the benchmark audit, small deterministic coverage fixture, and trace oracle recorded in the [coverage baseline note](phase-3-coverage-baseline.md) (executed 2026-10-05). It is bounded fixture evidence only; no section below is marked complete and no performance result is claimed.
 
 The question for this phase is whether the implemented instrumentation provides useful coverage and correct context at an acceptable cost in real Rust applications. Evaluate the existing first-party HIR application workflow and dependency wrapper separately and together. Preserve the accepted architecture; evaluation findings can motivate focused fixes or a separate design discussion.
 
@@ -19,6 +21,8 @@ The question for this phase is whether the implemented instrumentation provides 
 The README records 53.67% clean-build overhead for the completed scale fixture against its approved 55% fixture budget. Retain this as historical fixture evidence. It supplies neither a universal build budget nor a runtime target. No tests or benchmarks were rerun while preparing this roadmap.
 
 The overhead benchmark currently launches `cargo-instrument -- build` without explicit `--with-dependencies` and inherits instrumentation environment settings. Its intended dependency-span assertions do not establish that it exercises today's public dependency workflow. Audit the selected route and make the experiment configuration explicit before adopting its numbers.
+
+*Audit completed 2026-10-05 (see the [baseline note](phase-3-coverage-baseline.md)): the flagless invocation was observed running policy `legacy-v1` (instrumenting both the workspace application and the excluded path dependency), and ambient `CARGO_INSTRUMENT_DEPENDENCIES` was observed flipping a flagless run to `dependencies-v1`. The benchmark now invokes `--with-dependencies` explicitly, removes ambient instrumentation environment variables, checks every build subprocess, asserts the native R-4 route for the dependency, and prints raw samples. The full suite has not been rerun, so no timing result is claimed.*
 
 ## Evaluation protocol
 
@@ -141,7 +145,7 @@ Deliverable: stress envelope and defect reproductions, including successful reco
 
 The numbering groups research questions; it is not a requirement to run them sequentially.
 
-1. **Protocol and fixture audit:** record environment/version manifests; audit existing benchmarks for public CLI flags, selected emitter, subprocess failures, raw sample retention, and span verification. Draft the fixture census and expected trace graphs. Reuse existing exporters/processors and fixtures where possible.
+1. **Protocol and fixture audit:** record environment/version manifests; audit existing benchmarks for public CLI flags, selected emitter, subprocess failures, raw sample retention, and span verification. Draft the fixture census and expected trace graphs. Reuse existing exporters/processors and fixtures where possible. *Benchmark audit and a first fixture census with an expected trace graph are recorded in the [baseline note](phase-3-coverage-baseline.md), including the environment/version manifest for that run.*
 2. **Correctness baseline (3.1, 3.6, 3.7):** establish supported/excluded boundaries and baseline trace correctness for local fixtures. Capture existing behavior before any defect fix; keep fixes separate from measurement changes.
 3. **Cost pilot (3.2–3.5):** run controlled local measurements, identify noisy or invalid experiments, and propose workload-specific budgets before larger runs. Preserve the old scale budget only for its original fixture.
 4. **Corpus and comparisons (3.8 plus 3.1–3.7):** select/pin real applications and the concrete Tokio telemetry arm, then repeat correctness and cost measurements. Review any new dependency or materially different implementation strategy before adding it.
