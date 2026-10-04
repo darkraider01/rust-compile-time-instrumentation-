@@ -23,6 +23,8 @@ This is an independent prototype. It is not an official OpenTelemetry component.
 
 The core implementation and hardening work are complete. Evaluation against real applications is the next step; production readiness has not been established.
 
+The [Phase 3 evaluation roadmap](docs/roadmap/phase-3-evaluation.md) covers coverage, build/runtime cost, binary size, cache behavior, async correctness, dependencies, comparisons, and stress testing.
+
 | Component | Current status |
 | --- | --- |
 | First-party source application | Implemented for supported HIR function forms; repository development workflow |
