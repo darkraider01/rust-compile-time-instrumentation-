@@ -8,7 +8,8 @@
 //! `cargo-instrument --with-dependencies -- build` (policy `dependencies-v1`),
 //! and the release build asserts that `bench_dep` selected the native R-4
 //! emitter while the workspace application was left uninstrumented. Ambient
-//! `CARGO_INSTRUMENT_*`, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, and fault-injection
+//! `CARGO_INSTRUMENT_*` settings (including the `CARGO_INSTRUMENT_ACTIVE`
+//! recursion guard), `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, and fault-injection
 //! environment variables are removed from every child process so the ambient
 //! environment cannot change the experiment.
 
@@ -46,10 +47,15 @@ fn format_stats(values: &[f64]) -> String {
 
 /// Child processes must not inherit ambient instrumentation settings: an
 /// inherited `CARGO_INSTRUMENT_DEPENDENCIES`, `CARGO_INSTRUMENT_SESSION`, or
-/// `RUSTC_WRAPPER` would silently change the workflow under measurement.
+/// `RUSTC_WRAPPER` would silently change the workflow under measurement, and
+/// an inherited recursion guard (`CARGO_INSTRUMENT_ACTIVE`) makes every
+/// wrapper child treat itself as a nested invocation and skip instrumentation
+/// entirely, producing uninstrumented "instrumented" samples. Nothing in the
+/// CLI clears that guard before spawning Cargo, so the benchmark must.
 /// Mirrors the `env_remove` pattern used by the e2e test CLI helper.
 fn sanitize_instrument_env(cmd: &mut Command) {
     for name in [
+        "CARGO_INSTRUMENT_ACTIVE",
         "CARGO_INSTRUMENT_DEPENDENCIES",
         "CARGO_INSTRUMENT_REGISTRY",
         "CARGO_INSTRUMENT_SESSION",

@@ -41,7 +41,7 @@ Conclusions drawn from those observations:
 
 ### Read from code (not executed as experiments)
 
-- `parse_cli_invocation` seeds `with_dependencies` from `CARGO_INSTRUMENT_DEPENDENCIES` (`main.rs`); the wrapper additionally reads `CARGO_INSTRUMENT_REGISTRY`, `CARGO_INSTRUMENT_WRAPPER_MODE`, `CARGO_INSTRUMENT_SENTINEL_MODE`, `CARGO_INSTRUMENT_NATIVE_OTEL`, `INSTRUMENT_DEBUG` (route/debug lines), and `CARGO_INSTRUMENT_SESSION`/`CARGO_INSTRUMENT_SESSION_ID` (session reuse). Fault-injection hooks `__CARGO_INSTRUMENT_FAULT_INJECT_*` are also read. All were inherited by benchmark child processes before the correction; the baseline `cargo` invocations inherited any ambient `RUSTC_WRAPPER`.
+- `parse_cli_invocation` seeds `with_dependencies` from `CARGO_INSTRUMENT_DEPENDENCIES` (`main.rs`); the wrapper additionally reads `CARGO_INSTRUMENT_ACTIVE` (the nested-invocation recursion guard — when set, `run_wrapper` skips all analysis, mirroring, and transformation, so an inherited guard silently yields uninstrumented builds; nothing in the CLI clears it), `CARGO_INSTRUMENT_REGISTRY`, `CARGO_INSTRUMENT_WRAPPER_MODE`, `CARGO_INSTRUMENT_SENTINEL_MODE`, `CARGO_INSTRUMENT_NATIVE_OTEL`, `INSTRUMENT_DEBUG` (route/debug lines), and `CARGO_INSTRUMENT_SESSION`/`CARGO_INSTRUMENT_SESSION_ID` (session reuse). Fault-injection hooks `__CARGO_INSTRUMENT_FAULT_INJECT_*` are also read. All were inherited by benchmark child processes before the correction; the baseline `cargo` invocations inherited any ambient `RUSTC_WRAPPER`.
 - Subprocess status handling before the correction: clean builds, repeat/incremental builds, and runtime runs were asserted; `generate-lockfile`, the two repeat-setup builds, and both release builds were only spawn-checked (`.expect()`/`.status()` without success assertion).
 - `RUNTIME_RESULT` parsing used `if let Some(...)`, so a missing or malformed line was silently skipped and could produce empty sample vectors.
 - Runtime assertions before the correction: the instrumented binary asserted exactly 500,000 `compute_step_*` completed spans and the baseline asserted zero (in-app, counting processor). That proves dependency calls produced spans, but it did not assert parent-child ancestry, instrumentation scope, or the emitter route.
@@ -52,7 +52,7 @@ Conclusions drawn from those observations:
 In `cargo-instrument/benches/bench_overhead.rs`:
 
 1. Every instrumented invocation now passes `--with-dependencies` (the current public dependency CLI), making the workflow `dependencies-v1` explicitly.
-2. `sanitize_instrument_env` removes 14 ambient variables (`CARGO_INSTRUMENT_*`, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, `__CARGO_INSTRUMENT_FAULT_INJECT_*`) from every child process, following the `env_remove` pattern already used by the test `cli()` helper.
+2. `sanitize_instrument_env` removes 15 ambient variables (`CARGO_INSTRUMENT_*` including the `CARGO_INSTRUMENT_ACTIVE` recursion guard, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, `__CARGO_INSTRUMENT_FAULT_INJECT_*`) from every child process, following the `env_remove` pattern already used by the test `cli()` helper.
 3. `run_checked` asserts exit status for `generate-lockfile`, both repeat-setup builds, and both release builds; timed builds keep their existing assertions.
 4. `RUNTIME_RESULT` parsing now hard-asserts instead of silently skipping.
 5. The instrumented release build captures stderr, prints every `EMITTER:` route line, and **asserts** that `bench_dep` selected the native R-4 emitter and that `bench_app` produced no wrapper activity.
