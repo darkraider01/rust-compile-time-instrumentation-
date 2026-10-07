@@ -19,8 +19,8 @@ pub struct R4Profile {
 
 impl Default for R4Profile {
     fn default() -> Self {
-        // Cargo's dev profile omits these defaults from rustc argv, so absence must not be
-        // mistaken for an unknown profile. Release/custom profiles carry explicit `-C` values.
+        // This models Cargo's dev profile. `rustc_profile` resolves defaults for
+        // other profiles from their compiler arguments.
         Self {
             opt_level: "0".to_string(),
             debug_assertions: true,
@@ -1664,7 +1664,13 @@ fn rustc_target(args: &[String]) -> Option<String> {
 }
 
 fn rustc_profile(args: &[String]) -> R4Profile {
-    let mut profile = R4Profile::default();
+    // Cargo can omit flags that match rustc's defaults, including in release builds.
+    // Resolve absent flags from the compiler settings instead of the dev profile.
+    let mut opt_level: Option<String> = None;
+    let mut debug_assertions: Option<bool> = None;
+    let mut overflow_checks: Option<bool> = None;
+    let mut cfg_debug_assertions = false;
+    let mut test = false;
     for (index, arg) in args.iter().enumerate() {
         let codegen = if arg == "-C" {
             args.get(index + 1).map(String::as_str)
@@ -1673,11 +1679,11 @@ fn rustc_profile(args: &[String]) -> R4Profile {
         };
         if let Some(codegen) = codegen {
             if let Some(value) = codegen.strip_prefix("opt-level=") {
-                profile.opt_level = value.to_string();
+                opt_level = Some(value.to_string());
             } else if let Some(value) = codegen.strip_prefix("overflow-checks=") {
-                profile.overflow_checks = value == "on" || value == "true";
+                overflow_checks = Some(value == "on" || value == "true");
             } else if let Some(value) = codegen.strip_prefix("debug-assertions=") {
-                profile.debug_assertions = value == "on" || value == "true";
+                debug_assertions = Some(value == "on" || value == "true");
             }
         }
         if arg == "--cfg"
@@ -1686,13 +1692,24 @@ fn rustc_profile(args: &[String]) -> R4Profile {
                 .is_some_and(|value| value == "debug_assertions")
             || arg == "--cfg=debug_assertions"
         {
-            profile.debug_assertions = true;
+            cfg_debug_assertions = true;
         }
         if arg == "--test" {
-            profile.test = true;
+            test = true;
         }
     }
-    profile
+    let opt_level = opt_level.unwrap_or_else(|| "0".to_string());
+    let codegen_debug_assertions = debug_assertions.unwrap_or(opt_level == "0");
+    // Overflow checks default to codegen debug assertions. A forced cfg changes
+    // conditional compilation but does not enable codegen overflow checks.
+    let overflow_checks = overflow_checks.unwrap_or(codegen_debug_assertions);
+    let debug_assertions = codegen_debug_assertions || cfg_debug_assertions;
+    R4Profile {
+        debug_assertions,
+        opt_level,
+        overflow_checks,
+        test,
+    }
 }
 
 /// Compute the set of host-only package names by filtering out target-reachable packages.
@@ -2043,6 +2060,117 @@ mod tests {
             plan.r4_otel_package_by_dependency.get(app_b),
             Some(&otel_30.to_string()),
             "a single-root package retains its exact 0.30 package identity"
+        );
+    }
+
+    #[test]
+    fn test_rustc_profile_resolves_absent_flags_against_rustc_defaults() {
+        let dev = rustc_profile(&[]);
+        assert_eq!(
+            dev,
+            R4Profile {
+                opt_level: "0".to_string(),
+                debug_assertions: true,
+                overflow_checks: true,
+                test: false
+            },
+            "an empty (dev) argv keeps the dev profile"
+        );
+
+        // Release arguments can omit both assertion flags.
+        let release = rustc_profile(&[
+            "--crate-name".to_string(),
+            "bench_dep".to_string(),
+            "-C".to_string(),
+            "opt-level=3".to_string(),
+            "-C".to_string(),
+            "embed-bitcode=no".to_string(),
+        ]);
+        assert_eq!(
+            release,
+            R4Profile {
+                opt_level: "3".to_string(),
+                debug_assertions: false,
+                overflow_checks: false,
+                test: false
+            },
+            "a release argv without explicit flags must compute the release profile, \
+             otherwise it never matches Cargo's release artifact record"
+        );
+
+        // Explicit flags still win over the opt-level inference, in both spellings.
+        let custom = rustc_profile(&[
+            "-Copt-level=3".to_string(),
+            "-Cdebug-assertions=on".to_string(),
+            "-Coverflow-checks=on".to_string(),
+        ]);
+        assert!(custom.debug_assertions, "explicit -C wins over default");
+        assert!(custom.overflow_checks, "explicit -C wins over default");
+        assert_eq!(custom.opt_level, "3");
+
+        let dev_opt_off = rustc_profile(&["-C".to_string(), "debug-assertions=off".to_string()]);
+        assert!(
+            !dev_opt_off.debug_assertions,
+            "an explicit off at opt-level 0 stays off"
+        );
+        assert_eq!(dev_opt_off.opt_level, "0");
+
+        // Explicit debug assertions also determine absent overflow checks.
+        let opt3_da_on = rustc_profile(&[
+            "-C".to_string(),
+            "opt-level=3".to_string(),
+            "-C".to_string(),
+            "debug-assertions=on".to_string(),
+        ]);
+        assert!(opt3_da_on.debug_assertions);
+        assert!(
+            opt3_da_on.overflow_checks,
+            "absent overflow-checks default to enabled when debug-assertions are on, \
+             even at opt-level 3"
+        );
+
+        let opt0_da_off = rustc_profile(&[
+            "-C".to_string(),
+            "opt-level=0".to_string(),
+            "-C".to_string(),
+            "debug-assertions=off".to_string(),
+        ]);
+        assert!(!opt0_da_off.debug_assertions);
+        assert!(
+            !opt0_da_off.overflow_checks,
+            "absent overflow-checks default to disabled when debug-assertions are off, \
+             even at opt-level 0"
+        );
+
+        let explicit_oc_off = rustc_profile(&[
+            "-C".to_string(),
+            "opt-level=3".to_string(),
+            "-C".to_string(),
+            "debug-assertions=on".to_string(),
+            "-C".to_string(),
+            "overflow-checks=off".to_string(),
+        ]);
+        assert!(explicit_oc_off.debug_assertions);
+        assert!(
+            !explicit_oc_off.overflow_checks,
+            "an explicit -C overflow-checks remains authoritative over the \
+             debug-assertions-derived default"
+        );
+
+        // A forced cfg is recorded without changing codegen overflow checks.
+        let cfg_forced = rustc_profile(&[
+            "-Copt-level=3".to_string(),
+            "-Cdebug-assertions=off".to_string(),
+            "--cfg=debug_assertions".to_string(),
+        ]);
+        assert!(
+            cfg_forced.debug_assertions,
+            "the cfg override is still recorded on the debug-assertions field"
+        );
+        assert!(
+            !cfg_forced.overflow_checks,
+            "absent overflow-checks follow codegen debug-assertions, \
+             not the forced --cfg override"
         );
     }
 
