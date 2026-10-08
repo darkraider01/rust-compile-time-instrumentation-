@@ -180,10 +180,10 @@ Comparing like quantities across the three session medians:
 
 | Metric | October 7 Pilot (idle host run 3) | October 8 Evaluation (Session 2 / Session 3) | Protocol differences |
 |---|---|---|---|
-| Clean build overhead | +5.4% (+0.254 s) | +1.8% (+0.160 s) / +0.6% (+0.045 s) | Alternating order eliminates fixed baseline-first cache advantage |
-| Repeat build delta | +0.138 s (+138 ms) | +0.171 s (+171 ms) / +0.170 s (+170 ms) | Consistent across repeat and incremental |
-| Incremental build delta | +0.138 s (+138 ms) | +0.182 s (+182 ms) / +0.172 s (+172 ms) | Preserved separate target directory semantics |
-| Runtime per-call delta | +242.4 ns/call | +269.8 ns/call / +261.6 ns/call | Discarded warm-up + N=10 runtime samples |
+| Clean build overhead | +4.0% (+0.256 s) | +1.8% (+0.160 s) / +0.6% (+0.045 s) | Alternating order eliminates fixed baseline-first cache advantage |
+| Repeat build delta | +0.150 s (+150 ms) | +0.171 s (+171 ms) / +0.170 s (+170 ms) | Consistent across repeat and incremental |
+| Incremental build delta | +0.150 s (+150 ms) | +0.182 s (+182 ms) / +0.172 s (+172 ms) | Preserved separate target directory semantics |
+| Runtime per-call delta | +249.34 ns/call | +269.84 ns/call / +261.60 ns/call | Discarded warm-up + N=10 runtime samples |
 | Release binary growth | +55,560 bytes (+7.1%) | +55,568 bytes (+7.1%) | Consistent byte growth within 8 bytes |
 
 ---
@@ -225,7 +225,7 @@ Raw evidence is preserved in [`evidence/phase3-overhead-2026-10-08/`](../../evid
 |---|---|---|
 | `env-manifest.txt` | `ec41c7460148f201e1e8bb6ccc4993d7d812bab1a4d9d95ed2bd754f48337d39` | Host environment, CPU/memory, toolchain, lockfile identity |
 | `harness.patch` | `60f56738e95feee4bb597cc2a8cfb5648a74ba36c4ac0c065a913edd080bec0d` | Captured diff for `cargo-instrument/benches/bench_overhead.rs` |
-| `run-bench.sh` | `60fbcd2a8970932449c160e24bdb832de80883a5bf2ef58f717919ac7afba5f4` | Exact execution script with timestamp and loadavg logging |
+| `run-bench.sh` | `7eb00b069bfa3ddf15dfed93242f2d9c9d8908e22858e5df3d262c5820e44b85` | Exact execution script with timestamp and loadavg logging |
 | `session1.log` | `5407125fd48d87cacf6013466f87054bbcfd0aa2ce8cd840bd9e3a7b91314675` | Session 1 complete raw stdout/stderr |
 | `session2.log` | `1e3b89f64127cf8f3c3f3e24619efd6f0d76bee7c56d0155c1acdfbee83c7bc1` | Session 2 complete raw stdout/stderr |
 | `session3.log` | `38d92c461dddfbb05b1bd046aaf3357d0c25910ce59a514b5e8f5384a283d8af` | Session 3 complete raw stdout/stderr |
@@ -239,7 +239,7 @@ CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_overhead --
 # Workflow regression tests:
 cargo test -p cargo-instrument --test dependency_instrumentation_e2e_tests
 
-# Full benchmark execution:
+# Full benchmark execution (outputs to target/phase3-overhead-rerun/ by default to preserve committed session logs):
 ./evidence/phase3-overhead-2026-10-08/run-bench.sh 1
 ```
 
