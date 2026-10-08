@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 SESSION="${1:-1}"
-OUT_DIR="${OUT_DIR:-evidence/phase3-overhead-2026-10-08-steady-state}"
+OUT_DIR="${OUT_DIR:-target/phase3-overhead-rerun}"
 LOG="$OUT_DIR/session${SESSION}.log"
 
 if [ -e "$LOG" ]; then

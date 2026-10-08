@@ -162,7 +162,7 @@ Across all three sessions, the resulting release executables produced identical 
 - Instrumented binary: 835,128 bytes
 - Delta: +55,560 bytes (+7.1%)
 
-*(Note: compared to the October 8 fresh-process evaluation binaries of 778,728 / 834,296 bytes, both release binaries grew by +840 bytes due to embedding the local `run_workload` loop helper, constant accumulator checking, and in-process assertions).*
+*(Note: compared to the October 8 fresh-process evaluation binaries of 778,728 / 834,296 bytes, the baseline binary grew by +840 bytes and the instrumented binary grew by +832 bytes; this 8-byte difference explains why the instrumentation delta changed from +55,568 to +55,560 bytes. The binary growth reflects code additions in `bench_app/src/main.rs` (the local `run_workload` loop helper, constant accumulator checking, and in-process assertions), though their separate individual contributions were not independently measured).*
 
 ---
 
@@ -181,7 +181,7 @@ Across all three sessions, the resulting release executables produced identical 
 - **Runtime per-call overhead**:
   - Baseline runtime medians: 1.235 ns, 1.240 ns, 1.240 ns $\rightarrow$ cross-session spread: **0.4%**
   - Instrumented runtime medians: 244.755 ns, 245.265 ns, 247.105 ns $\rightarrow$ cross-session spread: **1.0%**
-  - Observations: Runtime per-call overhead delta falls tightly within **+243.52 to +245.87 ns/call** across the three session medians. In-process warm-up yields highly stable steady-state numbers (cross-session spread: 1.0%; within-session spread: 2.3%–5.2%).
+  - Observations: Under the revised protocol, runtime per-call overhead deltas were observed tightly between **+243.52 and +245.87 ns/call** across the three session medians (cross-session spread: 1.0%; within-session spread: 2.3%–5.2%). While these values are lower than the earlier fresh-process results (+261.6 to +288.5 ns/call), this difference is reported as an observation under the revised protocol rather than establishing that warm-up alone caused the improvement, as host background conditions and binary layout changed as well.
 
 ### 4.2 Comparison across evaluation methodologies
 
@@ -189,8 +189,8 @@ Across all three sessions, the resulting release executables produced identical 
 
 | Metric | October 7 Pilot (historical, fresh process) | October 8 Evaluation (fresh-process sampling) | October 8 Evaluation (in-process steady-state) | Methodological differences |
 |---|---|---|---|---|
-| Runtime Warm-up Model | None | Separate external child process | Untimed in-process pass before counter reset | Warmed in-process provider & processor structures |
-| Runtime per-call delta | +249.34 ns/call | +261.60 / +269.84 / +288.53 ns/call | **+243.52 / +244.02 / +245.87 ns/call** | Lower delta and tighter distribution under steady-state |
+| Runtime Warm-up Model | None | Separate external child process | Untimed in-process pass before counter reset | Primes in-process provider & processor structures |
+| Runtime per-call delta | +249.34 ns/call | +261.60 / +269.84 / +288.53 ns/call | **+243.52 / +244.02 / +245.87 ns/call** | Lower delta observed under revised protocol; host conditions and binary layout also changed |
 | Runtime sample count | N=5 | N=10 | N=10 | 10 pairs per session |
 | Pair execution order | Fixed (baseline first) | Alternating | Alternating | Mitigates fixed-order host caching bias |
 | Clean build overhead | +4.0% (+0.256 s) | -2.3% / +1.8% / +0.6% (inconclusive) | **-4.0% / +3.2% / +4.2% (inconclusive)** | Deltas change sign; smaller than host variation |
@@ -244,7 +244,7 @@ Raw evidence is preserved in [`evidence/phase3-overhead-2026-10-08-steady-state/
 |---|---|---|
 | `env-manifest.txt` | `df9f1be3c439b036756ea0f79ec406922bbd1b8e17666e3b8a4a6d03a24f52c7` | Host environment, CPU model (`lscpu`), memory, toolchain, lockfile identity |
 | `harness.patch` | `1d63bacf55a78da86b0f878cc1d72d650052468cda80a32814a70987cdfd2487` | Captured diff for `cargo-instrument/benches/bench_overhead.rs` implementing in-process warm-up |
-| `run-bench.sh` | `a65f928de22d04ecd5c912e5640eaaaa182b9cf198ff1080792783876b7e9995` | Exact execution script with timestamp and loadavg logging |
+| `run-bench.sh` | `3f3854082464179cb96c16ffb79897b2f1e105a20f95ba16f5835b86765abac9` | Exact execution script with timestamp and loadavg logging |
 | `session1.log` | `77697d9a3999e48e1c173e40cd0ba6e599622346ebadd38f71700275e6afc5bd` | Session 1 complete raw stdout/stderr |
 | `session2.log` | `ddf89f9203ba811b7dc0bea8dd90b9271f1a67ec6bb93f47c8d0607c71edc0e7` | Session 2 complete raw stdout/stderr |
 | `session3.log` | `25fa12bf29b5666db58e2b2cc6f8e35452df181ab08609a9bfa3c9b14961f139` | Session 3 complete raw stdout/stderr |
@@ -258,8 +258,8 @@ CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_overhead --
 # Workflow regression tests:
 cargo test -p cargo-instrument --test dependency_instrumentation_e2e_tests
 
-# Full benchmark execution (outputs to target/phase3-overhead-rerun/ by default if OUT_DIR is not set):
-OUT_DIR=target/phase3-overhead-rerun ./evidence/phase3-overhead-2026-10-08-steady-state/run-bench.sh 1
+# Full benchmark execution (outputs to target/phase3-overhead-rerun/ by default to preserve committed session logs):
+./evidence/phase3-overhead-2026-10-08-steady-state/run-bench.sh 1
 ```
 
 ---
