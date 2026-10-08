@@ -1,0 +1,37 @@
+     Removed 7 files, 18.3KiB total
+   Compiling bench_dep v0.1.0 (/tmp/opencode/p3repro/bench_dep)
+[cargo-instrument PID=125099 crate=bench_dep]
+crate: bench_dep
+source: /tmp/opencode/p3repro/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=125099 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=125099 crate=bench_dep] injecting --extern opentelemetry=/tmp/opencode/p3repro/target/instrumented/release/deps/libopentelemetry-a472b7315700ece4.rlib
+[cargo-instrument PID=125099 crate=bench_dep] transformed 20 candidates into mirror /tmp/opencode/p3repro/target/instrumented/release/deps/instrumented_sources/bench_dep-5e1803ae186155d5
+   Compiling bench_app v0.1.0 (/tmp/opencode/p3repro/bench_app)
+    Finished `release` profile [optimized] target(s) in 0.39s

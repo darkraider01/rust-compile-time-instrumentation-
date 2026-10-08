@@ -1,0 +1,17 @@
+=== Environment manifest (captured 2026-10-07T10:07:00Z, run 2) ===
+b525171c35f0790a307c31a0b4d988b001b38dda
+ M cargo-instrument/src/session.rs
+main
+rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+cargo 1.99.0 (5f94df478 2026-08-27)
+Linux 6.19.10-300.fc44.x86_64 x86_64
+nproc=12
+               total        used        free      shared  buff/cache   available
+Mem:            18Gi       4.2Gi       9.3Gi       198Mi       6.0Gi        14Gi
+Swap:          8.0Gi        39Mi       8.0Gi
+loadavg: 1.85 1.15 1.15 2/1371 28561
+Cargo.lock sha256: c9c577e982fbc05b969d03853458df0300ca290130bf38364532a59145acb31c
+bench command: CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_overhead
+note: working tree contains the uncommitted rustc_profile release-profile fix (session.rs) + new unit test; all other files clean

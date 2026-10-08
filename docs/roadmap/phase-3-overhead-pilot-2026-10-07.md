@@ -53,7 +53,7 @@ The first-party pinned-nightly apply test was **not** rerun: the fix touches onl
 | Host load | Run 2 (quiet desktop): loadavg 1.85 → 1.83. Run 3 (idle host): loadavg start **0.47**, all desktop applications (browser, chat, IDE, media) closed before launch; end value 3.89 reflects the benchmark's own parallel compilation tail (`cargo -j12` release builds), not other workloads |
 | Time window | Run 2: 2026-10-07T10:07:00Z → 10:08:45Z (105 s), exit 0. Run 3: 10:34:45Z → 10:36:27Z (102 s), exit 0 |
 | Command | `CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_overhead` |
-| Raw evidence | `/home/brandybuck/Code/rust-compile-time-instrumentation-evidence/phase3-overhead-2026-10-07/` (durable, outside the repository; see section 7) |
+| Raw evidence | `evidence/phase3-overhead-2026-10-07/` (see section 7) |
 
 ## 4. Results
 
@@ -154,12 +154,12 @@ Binary size (run 3): 778,856 → 834,416 bytes, **+55,560 (+7.1 %)** — identic
 - Runtime arm set is only "telemetry setup, zero spans" vs "generated spans + counting" (protocol variants 2 vs 3). There is **no plain app without telemetry dependencies** arm, so per-call deltas must not be read as instrumented-vs-uninstrumented-app.
 - Synchronous fixture only: nothing here measures async workloads, exporter/collector cost, sampling-off/no-op modes, first-party HIR runtime cost, or C-ABI fallback cost. The native R-4 route was measured; the fallback was observed only as the run-1 failure.
 - Counting/verification cost is inside the timed region (disclosed above). Two runs, one host: run 2 with a quiet desktop resident, run 3 idle — absolute compile medians differed by up to ~13 % between sessions; the causes were not measured or isolated (section 4). Within-run min/max (tabled per run) is the only spread this harness reports; it does not bound session-to-session variation.
-- Raw logs are preserved at a durable location outside the repository (section 7); `/tmp` working copies may be cleaned on reboot.
+- Raw logs are preserved at `evidence/phase3-overhead-2026-10-07/` (section 7); `/tmp` working copies may be cleaned on reboot.
 - The section-2 fix was **not committed** at the time of this note (working-tree change awaiting maintainer review).
 
 ## 7. Evidence location and how to rerun
 
-Raw evidence, preserved outside the repository: `/home/brandybuck/Code/rust-compile-time-instrumentation-evidence/phase3-overhead-2026-10-07/` (working copies also under `/tmp/opencode/phase3-bench-2026-10-07/`, which is not durable across reboots). Log sha256: run 1 `7675d109…`, run 2 `88062228…`, run 3 `063a4df4…` (full hashes recorded alongside the files).
+Raw evidence location: `evidence/phase3-overhead-2026-10-07/` (working copies also under `/tmp/opencode/phase3-bench-2026-10-07/`, which is not durable across reboots). Log sha256: run 1 `7675d109…`, run 2 `88062228…`, run 3 `063a4df4…` (full hashes recorded alongside the files).
 
 | File | Content |
 | --- | --- |

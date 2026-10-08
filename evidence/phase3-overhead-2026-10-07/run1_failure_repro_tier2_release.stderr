@@ -1,0 +1,51 @@
+     Removed 7 files, 18.3KiB total
+   Compiling bench_dep v0.1.0 (/tmp/opencode/p3repro/bench_dep)
+[cargo-instrument PID=21600 crate=bench_dep]
+crate: bench_dep
+source: /tmp/opencode/p3repro/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/opencode/p3repro/bench_dep/src/lib.rs)
+
+warning: cargo-instrument: R-4 native OpenTelemetry resolution for 'bench_dep' is unsafe: no Cargo-authoritative OpenTelemetry artifact for package 'registry+https://github.com/rust-lang/crates.io-index#opentelemetry@0.32.0', target None, profile R4Profile { opt_level: "3", debug_assertions: true, overflow_checks: true, test: false }; available artifacts: [R4NativeOtelArtifact { package_id: "registry+https://github.com/rust-lang/crates.io-index#opentelemetry@0.32.0", package_version: "0.32.0", resolved_features: ["default", "futures", "futures-core", "futures-sink", "internal-logs", "logs", "metrics", "pin-project-lite", "thiserror", "trace", "tracing"], target: None, profile: R4Profile { opt_level: "3", debug_assertions: false, overflow_checks: false, test: false }, rlib_path: "/tmp/opencode/p3repro/target/instrumented/release/deps/libopentelemetry-a472b7315700ece4.rlib" }]. Preserving the existing Tier-2 path per S11 fail-open.
+[cargo-instrument PID=21600 crate=bench_dep] selecting Tier-2 C-ABI emitter
+[cargo-instrument PID=21600 crate=bench_dep] transformed 20 candidates into mirror /tmp/opencode/p3repro/target/instrumented/release/deps/instrumented_sources/bench_dep-5e1803ae186155d5
+   Compiling bench_app v0.1.0 (/tmp/opencode/p3repro/bench_app)
+error: linking with `cc` failed: exit status: 1
+  |
+  = note:  "cc" "-m64" "/tmp/opencode/p3repro/target/instrumented/release/deps/rustcx01oaV/symbols.o" "<2 object files omitted>" "-Wl,--as-needed" "-Wl,-Bstatic" "/tmp/opencode/p3repro/target/instrumented/release/deps/libbench_dep-94210417eaac9b39.rlib" "<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/lib/{libstd-*,libpanic_unwind-*,libobject-*,libmemchr-*,libaddr2line-*,libgimli-*,libcfg_if-*,librustc_demangle-*,libstd_detect-*,libhashbrown-*,librustc_std_workspace_alloc-*,libminiz_oxide-*,libadler2-*,libunwind-*,liblibc-*,librustc_std_workspace_core-*,liballoc-*,libcore-*,libcompiler_builtins-*}.rlib" "-Wl,-Bdynamic" "-lgcc_s" "-lutil" "-lrt" "-lpthread" "-lm" "-ldl" "-lc" "-L" "/tmp/opencode/p3repro/target/instrumented/release/deps/rustcx01oaV/raw-dylibs" "-B<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld" "-fuse-ld=lld" "-Wl,--eh-frame-hdr" "-Wl,-z,noexecstack" "-L" "<sysroot>/lib/rustlib/x86_64-unknown-linux-gnu/lib" "-o" "/tmp/opencode/p3repro/target/instrumented/release/deps/bench_app-e0bb3b1328b7335a" "-Wl,--gc-sections" "-pie" "-Wl,-z,relro,-z,now" "-Wl,-O1" "-Wl,--strip-debug" "-nodefaultlibs"
+  = note: some arguments are omitted. use `--verbose` to show all linker arguments
+  = note: rust-lld: error: undefined symbol: __otel_span_enter_v2
+          >>> referenced by bench_dep.9d0c3ade1f598d80-cgu.0
+          >>>               bench_dep-94210417eaac9b39.bench_dep.9d0c3ade1f598d80-cgu.0.rcgu.o:(bench_dep::compute_step_0) in archive /tmp/opencode/p3repro/target/instrumented/release/deps/libbench_dep-94210417eaac9b39.rlib
+          
+          rust-lld: error: undefined symbol: __otel_span_exit
+          >>> referenced by bench_dep.9d0c3ade1f598d80-cgu.0
+          >>>               bench_dep-94210417eaac9b39.bench_dep.9d0c3ade1f598d80-cgu.0.rcgu.o:(bench_dep::compute_step_0) in archive /tmp/opencode/p3repro/target/instrumented/release/deps/libbench_dep-94210417eaac9b39.rlib
+          collect2: error: ld returned 1 exit status
+          
+
+error: could not compile `bench_app` (bin "bench_app") due to 1 previous error

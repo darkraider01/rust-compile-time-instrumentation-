@@ -1,0 +1,20 @@
+=== Environment manifest (captured 2026-10-07T09:49:06Z) ===
+b525171c35f0790a307c31a0b4d988b001b38dda
+0
+main
+rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-unknown-linux-gnu
+release: 1.99.0
+LLVM version: 23.1.1
+cargo 1.99.0 (5f94df478 2026-08-27)
+Linux fedora 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+nproc=12
+               total        used        free      shared  buff/cache   available
+Mem:            18Gi       3.7Gi       2.0Gi       116Mi        13Gi        15Gi
+Swap:          8.0Gi        40Ki       8.0Gi
+loadavg: 3.57 1.63 0.62 10/1258 8463
+Cargo.lock sha256: c9c577e982fbc05b969d03853458df0300ca290130bf38364532a59145acb31c
+bench command: CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_overhead

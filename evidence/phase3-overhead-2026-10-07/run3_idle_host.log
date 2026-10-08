@@ -1,0 +1,884 @@
+START_UTC=2026-10-07T10:34:45Z
+LOADAVG_START=0.47 0.24 0.36 6/1153 46058
+COMMAND=CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_overhead
+    Finished `bench` profile [optimized] target(s) in 0.05s
+     Running benches/bench_overhead.rs (target/release/deps/bench_overhead-2a3ccbee1e278145)
+===============================================================================
+ CARGO-INSTRUMENT OVERHEAD BENCHMARK SUITE (A17)
+===============================================================================
+
+     Locking 44 packages to highest compatible versions
+      Adding opentelemetry v0.32.0 (available: v0.33.0)
+      Adding opentelemetry_sdk v0.32.1 (available: v0.33.0)
+Running Compile-Time Benchmarks (N=5 runs each)...
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.190
+   Compiling zerocopy v0.8.61
+   Compiling getrandom v0.3.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling ppv-lite86 v0.2.21
+   Compiling opentelemetry v0.32.0
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.49s
+     Removed 13 files, 175.1KiB total
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+[cargo-instrument PID=47342 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=47342 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=47342 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_0/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=47342 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_0/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+RAW sample 0: baseline_clean=6.503s instrumented_clean=6.881s
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling libc v0.2.190
+   Compiling getrandom v0.3.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling zerocopy v0.8.61
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling percent-encoding v2.3.2
+   Compiling futures-channel v0.3.34
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling ppv-lite86 v0.2.21
+   Compiling futures-util v0.3.34
+   Compiling rand_chacha v0.9.0
+   Compiling opentelemetry v0.32.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.45s
+     Removed 13 files, 175.1KiB total
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+[cargo-instrument PID=48677 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=48677 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=48677 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_1/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=48677 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_1/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+RAW sample 1: baseline_clean=6.464s instrumented_clean=6.724s
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling libc v0.2.190
+   Compiling zerocopy v0.8.61
+   Compiling getrandom v0.3.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling percent-encoding v2.3.2
+   Compiling futures-channel v0.3.34
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling ppv-lite86 v0.2.21
+   Compiling futures-util v0.3.34
+   Compiling rand_chacha v0.9.0
+   Compiling opentelemetry v0.32.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.42s
+     Removed 13 files, 175.1KiB total
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+[cargo-instrument PID=50018 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=50018 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=50018 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_2/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=50018 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_2/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+RAW sample 2: baseline_clean=6.431s instrumented_clean=6.710s
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling libc v0.2.190
+   Compiling getrandom v0.3.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling zerocopy v0.8.61
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling tracing-core v0.1.36
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+   Compiling futures-channel v0.3.34
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling opentelemetry v0.32.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.47s
+     Removed 13 files, 175.1KiB total
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+[cargo-instrument PID=51353 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=51353 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=51353 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_3/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=51353 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_3/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
+RAW sample 3: baseline_clean=6.485s instrumented_clean=6.741s
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling libc v0.2.190
+   Compiling getrandom v0.3.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling zerocopy v0.8.61
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling opentelemetry v0.32.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.48s
+     Removed 13 files, 175.1KiB total
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+[cargo-instrument PID=52694 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=52694 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=52694 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_4/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=52694 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_4/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.22s
+RAW sample 4: baseline_clean=6.498s instrumented_clean=6.814s
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling libc v0.2.190
+   Compiling getrandom v0.3.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling zerocopy v0.8.61
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling percent-encoding v2.3.2
+   Compiling futures-channel v0.3.34
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling opentelemetry v0.32.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.47s
+     Removed 13 files, 175.2KiB total
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 0: baseline_repeat=0.031s instrumented_repeat=0.184s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 1: baseline_repeat=0.031s instrumented_repeat=0.181s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 2: baseline_repeat=0.032s instrumented_repeat=0.181s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 3: baseline_repeat=0.030s instrumented_repeat=0.181s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.02s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 4: baseline_repeat=0.030s instrumented_repeat=0.187s
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 0: baseline_inc=0.142s instrumented_inc=0.287s
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 1: baseline_inc=0.137s instrumented_inc=0.291s
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 2: baseline_inc=0.138s instrumented_inc=0.288s
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 3: baseline_inc=0.136s instrumented_inc=0.291s
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+[cargo-instrument PID=54032 crate=bench_dep]
+crate: bench_dep
+source: /tmp/.tmpYIeMVF/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/tmp/.tmpYIeMVF/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=54032 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=54032 crate=bench_dep] injecting --extern opentelemetry=/tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=54032 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_inst_repeat/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+RAW sample 4: baseline_inc=0.138s instrumented_inc=0.287s
+
+Running Runtime Overhead Benchmarks (M=100,000 iterations)...
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling libc v0.2.190
+   Compiling zerocopy v0.8.61
+   Compiling getrandom v0.3.4
+   Compiling pin-project-lite v0.2.17
+   Compiling futures-core v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling bench_dep v0.1.0 (/tmp/.tmpYIeMVF/bench_dep)
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling opentelemetry v0.32.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling bench_app v0.1.0 (/tmp/.tmpYIeMVF/bench_app)
+    Finished `release` profile [optimized] target(s) in 8.22s
+EMITTER: [cargo-instrument PID=56639 crate=bench_dep] selecting native R-4 emitter
+EMITTER: [cargo-instrument PID=56639 crate=bench_dep] transformed 20 candidates into mirror /tmp/.tmpYIeMVF/target_rel_inst/release/deps/instrumented_sources/bench_dep-5e1803ae186155d5
+Baseline: SPAN_COUNT 0 expected=0
+RUNTIME_RESULT total_ms=0.63 ns_per_call=1.25 total_calls=500000
+Instrumented: SPAN_COUNT 500000 expected=500000
+RUNTIME_RESULT total_ms=125.81 ns_per_call=251.62 total_calls=500000
+Baseline: SPAN_COUNT 0 expected=0
+RUNTIME_RESULT total_ms=0.64 ns_per_call=1.28 total_calls=500000
+Instrumented: SPAN_COUNT 500000 expected=500000
+RUNTIME_RESULT total_ms=125.31 ns_per_call=250.62 total_calls=500000
+Baseline: SPAN_COUNT 0 expected=0
+RUNTIME_RESULT total_ms=0.69 ns_per_call=1.38 total_calls=500000
+Instrumented: SPAN_COUNT 500000 expected=500000
+RUNTIME_RESULT total_ms=124.63 ns_per_call=249.27 total_calls=500000
+Baseline: SPAN_COUNT 0 expected=0
+RUNTIME_RESULT total_ms=0.79 ns_per_call=1.59 total_calls=500000
+Instrumented: SPAN_COUNT 500000 expected=500000
+RUNTIME_RESULT total_ms=124.30 ns_per_call=248.60 total_calls=500000
+Baseline: SPAN_COUNT 0 expected=0
+RUNTIME_RESULT total_ms=0.57 ns_per_call=1.14 total_calls=500000
+Instrumented: SPAN_COUNT 500000 expected=500000
+RUNTIME_RESULT total_ms=125.55 ns_per_call=251.11 total_calls=500000
+
+### A17 Benchmark Results Table
+
+#### Compile-Time Overhead (N=5 runs, medians reported)
+
+| Build Type | Baseline (Uninstrumented) | Instrumented | Overhead Delta |
+|---|---|---|---|
+| Clean Build | 6.485s (min: 6.431s, max: 6.503s) | 6.741s (min: 6.710s, max: 6.881s) | +4.0% |
+| Repeat Build (no-op) | 0.031s (min: 0.030s, max: 0.032s) | 0.181s (min: 0.181s, max: 0.187s) | +494.6% |
+| Incremental Build (app) | 0.138s (min: 0.136s, max: 0.142s) | 0.288s (min: 0.287s, max: 0.291s) | +108.6% |
+
+* Instrumented builds use the explicit public dependency workflow `cargo instrument --with-dependencies -- build` (policy `dependencies-v1`) with ambient `CARGO_INSTRUMENT_*`, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, and fault-injection variables removed; instrumented compile times are public-command wall time including the JSON pre-pass, orchestration, mirroring, and rewriting. The release build asserts and prints the emitter route (`EMITTER:` lines above): native R-4 for `bench_dep`, no wrapper instrumentation for `bench_app`. Runtime measures generated dependency spans with an OpenTelemetry SDK counting processor and no exporter; provider setup and `otel_shim::init()` run before the timed loop. Each instrumented sample asserts 500,000 completed dependency spans inside the application; each baseline asserts zero. Raw per-run samples are printed as `RAW sample` lines; only medians feed the tables. This synchronous microbenchmark does not measure async application overhead, and parent-child ancestry of the counted spans is not verified here.
+
+#### Runtime Overhead (M=100,000 loop iterations, 500,000 calls)
+
+| Metric | Baseline | Instrumented (SDK counting processor) | Delta / Overhead |
+|---|---|---|---|
+| Latency per call | 1.28 ns | 250.62 ns | +249.34 ns/call |
+| Throughput | 781.25M calls/sec | 3.99M calls/sec | - |
+
+#### Binary Size Delta (Release profile)
+
+| Binary | Size (bytes) | Delta |
+|---|---|---|
+| Baseline | 778856 bytes | - |
+| Instrumented | 834416 bytes | +7.1% (+55560 bytes) |
+
+Benchmark suite completed successfully.
+BENCH_EXIT=0
+END_UTC=2026-10-07T10:36:27Z
+LOADAVG_END=3.89 1.41 0.77 1/1150 56684
