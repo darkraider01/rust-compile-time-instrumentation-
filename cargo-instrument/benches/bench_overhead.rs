@@ -2,9 +2,9 @@
 //!
 //! Runnable on stable Rust via `cargo bench --bench bench_overhead`.
 //! Measures compile-time (clean, repeat, incremental) across N=5 runs,
-//! runtime overhead across N=10 runs (M=100,000 loop iterations, after 1
-//! discarded warm-up per variant) with alternating baseline/instrumented
-//! order, and binary size deltas.
+//! runtime overhead across N=10 runs (M=100,000 loop iterations, with an
+//! untimed in-process workload warm-up pass before timing each sample) with
+//! alternating baseline/instrumented order, and binary size deltas.
 //!
 //! Instrumented builds exercise the public dependency workflow explicitly:
 //! `cargo-instrument --with-dependencies -- build` (policy `dependencies-v1`),
@@ -168,15 +168,8 @@ impl SpanProcessor for CountingProcessor {
     fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult { Ok(()) }
 }
 
-fn main() {
-    otel_shim::init();
-    let span_count = Arc::new(AtomicU64::new(0));
-    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_span_processor(CountingProcessor(span_count.clone())).build();
-    opentelemetry::global::set_tracer_provider(provider);
-
-    let iterations: u64 = 100_000;
-    let start = Instant::now();
+#[inline(never)]
+fn run_workload(iterations: u64) -> u64 {
     let mut acc: u64 = 1;
     for i in 0..iterations {
         acc = bench_dep::compute_step_0(acc ^ i);
@@ -185,14 +178,46 @@ fn main() {
         acc = bench_dep::compute_step_3(acc);
         acc = bench_dep::compute_step_4(acc);
     }
-    let elapsed = start.elapsed();
-    let total_calls = iterations * 5;
+    acc
+}
+
+const EXPECTED_ACC: u64 = 2033737868462570593;
+
+fn main() {
+    otel_shim::init();
+    let span_count = Arc::new(AtomicU64::new(0));
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_span_processor(CountingProcessor(span_count.clone())).build();
+    opentelemetry::global::set_tracer_provider(provider);
+
+    let iterations: u64 = 100_000;
     let expected: u64 = std::env::var("EXPECTED_SPANS").unwrap().parse().unwrap();
-    assert_eq!(span_count.load(Ordering::Relaxed), expected, "timed dependency span count");
-    println!("SPAN_COUNT {} expected={}", span_count.load(Ordering::Relaxed), expected);
+
+    // 1. Untimed in-process warm-up pass
+    let warmup_acc = run_workload(iterations);
+    let warmup_spans = span_count.load(Ordering::Relaxed);
+    assert_eq!(warmup_spans, expected, "warm-up dependency span count");
+    assert_eq!(warmup_acc, EXPECTED_ACC, "warm-up workload output agreement");
+    println!("WARMUP_VERIFIED spans={} expected={} acc={}", warmup_spans, expected, warmup_acc);
+
+    // 2. Reset counters and workload state prior to timing
+    span_count.store(0, Ordering::Relaxed);
+
+    // 3. Timed measured pass
+    let start = Instant::now();
+    let measured_acc = run_workload(iterations);
+    let elapsed = start.elapsed();
+
+    // 4. Verification of measured pass
+    let measured_spans = span_count.load(Ordering::Relaxed);
+    assert_eq!(measured_spans, expected, "timed dependency span count");
+    assert_eq!(measured_acc, EXPECTED_ACC, "measured workload output agreement");
+    assert_eq!(measured_acc, warmup_acc, "workload output agreement between passes");
+    println!("MEASURED_VERIFIED spans={} expected={} acc={}", measured_spans, expected, measured_acc);
+
+    let total_calls = iterations * 5;
     let ns_per_call = (elapsed.as_nanos() as f64) / (total_calls as f64);
     println!("RUNTIME_RESULT total_ms={:.2} ns_per_call={:.2} total_calls={}", elapsed.as_secs_f64() * 1000.0, ns_per_call, total_calls);
-    assert!(acc != 0);
 }
 "#;
     fs::write(app_src.join("main.rs"), app_main).expect("write app main.rs");
@@ -509,40 +534,8 @@ fn main() {
     let bin_base_path = target_rel_base.join("release").join(bin_name);
     let bin_inst_path = target_rel_inst.join("release").join(bin_name);
 
-    // Execute one discarded runtime warm-up per variant before measured samples
-    println!("\nExecuting discarded runtime warm-up (1 per variant)...");
-    let wb_out = Command::new(&bin_base_path)
-        .env("EXPECTED_SPANS", "0")
-        .output()
-        .expect("run baseline warmup");
-    assert!(
-        wb_out.status.success(),
-        "baseline warmup failed: {}",
-        String::from_utf8_lossy(&wb_out.stderr)
-    );
-    let wb_stdout = String::from_utf8_lossy(&wb_out.stdout);
-    let wb_ns = parse_ns_per_call(&wb_stdout).expect("baseline warmup RUNTIME_RESULT line");
-    println!("WARMUP (discarded): Baseline: {}", wb_stdout.trim());
-
-    let wi_out = Command::new(&bin_inst_path)
-        .env("EXPECTED_SPANS", "500000")
-        .output()
-        .expect("run instrumented warmup");
-    assert!(
-        wi_out.status.success(),
-        "instrumented warmup failed: {}",
-        String::from_utf8_lossy(&wi_out.stderr)
-    );
-    let wi_stdout = String::from_utf8_lossy(&wi_out.stdout);
-    let wi_ns = parse_ns_per_call(&wi_stdout).expect("instrumented warmup RUNTIME_RESULT line");
-    println!("WARMUP (discarded): Instrumented: {}", wi_stdout.trim());
     println!(
-        "Warm-up completed (values discarded: baseline={:.2}ns/call, instrumented={:.2}ns/call).\n",
-        wb_ns, wi_ns
-    );
-
-    println!(
-        "Running Measured Runtime Overhead (N={} runs, alternating order)...",
+        "\nRunning Measured Runtime Overhead (N={} runs, alternating order, untimed in-process warm-up per run)...",
         RUNTIME_SAMPLES
     );
     let mut runtime_base_ns = Vec::with_capacity(RUNTIME_SAMPLES);
@@ -568,6 +561,14 @@ fn main() {
             );
             let s1 = String::from_utf8_lossy(&out1.stdout);
             print!("Baseline (run {run}): {s1}");
+            assert!(
+                s1.contains("WARMUP_VERIFIED spans=0 expected=0"),
+                "baseline missing warm-up verification: {s1}"
+            );
+            assert!(
+                s1.contains("MEASURED_VERIFIED spans=0 expected=0"),
+                "baseline missing measured verification: {s1}"
+            );
             let ns1 = parse_ns_per_call(&s1).expect("baseline RUNTIME_RESULT line");
 
             let out2 = Command::new(&bin_inst_path)
@@ -581,6 +582,14 @@ fn main() {
             );
             let s2 = String::from_utf8_lossy(&out2.stdout);
             print!("Instrumented (run {run}): {s2}");
+            assert!(
+                s2.contains("WARMUP_VERIFIED spans=500000 expected=500000"),
+                "instrumented missing warm-up verification: {s2}"
+            );
+            assert!(
+                s2.contains("MEASURED_VERIFIED spans=500000 expected=500000"),
+                "instrumented missing measured verification: {s2}"
+            );
             let ns2 = parse_ns_per_call(&s2).expect("instrumented RUNTIME_RESULT line");
 
             (ns1, ns2)
@@ -596,6 +605,14 @@ fn main() {
             );
             let s2 = String::from_utf8_lossy(&out2.stdout);
             print!("Instrumented (run {run}): {s2}");
+            assert!(
+                s2.contains("WARMUP_VERIFIED spans=500000 expected=500000"),
+                "instrumented missing warm-up verification: {s2}"
+            );
+            assert!(
+                s2.contains("MEASURED_VERIFIED spans=500000 expected=500000"),
+                "instrumented missing measured verification: {s2}"
+            );
             let ns2 = parse_ns_per_call(&s2).expect("instrumented RUNTIME_RESULT line");
 
             let out1 = Command::new(&bin_base_path)
@@ -609,6 +626,14 @@ fn main() {
             );
             let s1 = String::from_utf8_lossy(&out1.stdout);
             print!("Baseline (run {run}): {s1}");
+            assert!(
+                s1.contains("WARMUP_VERIFIED spans=0 expected=0"),
+                "baseline missing warm-up verification: {s1}"
+            );
+            assert!(
+                s1.contains("MEASURED_VERIFIED spans=0 expected=0"),
+                "baseline missing measured verification: {s1}"
+            );
             let ns1 = parse_ns_per_call(&s1).expect("baseline RUNTIME_RESULT line");
 
             (ns1, ns2)
@@ -679,12 +704,12 @@ fn main() {
         inc_delta
     );
     println!(
-        "\n* Instrumented builds use the explicit public dependency workflow `cargo instrument --with-dependencies -- build` (policy `dependencies-v1`) with ambient `CARGO_INSTRUMENT_*`, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, and fault-injection variables removed; instrumented compile times are public-command wall time including the JSON pre-pass, orchestration, mirroring, and rewriting. The release build asserts and prints the emitter route (`EMITTER:` lines above): native R-4 for `bench_dep`, no wrapper instrumentation for `bench_app`. Runtime measures generated dependency spans with an OpenTelemetry SDK counting processor and no exporter; provider setup and `otel_shim::init()` run before the timed loop. Each instrumented sample asserts 500,000 completed dependency spans inside the application; each baseline asserts zero. Build and runtime pairs alternate baseline-first and instrumented-first order. Measured runtime samples (N={}) follow one discarded warm-up per variant. Raw per-run samples are printed as `RAW sample` lines; only medians feed the tables. This synchronous microbenchmark does not measure async application overhead, and parent-child ancestry of the counted spans is not verified here.",
+        "\n* Instrumented builds use the explicit public dependency workflow `cargo instrument --with-dependencies -- build` (policy `dependencies-v1`) with ambient `CARGO_INSTRUMENT_*`, `INSTRUMENT_DEBUG`, `RUSTC_WRAPPER`, and fault-injection variables removed; instrumented compile times are public-command wall time including the JSON pre-pass, orchestration, mirroring, and rewriting. The release build asserts and prints the emitter route (`EMITTER:` lines above): native R-4 for `bench_dep`, no wrapper instrumentation for `bench_app`. Runtime measures generated dependency spans with an OpenTelemetry SDK counting processor and no exporter; provider setup and `otel_shim::init()` run before the timed loop. Each measured sample executes an untimed in-process workload pass (verifying warm-up span counts and exact workload output), resets the counter and accumulator, and then measures the timed pass. Each instrumented sample asserts 500,000 completed dependency spans inside the application; each baseline asserts zero. Build and runtime pairs alternate baseline-first and instrumented-first order. Measured runtime samples (N={}) use only the timed pass for medians. Raw per-run samples are printed as `RAW sample` lines; only medians feed the tables. This synchronous microbenchmark does not measure async application overhead, and parent-child ancestry of the counted spans is not verified here.",
         RUNTIME_SAMPLES
     );
 
     println!(
-        "\n#### Runtime Overhead (N={} runs after 1 discarded warm-up, M=100,000 loop iterations, 500,000 calls)\n",
+        "\n#### Runtime Overhead (N={} runs, untimed in-process warm-up per run, M=100,000 loop iterations, 500,000 calls)\n",
         RUNTIME_SAMPLES
     );
     println!("| Metric | Baseline | Instrumented (SDK counting processor) | Delta / Overhead |");
