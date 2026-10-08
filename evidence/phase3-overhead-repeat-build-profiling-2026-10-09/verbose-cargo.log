@@ -1,0 +1,68 @@
+=== STDOUT ===
+
+=== STDERR ===
+       Fresh unicode-ident v1.0.26
+       Fresh proc-macro2 v1.0.107
+       Fresh pin-project-lite v0.2.17
+       Fresh futures-core v0.3.34
+       Fresh futures-sink v0.3.34
+       Fresh cfg-if v1.0.5
+       Fresh tracing-core v0.1.36
+       Fresh futures-task v0.3.34
+       Fresh quote v1.0.47
+       Fresh tracing v0.1.44
+       Fresh slab v0.4.12
+       Fresh futures-channel v0.3.34
+       Fresh percent-encoding v2.3.2
+       Fresh bench_dep v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep)
+[cargo-instrument PID=2180728 crate=bench_dep]
+crate: bench_dep
+source: /home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs
+unsafe_policy: Allowed
+is_no_std: false
+has_colliding_symbols: false
+skipped_stats: SkippedStats { inline_attribute: 0, adapter_trait: 0, drop_implementation: 0, cfg_test: 0, const_fn: 0, extern_abi: 0, self_recursive: 0, handwritten_otel: 0, nested_function: 0 }
+
+candidates:
+  - compute_step_0: bytes 30..141 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_1: bytes 142..253 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_2: bytes 254..365 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_3: bytes 366..477 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_4: bytes 478..589 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_5: bytes 590..701 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_6: bytes 702..813 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_7: bytes 814..925 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_8: bytes 926..1037 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_9: bytes 1038..1149 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_10: bytes 1150..1263 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_11: bytes 1264..1377 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_12: bytes 1378..1491 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_13: bytes 1492..1605 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_14: bytes 1606..1719 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_15: bytes 1720..1833 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_16: bytes 1834..1947 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_17: bytes 1948..2061 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_18: bytes 2062..2175 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+  - compute_step_19: bytes 2176..2289 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_dep/src/lib.rs)
+
+[cargo-instrument PID=2180728 crate=bench_dep] selecting native R-4 emitter
+[cargo-instrument PID=2180728 crate=bench_dep] injecting --extern opentelemetry=/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/target_inst/debug/deps/libopentelemetry-f810f975a6f126b4.rlib
+[cargo-instrument PID=2180728 crate=bench_dep] transformed 20 candidates into mirror /home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/target_inst/debug/deps/instrumented_sources/bench_dep-5b3af47e66204509
+       Fresh syn v3.0.6
+       Fresh libc v0.2.190
+       Fresh zerocopy v0.8.62
+       Fresh thiserror-impl v2.0.21
+       Fresh getrandom v0.3.4
+       Fresh ppv-lite86 v0.2.21
+       Fresh futures-macro v0.3.34
+       Fresh thiserror v2.0.21
+       Fresh rand_core v0.9.5
+       Fresh futures-util v0.3.34
+       Fresh opentelemetry v0.32.0
+       Fresh rand_chacha v0.9.0
+       Fresh futures-executor v0.3.34
+       Fresh rand v0.9.5
+       Fresh otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+       Fresh opentelemetry_sdk v0.32.1
+       Fresh bench_app v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1/bench_app)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s

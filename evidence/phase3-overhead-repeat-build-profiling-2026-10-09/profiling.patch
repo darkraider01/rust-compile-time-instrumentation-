@@ -1,0 +1,196 @@
+diff --git a/cargo-instrument/src/main.rs b/cargo-instrument/src/main.rs
+index 35f26ee..2499a79 100644
+--- a/cargo-instrument/src/main.rs
++++ b/cargo-instrument/src/main.rs
+@@ -1,12 +1,62 @@
+ use std::env;
+ use std::path::{Path, PathBuf};
+ use std::process::{self, Command};
++use std::time::Instant;
+ 
+ use cargo_instrument::{
+     analyze_source_file, resolve_package_spec, run_wrapper, transform_source_file,
+     transform_source_str, SessionPlan, UnitId, WrapperConfig, DEBUG_ENV, SESSION_ENV,
+ };
+ 
++#[derive(Debug, Clone)]
++struct ProfileTracker {
++    enabled: bool,
++    t_start: Instant,
++    cli_init_ms: f64,
++    metadata_cmd_ms: f64,
++    metadata_plan_ms: f64,
++    prepass_cmd_ms: f64,
++    prepass_analysis_ms: f64,
++    session_save_ms: f64,
++    wrapped_cargo_ms: f64,
++    post_build_ms: f64,
++}
++
++impl ProfileTracker {
++    fn new() -> Self {
++        Self {
++            enabled: env::var("CARGO_INSTRUMENT_PROFILE").is_ok(),
++            t_start: Instant::now(),
++            cli_init_ms: 0.0,
++            metadata_cmd_ms: 0.0,
++            metadata_plan_ms: 0.0,
++            prepass_cmd_ms: 0.0,
++            prepass_analysis_ms: 0.0,
++            session_save_ms: 0.0,
++            wrapped_cargo_ms: 0.0,
++            post_build_ms: 0.0,
++        }
++    }
++
++    fn print_summary(&self) {
++        if self.enabled {
++            let total_wall_ms = self.t_start.elapsed().as_secs_f64() * 1000.0;
++            eprintln!(
++                "[STAGE_PROFILE] cli_init={:.2}ms metadata_cmd={:.2}ms metadata_plan={:.2}ms prepass_cmd={:.2}ms prepass_analysis={:.2}ms session_save={:.2}ms wrapped_cargo_cmd={:.2}ms post_build={:.2}ms total_wall={:.2}ms",
++                self.cli_init_ms,
++                self.metadata_cmd_ms,
++                self.metadata_plan_ms,
++                self.prepass_cmd_ms,
++                self.prepass_analysis_ms,
++                self.session_save_ms,
++                self.wrapped_cargo_ms,
++                self.post_build_ms,
++                total_wall_ms,
++            );
++        }
++    }
++}
++
+ const WRAPPER_MODE_ENV: &str = "CARGO_INSTRUMENT_WRAPPER_MODE";
+ const DEFAULT_TARGET_DIR: &str = "target/instrumented";
+ 
+@@ -262,6 +312,7 @@ fn parse_cli_invocation(raw_args: &[String]) -> CliInvocation {
+ 
+ /// Execute Cargo with RUSTC_WRAPPER pointing to this executable and isolated --target-dir set.
+ fn execute_cargo_with_wrapper(args: &[String]) {
++    let mut tracker = ProfileTracker::new();
+     let current_exe = match env::current_exe() {
+         Ok(exe) => exe,
+         Err(e) => {
+@@ -352,11 +403,13 @@ fn execute_cargo_with_wrapper(args: &[String]) {
+         }
+     }
+ 
++    tracker.cli_init_ms = tracker.t_start.elapsed().as_secs_f64() * 1000.0;
++
+     // Precompute SessionPlan once using the invocation's resolution flags.  In particular, an
+     // offline Cargo command must never have its orchestration metadata probe reach the network.
+     // and export via CARGO_INSTRUMENT_SESSION for all wrapper child processes (D3 / D4).
+     let session_file = resolved_target_dir.join("cargo_instrument_session.json");
+-    match build_session_plan(&invocation.cargo_args, &current_dir) {
++    match build_session_plan(&invocation.cargo_args, &current_dir, &mut tracker) {
+         Ok((mut plan, metadata)) => {
+             plan.session_id = format!(
+                 "{}_{:x}",
+@@ -380,6 +433,7 @@ fn execute_cargo_with_wrapper(args: &[String]) {
+                     &current_dir,
+                     &mut plan,
+                     &metadata,
++                    &mut tracker,
+                 ) {
+                     Ok(NativeAcquisition::Available) => {}
+                     Ok(NativeAcquisition::Tier2Only(reason)) => {
+@@ -391,9 +445,11 @@ fn execute_cargo_with_wrapper(args: &[String]) {
+                     }
+                 }
+             }
++            let t_save = Instant::now();
+             if let Err(e) = plan.save_to_file(&session_file) {
+                 eprintln!("warning: cargo-instrument: failed to save session plan: {e}");
+             }
++            tracker.session_save_ms = t_save.elapsed().as_secs_f64() * 1000.0;
+             cargo_cmd.env(SESSION_ENV, &session_file);
+             cargo_cmd.env("CARGO_INSTRUMENT_SESSION_ID", &plan.session_id);
+         }
+@@ -411,6 +467,7 @@ fn execute_cargo_with_wrapper(args: &[String]) {
+         cargo_cmd.args(&invocation.app_args);
+     }
+ 
++    let t_cargo = Instant::now();
+     let status = match cargo_cmd.status() {
+         Ok(s) => s,
+         Err(e) => {
+@@ -418,13 +475,17 @@ fn execute_cargo_with_wrapper(args: &[String]) {
+             process::exit(1);
+         }
+     };
++    tracker.wrapped_cargo_ms = t_cargo.elapsed().as_secs_f64() * 1000.0;
+ 
++    let t_post = Instant::now();
+     if status.success() && invocation.cargo_args.first().map(String::as_str) != Some("clean") {
+         if let Err(error) = std::fs::write(&policy_path, policy) {
+             eprintln!("cargo-instrument: could not record build policy: {error}");
+             process::exit(1);
+         }
+     }
++    tracker.post_build_ms = t_post.elapsed().as_secs_f64() * 1000.0;
++    tracker.print_summary();
+     process::exit(status.code().unwrap_or(1));
+ }
+ 
+@@ -450,6 +511,7 @@ fn acquire_native_artifacts(
+     invocation_dir: &Path,
+     plan: &mut SessionPlan,
+     metadata: &serde_json::Value,
++    tracker: &mut ProfileTracker,
+ ) -> Result<NativeAcquisition, String> {
+     let mut prepass_args = without_message_format(cargo_args);
+     if prepass_args.first().is_some_and(|arg| arg == "run") {
+@@ -467,6 +529,7 @@ fn acquire_native_artifacts(
+         prepass_args.push(target_dir.display().to_string());
+     }
+ 
++    let t_prepass = Instant::now();
+     let output = Command::new("cargo")
+         .current_dir(invocation_dir)
+         .args(&prepass_args)
+@@ -474,6 +537,8 @@ fn acquire_native_artifacts(
+         .env_remove(WRAPPER_MODE_ENV)
+         .output()
+         .map_err(|e| format!("failed to run same-target artifact pre-pass: {e}"))?;
++    tracker.prepass_cmd_ms = t_prepass.elapsed().as_secs_f64() * 1000.0;
++    let t_analysis = Instant::now();
+ 
+     let mut stdout = output.stdout;
+     // Test hook: Fault injection to simulate truncated/corrupted Cargo JSON
+@@ -664,6 +729,7 @@ fn acquire_native_artifacts(
+             missing.display()
+         )));
+     }
++    tracker.prepass_analysis_ms = t_analysis.elapsed().as_secs_f64() * 1000.0;
+     Ok(NativeAcquisition::Available)
+ }
+ 
+@@ -712,14 +778,18 @@ fn extract_package_specs(args: &[String]) -> Vec<String> {
+ fn build_session_plan(
+     cargo_args: &[String],
+     invocation_dir: &Path,
++    tracker: &mut ProfileTracker,
+ ) -> Result<(SessionPlan, serde_json::Value), String> {
++    let t_meta = Instant::now();
+     let output = cargo_metadata_output(cargo_args, invocation_dir)?;
++    tracker.metadata_cmd_ms = t_meta.elapsed().as_secs_f64() * 1000.0;
+     if !output.status.success() {
+         return Err(format!(
+             "cargo metadata failed: {}",
+             String::from_utf8_lossy(&output.stderr)
+         ));
+     }
++    let t_plan = Instant::now();
+     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+         .map_err(|error| format!("cargo metadata output was malformed: {error}"))?;
+ 
+@@ -756,6 +826,7 @@ fn build_session_plan(
+ 
+     let plan = SessionPlan::from_metadata_json_scoped(&metadata, selected_ids.as_ref())
+         .map_err(|error| error.to_string())?;
++    tracker.metadata_plan_ms = t_plan.elapsed().as_secs_f64() * 1000.0;
+ 
+     Ok((plan, metadata))
+ }

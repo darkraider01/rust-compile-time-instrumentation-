@@ -1,0 +1,91 @@
+START_UTC=2026-10-08T19:15:02Z
+LOADAVG_START=1.44 1.76 1.90 2/3247 2179463
+     Locking 44 packages to highest compatible versions
+      Adding opentelemetry v0.32.0 (available: v0.33.0)
+      Adding opentelemetry_sdk v0.32.1 (available: v0.33.0)
+===============================================================================
+ CARGO-INSTRUMENT REPEAT-BUILD OVERHEAD PROFILING (2026-10-09)
+===============================================================================
+
+Clean binary:    /home/brandybuck/Code/rust-compile-time-instrumentation-/target/release/cargo-instrument
+Profiled binary: /home/brandybuck/Code/rust-compile-time-instrumentation-/target/release/cargo-instrument-profiled
+Fixture directory: /home/brandybuck/Code/rust-compile-time-instrumentation-/target/phase3_profile_dmdmo0w1
+
+--- Executing setup builds (outside measurement) ---
+Setup complete.
+
+=== 1. UNPROFILED REPEAT BUILDS (N=10 pairs, clean binary, alternating order) ===
+UNPROFILED sample 0: baseline_repeat=34.43ms instrumented_repeat=195.97ms paired_delta=+161.53ms order=baseline_first
+UNPROFILED sample 1: baseline_repeat=33.26ms instrumented_repeat=197.34ms paired_delta=+164.08ms order=instrumented_first
+UNPROFILED sample 2: baseline_repeat=33.57ms instrumented_repeat=194.36ms paired_delta=+160.80ms order=baseline_first
+UNPROFILED sample 3: baseline_repeat=33.62ms instrumented_repeat=195.82ms paired_delta=+162.19ms order=instrumented_first
+UNPROFILED sample 4: baseline_repeat=33.57ms instrumented_repeat=197.99ms paired_delta=+164.42ms order=baseline_first
+UNPROFILED sample 5: baseline_repeat=33.95ms instrumented_repeat=198.04ms paired_delta=+164.08ms order=instrumented_first
+UNPROFILED sample 6: baseline_repeat=33.34ms instrumented_repeat=197.07ms paired_delta=+163.73ms order=baseline_first
+UNPROFILED sample 7: baseline_repeat=32.87ms instrumented_repeat=193.92ms paired_delta=+161.05ms order=instrumented_first
+UNPROFILED sample 8: baseline_repeat=33.22ms instrumented_repeat=195.40ms paired_delta=+162.18ms order=baseline_first
+UNPROFILED sample 9: baseline_repeat=34.46ms instrumented_repeat=197.80ms paired_delta=+163.34ms order=instrumented_first
+
+UNPROFILED SUMMARY (Clean Production Binary):
+  Baseline repeat:       median=33.57ms (min=32.87ms, max=34.46ms, spread=1.60ms)
+  Instrumented repeat:   median=196.52ms (min=193.92ms, max=198.04ms, spread=4.12ms)
+  Difference of medians: +162.95ms (+485.4%)
+  Median paired delta:   +162.77ms (min=+160.80ms, max=+164.42ms)
+
+=== 2. DORMANT PROBE OVERHEAD CHECK (N=10 runs, profiled binary, profile inactive) ===
+  Dormant probe median:  201.17ms (min=196.43ms, max=236.52ms)
+  Clean binary median:   196.52ms
+  Dormant probe delta:   +4.66ms (+2.37%)
+
+=== 3. PROFILED REPEAT BUILDS (N=10 pairs, isolated probe binary, opt-in stage timing) ===
+PROFILED sample 0: external_wall=206.06ms cli_init=0.05ms metadata_cmd=61.91ms metadata_plan=2.42ms prepass_cmd=67.79ms prepass_analysis=0.87ms session_save=0.55ms wrapped_cargo_cmd=69.96ms post_build=0.06ms total_wall=204.13ms (baseline=43.05ms, order=baseline_first)
+PROFILED sample 1: external_wall=204.98ms cli_init=0.05ms metadata_cmd=59.73ms metadata_plan=2.48ms prepass_cmd=66.97ms prepass_analysis=1.03ms session_save=0.43ms wrapped_cargo_cmd=72.19ms post_build=0.08ms total_wall=203.45ms (baseline=34.17ms, order=instrumented_first)
+PROFILED sample 2: external_wall=198.06ms cli_init=0.04ms metadata_cmd=56.87ms metadata_plan=2.20ms prepass_cmd=64.81ms prepass_analysis=0.91ms session_save=0.46ms wrapped_cargo_cmd=70.61ms post_build=0.05ms total_wall=196.44ms (baseline=34.87ms, order=baseline_first)
+PROFILED sample 3: external_wall=195.73ms cli_init=0.04ms metadata_cmd=57.10ms metadata_plan=2.46ms prepass_cmd=65.68ms prepass_analysis=0.82ms session_save=0.48ms wrapped_cargo_cmd=67.14ms post_build=0.05ms total_wall=194.37ms (baseline=34.39ms, order=instrumented_first)
+PROFILED sample 4: external_wall=195.47ms cli_init=0.06ms metadata_cmd=56.42ms metadata_plan=2.46ms prepass_cmd=64.60ms prepass_analysis=0.97ms session_save=0.41ms wrapped_cargo_cmd=68.44ms post_build=0.05ms total_wall=193.89ms (baseline=34.78ms, order=baseline_first)
+PROFILED sample 5: external_wall=197.71ms cli_init=0.05ms metadata_cmd=55.83ms metadata_plan=2.26ms prepass_cmd=65.18ms prepass_analysis=0.90ms session_save=0.41ms wrapped_cargo_cmd=70.48ms post_build=0.11ms total_wall=195.69ms (baseline=33.74ms, order=instrumented_first)
+PROFILED sample 6: external_wall=198.99ms cli_init=0.05ms metadata_cmd=56.20ms metadata_plan=2.40ms prepass_cmd=66.74ms prepass_analysis=0.86ms session_save=0.38ms wrapped_cargo_cmd=70.18ms post_build=0.07ms total_wall=197.32ms (baseline=33.22ms, order=baseline_first)
+PROFILED sample 7: external_wall=197.51ms cli_init=0.03ms metadata_cmd=56.25ms metadata_plan=2.58ms prepass_cmd=66.21ms prepass_analysis=1.09ms session_save=0.48ms wrapped_cargo_cmd=68.88ms post_build=0.06ms total_wall=196.03ms (baseline=34.11ms, order=instrumented_first)
+PROFILED sample 8: external_wall=202.23ms cli_init=0.04ms metadata_cmd=59.12ms metadata_plan=2.52ms prepass_cmd=65.43ms prepass_analysis=0.79ms session_save=0.44ms wrapped_cargo_cmd=71.67ms post_build=0.11ms total_wall=200.55ms (baseline=33.83ms, order=baseline_first)
+PROFILED sample 9: external_wall=230.20ms cli_init=0.07ms metadata_cmd=68.77ms metadata_plan=3.55ms prepass_cmd=75.76ms prepass_analysis=1.09ms session_save=0.61ms wrapped_cargo_cmd=77.71ms post_build=0.06ms total_wall=228.23ms (baseline=34.69ms, order=instrumented_first)
+
+PROFILED STAGES MEDIAN & ATTRIBUTION:
+  cli_init            : median=  0.05ms (min=  0.03ms, max=  0.07ms, spread=  0.04ms)
+  metadata_cmd        : median= 56.98ms (min= 55.83ms, max= 68.77ms, spread= 12.94ms)
+  metadata_plan       : median=  2.46ms (min=  2.20ms, max=  3.55ms, spread=  1.35ms)
+  prepass_cmd         : median= 65.94ms (min= 64.60ms, max= 75.76ms, spread= 11.16ms)
+  prepass_analysis    : median=  0.91ms (min=  0.79ms, max=  1.09ms, spread=  0.30ms)
+  session_save        : median=  0.45ms (min=  0.38ms, max=  0.61ms, spread=  0.23ms)
+  wrapped_cargo_cmd   : median= 70.33ms (min= 67.14ms, max= 77.71ms, spread= 10.57ms)
+  post_build          : median=  0.06ms (min=  0.05ms, max=  0.11ms, spread=  0.06ms)
+  total_wall          : median=196.88ms (min=193.89ms, max=228.23ms, spread= 34.34ms)
+
+TIMING BOUNDARY & PROFILER OVERHEAD ANALYSIS:
+  Clean binary external wall median:     196.52ms
+  Profiled binary external wall median:  198.53ms
+  Profiled binary internal total_wall:   196.88ms
+  Startup / pre-dispatch duration:       1.65ms (external - internal total_wall)
+  Active profiling overhead (external):  +2.01ms (+1.02%)
+
+STAGE ATTRIBUTION SUMMARY (relative to internal total_wall 196.88ms):
+  1. cargo metadata command (subprocess):                56.98ms ( 28.9%)
+  2. unwrapped cargo pre-pass build (subprocess):        65.94ms ( 33.5%)
+  3. wrapped cargo final build (subprocess):            70.33ms ( 35.7%)
+     -> Subtotal Subprocess Time:                      193.26ms ( 98.2%)
+  4. In-process metadata JSON parse & plan:                2.46ms (  1.2%)
+  5. In-process pre-pass artifact analysis & stamps:       0.91ms (  0.5%)
+  6. In-process session plan serialization:                0.45ms (  0.2%)
+  7. In-process CLI init & argument handling:              0.05ms (  0.0%)
+  8. In-process post-build policy write:                   0.06ms (  0.0%)
+     -> Subtotal In-Process Time:                        3.93ms (  2.0%)
+
+=== 4. COMPILER & CACHE ACTIVITY VERIFICATION ===
+Verbose Cargo output analysis:
+  Verbose log preserved at:     evidence/phase3-overhead-repeat-build-profiling-2026-10-09/verbose-cargo.log
+  Units reported 'Fresh':       31
+  Units reported 'Compiling':   0
+  Artifact files modified:     0
+Verification passed: Cargo reports all units Fresh, 0 units Compiling, and 0 artifact modifications.
+
+LOADAVG_END=2.17 1.91 1.94 3/3248 2182739
+END_UTC=2026-10-08T19:15:23Z
