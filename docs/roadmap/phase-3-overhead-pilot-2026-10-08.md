@@ -164,7 +164,7 @@ Comparing like quantities across the three session medians:
 - **Clean build compile medians**:
   - Baseline medians: 7.626 s, 8.824 s, 9.157 s $\rightarrow$ cross-session spread: **17.4%**
   - Instrumented medians: 7.671 s, 8.944 s, 8.984 s $\rightarrow$ cross-session spread: **14.7%**
-  - Observations: Absolute clean build durations varied by up to 1.5 s between sessions due to concurrent system load and I/O pressure. However, within each session, clean build overhead delta remained between **-2.3% and +0.6% / +1.8%**. Clean compilation overhead is effectively within the host machine's background noise envelope for this fixture.
+  - Observations: Absolute clean build durations varied by up to 1.5 s between sessions across the runs. Within each session, clean build overhead delta fell between **-2.3% and +1.8%** (Session 1: -2.3%, Session 2: +1.8%, Session 3: +0.6%). Clean compilation overhead is within the host machine's background noise envelope for this fixture.
 - **Repeat and incremental compile deltas**:
   - Repeat build absolute delta across sessions: **+0.184 s, +0.171 s, +0.170 s** (170–184 ms).
   - Incremental app-edit absolute delta across sessions: **+0.185 s, +0.182 s, +0.172 s** (172–185 ms).
@@ -172,19 +172,19 @@ Comparing like quantities across the three session medians:
 - **Runtime per-call overhead**:
   - Baseline runtime medians: 1.34 ns, 1.37 ns, 1.41 ns $\rightarrow$ cross-session spread: **5.1%**
   - Instrumented runtime medians: 262.97 ns, 271.18 ns, 289.93 ns $\rightarrow$ cross-session spread: **9.9%**
-  - Observations: Runtime per-call overhead falls within **+261.6 to +288.5 ns/call** (including counting-processor span handling). Discarding the initial warm-up prevented cold-cache anomalies from entering the sample distribution.
+  - Observations: Runtime per-call overhead delta falls within **+261.6 to +288.5 ns/call** across the three session medians (including counting-processor span handling). An unmeasured initial warm-up iteration was executed and discarded prior to collecting the N=10 sample distribution.
 
 ### 4.2 Comparison with the historical pilot (2026-10-07)
 
 *Caution*: The sampling protocol changed between the October 7 pilot (fixed baseline-first order, N=5 runtime, no discarded warm-up) and this evaluation (alternating order, N=10 runtime, discarded warm-up). The experiments are related but not identical.
 
-| Metric | October 7 Pilot (idle host run 3) | October 8 Evaluation (Session 2 / Session 3) | Protocol differences |
+| Metric | October 7 Pilot (idle host run 3) | October 8 Evaluation (Sessions 1 / 2 / 3) | Protocol differences |
 |---|---|---|---|
-| Clean build overhead | +4.0% (+0.256 s) | +1.8% (+0.160 s) / +0.6% (+0.045 s) | Alternating order eliminates fixed baseline-first cache advantage |
-| Repeat build delta | +0.150 s (+150 ms) | +0.171 s (+171 ms) / +0.170 s (+170 ms) | Consistent across repeat and incremental |
-| Incremental build delta | +0.150 s (+150 ms) | +0.182 s (+182 ms) / +0.172 s (+172 ms) | Preserved separate target directory semantics |
-| Runtime per-call delta | +249.34 ns/call | +269.84 ns/call / +261.60 ns/call | Discarded warm-up + N=10 runtime samples |
-| Release binary growth | +55,560 bytes (+7.1%) | +55,568 bytes (+7.1%) | Consistent byte growth within 8 bytes |
+| Clean build overhead | +4.0% (+0.256 s) | -2.3% (-0.213 s) / +1.8% (+0.160 s) / +0.6% (+0.045 s) | Protocol alternates baseline/instrumented order; host load and background state varied between sessions |
+| Repeat build delta | +0.150 s (+150 ms) | +0.184 s (+184 ms) / +0.171 s (+171 ms) / +0.170 s (+170 ms) | Protocol alternates order; absolute delta observed across repeat builds |
+| Incremental build delta | +0.150 s (+150 ms) | +0.185 s (+185 ms) / +0.182 s (+182 ms) / +0.172 s (+172 ms) | Protocol alternates order; target directories isolated |
+| Runtime per-call delta | +249.34 ns/call | +288.53 ns/call / +269.84 ns/call / +261.60 ns/call | Protocol added 1 discarded warm-up iteration and increased sample count from N=5 to N=10 |
+| Release binary growth | +55,560 bytes (+7.1%) | +55,568 bytes (+7.1%) | Binary size delta consistent within 8 bytes |
 
 ---
 
@@ -212,6 +212,7 @@ All three sessions verified expected instrumentation contracts:
 
 - **Bounded synchronous fixture only**: Only exercises a synchronous call loop with a counting processor. Does not exercise asynchronous tasks, Tokio task migrations, exporter flushes, or network transport.
 - **Single host**: All three sessions were conducted as separate processes on one Linux host under realistic desktop load (loadavg 5.16–8.45). They reflect process session independence, not hardware or platform independence.
+- **Host memory and swap pressure**: At the time of evaluation, the host reported 13 GiB of 18 GiB RAM in use (5.5 GiB available) and 15 GiB of 39 GiB swap allocated, with active background processes (load average 5.16–8.45). Memory and swap pressure can introduce variance into compilation timings, particularly multi-threaded clean release builds (`cargo-instrument` mirror builds + dependencies).
 - **Timing composition**: Compile times reflect whole-command wall time (including cargo-instrument wrapper bootstrap, JSON metadata analysis, and cargo invocations). Internal substeps were not individually instrumented or subtracted.
 - **No general performance claims**: These numbers represent pilot fixture measurements and do not establish production performance budgets or SLA guarantees.
 
@@ -223,7 +224,7 @@ Raw evidence is preserved in [`evidence/phase3-overhead-2026-10-08/`](../../evid
 
 | File | SHA-256 Checksum | Description |
 |---|---|---|
-| `env-manifest.txt` | `ec41c7460148f201e1e8bb6ccc4993d7d812bab1a4d9d95ed2bd754f48337d39` | Host environment, CPU/memory, toolchain, lockfile identity |
+| `env-manifest.txt` | `d3fc308497e2c98fe1c1229dacfdd6a3634583588d587d0c786e0a891331098c` | Host environment, CPU/memory, toolchain, lockfile identity |
 | `harness.patch` | `60f56738e95feee4bb597cc2a8cfb5648a74ba36c4ac0c065a913edd080bec0d` | Captured diff for `cargo-instrument/benches/bench_overhead.rs` |
 | `run-bench.sh` | `7eb00b069bfa3ddf15dfed93242f2d9c9d8908e22858e5df3d262c5820e44b85` | Exact execution script with timestamp and loadavg logging |
 | `session1.log` | `5407125fd48d87cacf6013466f87054bbcfd0aa2ce8cd840bd9e3a7b91314675` | Session 1 complete raw stdout/stderr |
