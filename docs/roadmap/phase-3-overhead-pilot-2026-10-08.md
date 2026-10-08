@@ -19,10 +19,11 @@ Following the gaps identified in the [historical pilot](phase-3-overhead-pilot-2
    - Even runs (`run % 2 == 0`, runs 0, 2, 4, 6, 8): baseline executed first, instrumented second.
    - Odd runs (`run % 2 == 1`, runs 1, 3, 5, 7, 9): instrumented executed first, baseline second.
    - Each sample retains its explicit variant label and execution order (`order=baseline_first` or `order=instrumented_first`).
-3. **Discarded runtime warm-up**:
+3. **Discarded runtime warm-up & fresh-process sampling**:
    - Exactly one warm-up execution per variant before collecting measured runtime samples.
    - Warm-up executions run under full assertions (`EXPECTED_SPANS=0` for baseline, `EXPECTED_SPANS=500000` for instrumented) and print with explicit `WARMUP (discarded):` tags.
    - Warm-up timings never enter medians or sample vectors.
+   - Warm-up execution boundary: warm-up runs in an independent child process that terminates. Each subsequent measured sample starts a fresh process with independent tracer provider and processor initialization. This warms shared host state (disk caches, dynamic linker resolution), but does not warm in-process tracer or runtime state; these are fresh-process measurements.
 4. **Clean-build integrity preserved**:
    - No warm-up applied to clean builds; each clean sample compiles into a newly allocated, empty target directory (`target_base_{run}` and `target_inst_{run}`).
 5. **Preserved repository conventions**:
@@ -95,9 +96,9 @@ Three separate process sessions were executed sequentially on the same host with
 
 ---
 
-### 3.2 Individual runtime samples (ns/call, M=100,000 iterations = 500,000 calls)
+### 3.2 Individual runtime samples (ns/call, M=100,000 iterations = 500,000 calls, fresh-process executions)
 
-#### Warm-up (discarded)
+#### Warm-up (discarded, executed in separate child process)
 - **Session 1**: Baseline 1.38 ns/call | Instrumented 286.16 ns/call
 - **Session 2**: Baseline 1.32 ns/call | Instrumented 268.38 ns/call
 - **Session 3**: Baseline 1.49 ns/call | Instrumented 263.67 ns/call
@@ -164,7 +165,7 @@ Comparing like quantities across the three session medians:
 - **Clean build compile medians**:
   - Baseline medians: 7.626 s, 8.824 s, 9.157 s $\rightarrow$ cross-session spread: **17.4%**
   - Instrumented medians: 7.671 s, 8.944 s, 8.984 s $\rightarrow$ cross-session spread: **14.7%**
-  - Observations: Absolute clean build durations varied by up to 1.5 s between sessions across the runs. Within each session, clean build overhead delta fell between **-2.3% and +1.8%** (Session 1: -2.3%, Session 2: +1.8%, Session 3: +0.6%). Clean compilation overhead is within the host machine's background noise envelope for this fixture.
+  - Observations: Absolute clean build durations varied by up to 1.5 s between sessions across the runs (baseline medians: 7.626 s to 9.157 s). Within each session, the observed clean-build deltas changed sign and were smaller than the observed timing variation across sessions (Session 1: -2.3% / -0.213 s, Session 2: +1.8% / +0.160 s, Session 3: +0.6% / +0.045 s); clean-build overhead remains inconclusive.
 - **Repeat and incremental compile deltas**:
   - Repeat build absolute delta across sessions: **+0.184 s, +0.171 s, +0.170 s** (170–184 ms).
   - Incremental app-edit absolute delta across sessions: **+0.185 s, +0.182 s, +0.172 s** (172–185 ms).
@@ -172,7 +173,7 @@ Comparing like quantities across the three session medians:
 - **Runtime per-call overhead**:
   - Baseline runtime medians: 1.34 ns, 1.37 ns, 1.41 ns $\rightarrow$ cross-session spread: **5.1%**
   - Instrumented runtime medians: 262.97 ns, 271.18 ns, 289.93 ns $\rightarrow$ cross-session spread: **9.9%**
-  - Observations: Runtime per-call overhead delta falls within **+261.6 to +288.5 ns/call** across the three session medians (including counting-processor span handling). An unmeasured initial warm-up iteration was executed and discarded prior to collecting the N=10 sample distribution.
+  - Observations: Runtime per-call overhead delta falls within **+261.6 to +288.5 ns/call** across the three session medians (including counting-processor span handling). Because each sample executes in a fresh child process with newly initialized tracer provider state, these reflect fresh-process measurements rather than an in-process steady state after warm-up.
 
 ### 4.2 Comparison with the historical pilot (2026-10-07)
 
@@ -210,6 +211,8 @@ All three sessions verified expected instrumentation contracts:
 
 ## 6. Limitations
 
+- **Clean-build overhead inconclusive**: Three loaded-host sessions establish substantial inter-session timing variability (up to 1.5 s), but do not isolate host background noise or establish that envelope. Because observed deltas changed sign (-2.3% to +1.8%) and were smaller than the observed inter-session timing variation, clean-build overhead remains inconclusive.
+- **Fresh-process runtime measurements and warm-up limitation**: At `bench_overhead.rs:514`, the discarded warm-up runs in a child process that exits before measured sampling begins. Each of the N=10 measured samples subsequently starts a fresh child process with newly initialized tracer provider and processor state. While this warms shared host state (disk caches, dynamic linker resolution), it does not satisfy the roadmap's runtime-workload warm-up requirement for an in-process untimed pass prior to counter reset. These measurements reflect fresh-process executions and retain this warm-up limitation.
 - **Bounded synchronous fixture only**: Only exercises a synchronous call loop with a counting processor. Does not exercise asynchronous tasks, Tokio task migrations, exporter flushes, or network transport.
 - **Single host**: All three sessions were conducted as separate processes on one Linux host under realistic desktop load (loadavg 5.16–8.45). They reflect process session independence, not hardware or platform independence.
 - **Host memory and swap pressure**: At the time of evaluation, the host reported 13 GiB of 18 GiB RAM in use (5.5 GiB available) and 15 GiB of 39 GiB swap allocated, with active background processes (load average 5.16–8.45). Memory and swap pressure can introduce variance into compilation timings, particularly multi-threaded clean release builds (`cargo-instrument` mirror builds + dependencies).
