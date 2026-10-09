@@ -1,0 +1,28 @@
+=== Starting Phase 3 Invalidation Experiments (2026-10-08T22:17:03Z) ===
+=== Experiment A: External Path Dependency Manifest Mutation ===
+  [PASS] Workspace manifest and lockfile hashes are identical.
+  [PASS] Cargo metadata resolved features diverged: 'newly_added_feature' discovered.
+  [CONCLUSION] Manifest-only checking of workspace members produces false cache hits for path dependencies.
+
+=== Experiment B: Metadata-Resolution Flags vs Compiler Environment ===
+  [PASS] Default resolved features: {'default', 'std'}
+  [PASS] With --features extra: {'extra', 'default', 'std'}
+  [PASS] With --no-default-features: set()
+  [PASS] RUSTFLAGS confirmed to have no effect on cargo metadata resolution.
+  [CONCLUSION] Metadata-resolution flags (--features, --no-default-features) directly modify metadata resolve nodes without filesystem changes.
+               Compiler-only inputs (RUSTFLAGS, --target, --release) govern artifact compilation, not cargo metadata.
+
+=== Experiment C: Dynamic Target Discovery Across File Conventions ===
+  [PASS] Cargo.toml is 100% UNCHANGED.
+  [PASS] Initial targets: [('pkg', ['lib'])]
+  [PASS] Discovered targets: [('pkg', ['lib']), ('daemon', ['bin']), ('pkg', ['bin']), ('tool', ['bin']), ('ex1', ['example']), ('integ', ['test']), ('suite', ['test']), ('bench1', ['bench']), ('build-script-build', ['custom-build'])]
+  [CONCLUSION] Target discovery dynamically adds targets based on filesystem layout, including nested directories and build.rs.
+
+=== Experiment D: Source Edits vs Metadata Immutability & Pre-Pass Rebuild ===
+  [PASS] Metadata before and after source-only edit is 100% IDENTICAL.
+  [PASS] Cargo pre-pass correctly detected dirty source: helper fresh=False.
+  [PASS] Helper rlib mtime advanced: 1791497824.3959868 -> 1791497824.6799874.
+  [CONCLUSION] Manifest and metadata checks are completely blind to source code modifications.
+               Manifest-only validation is insufficient to determine whether pre-pass artifacts need recompilation.
+
+=== All 4 Experiments Passed Programmatic Assertions Cleanly ===
