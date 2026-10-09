@@ -1,0 +1,15 @@
+diff --git a/cargo-instrument/Cargo.toml b/cargo-instrument/Cargo.toml
+index 0502b5f..167d581 100644
+--- a/cargo-instrument/Cargo.toml
++++ b/cargo-instrument/Cargo.toml
+@@ -36,6 +36,10 @@ harness = false
+ name = "bench_scale"
+ harness = false
+ 
++[[bench]]
++name = "bench_async_overhead"
++harness = false
++
+ [[bin]]
+ name = "cargo-instrument-rust"
+ path = "src/bin/instrument_rust.rs"

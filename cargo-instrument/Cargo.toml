@@ -36,6 +36,10 @@ harness = false
 name = "bench_scale"
 harness = false
 
+[[bench]]
+name = "bench_async_overhead"
+harness = false
+
 [[bin]]
 name = "cargo-instrument-rust"
 path = "src/bin/instrument_rust.rs"

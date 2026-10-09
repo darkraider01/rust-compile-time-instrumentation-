@@ -1,0 +1,160 @@
+SESSION=3
+START_UTC=2026-10-08T23:17:51Z
+LOADAVG_START=0.52 1.21 2.26 6/3301 2368103
+COMMAND=CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_async_overhead
+    Finished `bench` profile [optimized] target(s) in 0.04s
+     Running benches/bench_async_overhead.rs (target/release/deps/bench_async_overhead-7dc338410be194e5)
+===============================================================================
+ CARGO-INSTRUMENT ASYNC OVERHEAD BENCHMARK (VARIANT A)
+===============================================================================
+
+     Locking 46 packages to highest compatible versions
+      Adding opentelemetry v0.32.0 (available: v0.33.0)
+      Adding opentelemetry_sdk v0.32.1 (available: v0.33.0)
+Building Baseline Release Binary...
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling pin-project-lite v0.2.17
+   Compiling libc v0.2.190
+   Compiling futures-core v0.3.34
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.62
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling cfg-if v1.0.5
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling tokio v1.53.2
+   Compiling futures-util v0.3.34
+   Compiling opentelemetry v0.32.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling async_dep v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/bench_async_mYNqqo/async_dep)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+   Compiling async_app v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/target/bench_async_mYNqqo/async_app)
+    Finished `release` profile [optimized] target(s) in 8.94s
+Building Instrumented Release Binary (--with-dependencies)...
+EMITTER: [cargo-instrument PID=2369965 crate=async_dep] selecting native R-4 emitter
+EMITTER: [cargo-instrument PID=2369965 crate=async_dep] transformed 3 candidates into mirror /home/brandybuck/Code/rust-compile-time-instrumentation-/target/bench_async_mYNqqo/target_rel_inst/release/deps/instrumented_sources/async_dep-5d164bbd11daa71b
+
+BINARY_SIZE baseline=1388576 bytes, instrumented=1434448 bytes, delta=+45872 bytes (+3.30%)
+
+Running Trace Oracle and Correctness Verification...
+Baseline Oracle: ORACLE_VERIFIED baseline=true spans=0
+Instrumented Oracle: ORACLE_VERIFIED instrumented=true spans=4 trace_propagation=verified spawn_propagation=verified suspension_restoration=verified
+
+Running Measured Async Runtime Overhead (N=10 runs, alternating order, untimed in-process warm-up per run)...
+Baseline (run 0): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.75 ns_per_pipeline=174.84 ns_per_call=87.42 total_pipelines=10000 total_calls=20000
+Instrumented (run 0): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.51 ns_per_pipeline=650.57 ns_per_call=325.28 total_pipelines=10000 total_calls=20000
+SAMPLE 0 (baseline_first): baseline=1.75ms (87.4 ns/call, 174.8 ns/pipe) | instrumented=6.51ms (325.3 ns/call, 650.6 ns/pipe) | delta=+237.9 ns/call
+Instrumented (run 1): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.46 ns_per_pipeline=646.05 ns_per_call=323.03 total_pipelines=10000 total_calls=20000
+Baseline (run 1): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.79 ns_per_pipeline=179.48 ns_per_call=89.74 total_pipelines=10000 total_calls=20000
+SAMPLE 1 (instrumented_first): baseline=1.79ms (89.7 ns/call, 179.5 ns/pipe) | instrumented=6.46ms (323.0 ns/call, 646.0 ns/pipe) | delta=+233.3 ns/call
+Baseline (run 2): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.70 ns_per_pipeline=169.51 ns_per_call=84.76 total_pipelines=10000 total_calls=20000
+Instrumented (run 2): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.39 ns_per_pipeline=639.22 ns_per_call=319.61 total_pipelines=10000 total_calls=20000
+SAMPLE 2 (baseline_first): baseline=1.70ms (84.8 ns/call, 169.5 ns/pipe) | instrumented=6.39ms (319.6 ns/call, 639.2 ns/pipe) | delta=+234.9 ns/call
+Instrumented (run 3): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.64 ns_per_pipeline=663.51 ns_per_call=331.75 total_pipelines=10000 total_calls=20000
+Baseline (run 3): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.87 ns_per_pipeline=186.69 ns_per_call=93.35 total_pipelines=10000 total_calls=20000
+SAMPLE 3 (instrumented_first): baseline=1.87ms (93.3 ns/call, 186.7 ns/pipe) | instrumented=6.64ms (331.8 ns/call, 663.5 ns/pipe) | delta=+238.4 ns/call
+Baseline (run 4): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.75 ns_per_pipeline=175.26 ns_per_call=87.63 total_pipelines=10000 total_calls=20000
+Instrumented (run 4): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.56 ns_per_pipeline=655.68 ns_per_call=327.84 total_pipelines=10000 total_calls=20000
+SAMPLE 4 (baseline_first): baseline=1.75ms (87.6 ns/call, 175.3 ns/pipe) | instrumented=6.56ms (327.8 ns/call, 655.7 ns/pipe) | delta=+240.2 ns/call
+Instrumented (run 5): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.48 ns_per_pipeline=647.52 ns_per_call=323.76 total_pipelines=10000 total_calls=20000
+Baseline (run 5): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.86 ns_per_pipeline=186.31 ns_per_call=93.15 total_pipelines=10000 total_calls=20000
+SAMPLE 5 (instrumented_first): baseline=1.86ms (93.2 ns/call, 186.3 ns/pipe) | instrumented=6.48ms (323.8 ns/call, 647.5 ns/pipe) | delta=+230.6 ns/call
+Baseline (run 6): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.71 ns_per_pipeline=170.65 ns_per_call=85.33 total_pipelines=10000 total_calls=20000
+Instrumented (run 6): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.41 ns_per_pipeline=640.74 ns_per_call=320.37 total_pipelines=10000 total_calls=20000
+SAMPLE 6 (baseline_first): baseline=1.71ms (85.3 ns/call, 170.7 ns/pipe) | instrumented=6.41ms (320.4 ns/call, 640.7 ns/pipe) | delta=+235.0 ns/call
+Instrumented (run 7): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.30 ns_per_pipeline=630.41 ns_per_call=315.21 total_pipelines=10000 total_calls=20000
+Baseline (run 7): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.95 ns_per_pipeline=194.69 ns_per_call=97.34 total_pipelines=10000 total_calls=20000
+SAMPLE 7 (instrumented_first): baseline=1.95ms (97.3 ns/call, 194.7 ns/pipe) | instrumented=6.30ms (315.2 ns/call, 630.4 ns/pipe) | delta=+217.9 ns/call
+Baseline (run 8): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.79 ns_per_pipeline=179.11 ns_per_call=89.55 total_pipelines=10000 total_calls=20000
+Instrumented (run 8): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.20 ns_per_pipeline=620.49 ns_per_call=310.25 total_pipelines=10000 total_calls=20000
+SAMPLE 8 (baseline_first): baseline=1.79ms (89.5 ns/call, 179.1 ns/pipe) | instrumented=6.20ms (310.2 ns/call, 620.5 ns/pipe) | delta=+220.7 ns/call
+Instrumented (run 9): WARMUP_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+MEASURED_VERIFIED spans=20000 expected=20000 acc=9839328791058930113
+RUNTIME_RESULT total_ms=6.32 ns_per_pipeline=632.41 ns_per_call=316.20 total_pipelines=10000 total_calls=20000
+Baseline (run 9): WARMUP_VERIFIED spans=0 expected=0 acc=9839328791058930113
+MEASURED_VERIFIED spans=0 expected=0 acc=9839328791058930113
+RUNTIME_RESULT total_ms=1.76 ns_per_pipeline=175.85 ns_per_call=87.92 total_pipelines=10000 total_calls=20000
+SAMPLE 9 (instrumented_first): baseline=1.76ms (87.9 ns/call, 175.8 ns/pipe) | instrumented=6.32ms (316.2 ns/call, 632.4 ns/pipe) | delta=+228.3 ns/call
+
+===============================================================================
+ ASYNC OVERHEAD BENCHMARK SUMMARY (N=10 runs)
+===============================================================================
+Workload: 10 concurrent tasks, 1,000 iterations each (10,000 pipelines, 20,000 calls)
+Runtime: Tokio multi-thread (worker_threads = 2), cooperative yield_now() per step
+Useful work: 64-bit wrapping arithmetic, output verified against EXPECTED_ACC
+Spans generated: baseline = 0, instrumented = 20,000 (1 per step)
+-------------------------------------------------------------------------------
+Metric: Runtime Total Duration (ms)
+  Baseline:     1.775 (min: 1.700, max: 1.950, spread: 0.250)
+  Instrumented: 6.435 (min: 6.200, max: 6.640, spread: 0.440)
+  Delta:        +4.66 ms (+262.54%)
+
+Metric: Time per Completed Pipeline (step_a + step_b) (ns)
+  Baseline:     177.480 (min: 169.510, max: 194.690, spread: 25.180)
+  Instrumented: 643.395 (min: 620.490, max: 663.510, spread: 43.020)
+  Delta:        +465.9 ns/pipeline (+262.52%)
+
+Metric: Time per Dependency Call (step_a or step_b) (ns)
+  Baseline:     88.735 (min: 84.760, max: 97.340, spread: 12.580)
+  Instrumented: 321.700 (min: 310.250, max: 331.750, spread: 21.500)
+  Delta:        +233.0 ns/call (+262.54%)
+
+Release Binary Growth: +45872 bytes (+3.30%)
+Trace Oracle: 4/4 spans verified (trace propagation, parentage, outcome attribute)
+===============================================================================
+
+BENCH_EXIT=0
+END_UTC=2026-10-08T23:18:10Z
+LOADAVG_END=2.12 1.55 2.35 2/3281 2370092

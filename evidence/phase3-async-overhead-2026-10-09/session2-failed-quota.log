@@ -1,0 +1,62 @@
+SESSION=2
+START_UTC=2026-10-08T23:07:04Z
+LOADAVG_START=4.97 4.11 3.65 7/3303 2363291
+COMMAND=CARGO_NET_OFFLINE=true cargo bench -p cargo-instrument --bench bench_async_overhead
+    Finished `bench` profile [optimized] target(s) in 0.05s
+     Running benches/bench_async_overhead.rs (target/release/deps/bench_async_overhead-7dc338410be194e5)
+===============================================================================
+ CARGO-INSTRUMENT ASYNC OVERHEAD BENCHMARK (VARIANT A)
+===============================================================================
+
+     Locking 46 packages to highest compatible versions
+      Adding opentelemetry v0.32.0 (available: v0.33.0)
+      Adding opentelemetry_sdk v0.32.1 (available: v0.33.0)
+Building Baseline Release Binary...
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling pin-project-lite v0.2.17
+   Compiling libc v0.2.190
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.62
+   Compiling futures-core v0.3.34
+   Compiling cfg-if v1.0.5
+   Compiling futures-sink v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling tracing-core v0.1.36
+   Compiling futures-task v0.3.34
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.34
+   Compiling percent-encoding v2.3.2
+   Compiling tracing v0.1.44
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-macro v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling tokio v1.53.2
+   Compiling futures-util v0.3.34
+   Compiling opentelemetry v0.32.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling otel-shim v0.1.0 (/home/brandybuck/Code/rust-compile-time-instrumentation-/otel-shim)
+   Compiling async_dep v0.1.0 (/tmp/.tmpygpIWD/async_dep)
+   Compiling futures-executor v0.3.34
+   Compiling opentelemetry_sdk v0.32.1
+rustc-LLVM ERROR: IO failure on output stream: Disk quota exceeded
+error: could not compile `opentelemetry_sdk` (lib)
+
+Caused by:
+  Disk quota exceeded (os error 122)
+
+Caused by:
+  failed to parse process output: `/home/brandybuck/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name opentelemetry_sdk --edition=2021 /home/brandybuck/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opentelemetry_sdk-0.32.1/src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C opt-level=3 -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="internal-logs"' --cfg 'feature="logs"' --cfg 'feature="metrics"' --cfg 'feature="percent-encoding"' --cfg 'feature="rand"' --cfg 'feature="testing"' --cfg 'feature="tokio"' --cfg 'feature="trace"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("bench_profiling", "default", "experimental_async_runtime", "experimental_logs_batch_log_processor_with_async_runtime", "experimental_metrics_bound_instruments", "experimental_metrics_custom_reader", "experimental_metrics_disable_name_validation", "experimental_metrics_periodicreader_with_async_runtime", "experimental_trace_batch_span_processor_with_async_runtime", "http", "internal-logs", "jaeger_remote_sampler", "logs", "metrics", "opentelemetry-http", "percent-encoding", "rand", "rt-tokio", "rt-tokio-current-thread", "serde", "serde_json", "spec_unstable_metrics_views", "testing", "tokio", "tokio-stream", "trace", "url"))' -C metadata=4ba1c3d6c7827b1f -C extra-filename=-1286af8436b7f1cc --out-dir /tmp/.tmpygpIWD/target_rel_base/release/deps -C strip=debuginfo -L dependency=/tmp/.tmpygpIWD/target_rel_base/release/deps --extern futures_channel=/tmp/.tmpygpIWD/target_rel_base/release/deps/libfutures_channel-37316ec258de89a8.rmeta --extern futures_executor=/tmp/.tmpygpIWD/target_rel_base/release/deps/libfutures_executor-b33fdcadff61ff61.rmeta --extern futures_util=/tmp/.tmpygpIWD/target_rel_base/release/deps/libfutures_util-a0ca7df4137e22fd.rmeta --extern opentelemetry=/tmp/.tmpygpIWD/target_rel_base/release/deps/libopentelemetry-3678132c412fc5c3.rmeta --extern percent_encoding=/tmp/.tmpygpIWD/target_rel_base/release/deps/libpercent_encoding-48a2d8dc0021dc6c.rmeta --extern rand=/tmp/.tmpygpIWD/target_rel_base/release/deps/librand-af2a4dcd83e2c312.rmeta --extern thiserror=/tmp/.tmpygpIWD/target_rel_base/release/deps/libthiserror-8cfd16be28aaf08e.rmeta --extern tokio=/tmp/.tmpygpIWD/target_rel_base/release/deps/libtokio-7c1771b84a48efc3.rmeta --cap-lints allow` (exit status: 101)
+
+thread 'main' (2363303) panicked at cargo-instrument/benches/bench_async_overhead.rs:83:5:
+build baseline release failed with exit status: 101
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: bench failed, to rerun pass `-p cargo-instrument --bench bench_async_overhead`
+BENCH_EXIT=101
+END_UTC=2026-10-08T23:07:17Z
+LOADAVG_END=5.34 4.22 3.69 3/3312 2364300
