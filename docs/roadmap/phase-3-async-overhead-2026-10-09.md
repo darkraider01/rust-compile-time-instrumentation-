@@ -29,7 +29,7 @@ Following direction on the candidate workload proposals, the evaluation implemen
    - Runtime: Tokio multi-threaded runtime (`#[tokio::main(flavor = "multi_thread", worker_threads = 2)]`).
    - Concurrency: $C = 10$ concurrent tasks spawned via `tokio::spawn`.
    - Worker threads fixed at 2 to avoid unconstrained CPU core scaling variance on the 12-vCPU host.
-   - Suspension points: `tokio::task::yield_now().await` forces actual cooperative task suspension, context detach/reattach, and executor rescheduling at every step.
+   - Each step awaits `tokio::task::yield_now()` once. Poll counts and cross-thread migration were not measured.
 
 3. **In-process untimed warm-up protocol**:
    - Tracer provider and `CountingProcessor(Arc<AtomicU64>)` initialized once outside timing.
@@ -67,8 +67,9 @@ Prior to timed performance measurements, each compiled release binary was indepe
      3. `spawn_step`: `trace_id == T_root`, `parent_span_id == S_root`, `instrumentation_scope == "async_dep"`.
      4. `step_b` (spawned child): `trace_id == T_root`, `parent_span_id == span_spawn.span_id`, demonstrating context preservation across `tokio::spawn` within the dependency.
      5. Lifecycle outcome: each span carries attribute `cargo.instrumentation.async.outcome = "completed"`.
-     6. Suspension context restoration: context remains attached and valid after resuming from `tokio::task::yield_now().await`.
    - Result: 4/4 spans verified across all sessions (`ORACLE_VERIFIED instrumented=true spans=4`).
+
+The retained logs include `suspension_restoration=verified`, but this oracle does not directly assert caller-context restoration after a Pending poll or absence of leaked context. That unsupported marker has been removed from the benchmark output; the historical logs and harness patch are preserved unchanged. The separate [coverage baseline oracle](phase-3-coverage-baseline.md#4-runtime-trace-oracle-expected-vs-observed) checks caller-context restoration after a Pending poll and absence of ambient context after its interleaved branches complete.
 
 ---
 
@@ -177,8 +178,8 @@ All runtime measurements reflect alternating baseline-first and instrumented-fir
 ### 6.1 Relation to Historical Synchronous Results
 
 The synchronous in-process steady-state evaluation reported:
-- Baseline duration: ~0.84 ms (500k calls $\rightarrow$ ~8.4 ns/call)
-- Instrumented duration: ~25.2 ms (500k calls $\rightarrow$ ~252.4 ns/call)
+- Baseline median duration: ~0.62 ms (500k calls $\rightarrow$ ~1.24 ns/call)
+- Instrumented median duration: ~122.38 – 123.56 ms (500k calls $\rightarrow$ ~244.76 – 247.11 ns/call)
 - Steady-state delta: **+243.52 – +245.87 ns/call**
 - Release binary growth: **+55,560 bytes (+7.1%)**
 
@@ -190,7 +191,7 @@ The async steady-state evaluation reports:
 
 Key observations:
 1. **Absolute runtime cost consistency**: Despite the fundamental difference in execution model (synchronous inline calls vs. asynchronous futures with cooperative yields on a 2-worker multi-threaded Tokio runtime), the absolute incremental runtime cost per dependency span remains strikingly consistent: **~233 to 252 ns per completed dependency invocation**.
-2. **Percentage overhead divergence**: In the synchronous benchmark, baseline calls performed pure integer arithmetic (~8.4 ns/call), making the +244 ns instrumentation cost appear as a ~3,000% increase. In the async workload, each step performs genuine executor scheduling and cooperative suspension (`yield_now().await`), raising baseline execution time to ~90 ns/call. As a consequence, the percentage increase drops from ~3,000% to **~255%–270%**.
+2. **Percentage overhead divergence**: The synchronous baseline measured ~1.24 ns/call, so the +244 – 246 ns/call instrumentation delta corresponds to **~19,700%–19,800%**. The async baseline, which includes task scheduling and a `yield_now().await` in each step, measured ~89 – 93 ns/call, with a **~255%–270%** increase. These percentages depend strongly on the baseline workload; the absolute deltas are more useful for comparing these fixtures.
 3. **Denominator clarity**:
    - Time per completed pipeline: measures the end-to-end execution of a logical transaction (`step_a` + `step_b`), showing an incremental cost of **+466 – +503 ns/pipeline**.
    - Time per dependency call: measures an individual async function boundary with one cooperative yield, showing **+233 – +252 ns/call**.
@@ -198,7 +199,7 @@ Key observations:
 ### 6.2 Why Nanoseconds per Span Must Not Be Oversimplified
 
 Nanoseconds per span cannot be interpreted as a flat tax that scales linearly in all async contexts:
-1. **Poll frequency vs. span creation**: In the native R-4 async transformation, the span is created once upon future construction, attached on each `poll()`, detached on `Pending` / yield, and ended when `Drop` runs on completion. If a future yields 100 times before completing, the context attach/detach runs 100 times while span construction and termination run once. In this fixture, each step suspends exactly once, so the measured delta reflects 1 construction, 2 polls, 1 detach, and 1 completion.
+1. **Poll frequency vs. span creation**: In the native R-4 async transformation, the span is created when the async function is first polled; an unpolled future creates no span. `FutureExt::with_context` attaches the span context while polling the wrapped body and detaches it when that poll returns. The dependency lifecycle guard ends the span on completion, cancellation, or unwind. Additional polls incur additional context attach/detach work without creating another span. This fixture awaits `yield_now()` once per step, but does not count polls, so an exact per-call poll or attach/detach count cannot be inferred from these measurements.
 2. **Concurrency and counting**: Timing occurs across 10 concurrent tasks on 2 worker threads. Thread synchronization inside `CountingProcessor`'s `AtomicU64` occurs within the timed block.
 3. **Absence of exporter**: Measurements do not include batch exporting, network serialization, or collector queueing; they measure in-process OpenTelemetry SDK span processor recording overhead.
 

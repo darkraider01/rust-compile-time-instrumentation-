@@ -341,7 +341,7 @@ async fn main() {
                 assert_eq!(outcome.unwrap().value.as_str(), "completed");
             }
 
-            println!("ORACLE_VERIFIED instrumented=true spans=4 trace_propagation=verified spawn_propagation=verified suspension_restoration=verified");
+            println!("ORACLE_VERIFIED instrumented=true spans=4 trace_propagation=verified spawn_propagation=verified");
         }
         return;
     }
