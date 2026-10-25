@@ -1,0 +1,198 @@
+[
+  {
+    "name": "<RawArgs as From<I>>::from",
+    "parent_span_id": "6b437d448a8b9567",
+    "scope": "clap_lex",
+    "span_id": "b2971b00e7058371",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::new",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "6b437d448a8b9567",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ArgCursor::new",
+    "parent_span_id": "6800b79c745a0a0d",
+    "scope": "clap_lex",
+    "span_id": "ee630b34486c8f7e",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::cursor",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "6800b79c745a0a0d",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::next_os",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "556da3cc8813b539",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::next_os",
+    "parent_span_id": "091a91637fee6554",
+    "scope": "clap_lex",
+    "span_id": "45fc404bc4fd3691",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::new",
+    "parent_span_id": "091a91637fee6554",
+    "scope": "clap_lex",
+    "span_id": "3da889723db91194",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::next",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "091a91637fee6554",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::to_value",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "0e9230fb653c8680",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::is_escape",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "c7e8510ab4d902bc",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "<OsStr as OsStrExt>::strip_prefix",
+    "parent_span_id": "cd9065c02ab9e410",
+    "scope": "clap_lex",
+    "span_id": "42ed29fd91e67a7f",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "<OsStr as OsStrExt>::find",
+    "parent_span_id": "d34a684d83b16c02",
+    "scope": "clap_lex",
+    "span_id": "e57768b5634e4599",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "<OsStr as OsStrExt>::split_once",
+    "parent_span_id": "cd9065c02ab9e410",
+    "scope": "clap_lex",
+    "span_id": "d34a684d83b16c02",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::to_long",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "cd9065c02ab9e410",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::next_os",
+    "parent_span_id": "9515eacdecb83c94",
+    "scope": "clap_lex",
+    "span_id": "938dd18afedcb498",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::new",
+    "parent_span_id": "9515eacdecb83c94",
+    "scope": "clap_lex",
+    "span_id": "963d0d1b03a2eaf3",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::next",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "9515eacdecb83c94",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::to_value",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "a98678d61ed574ee",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::is_escape",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "e7cd1f8d074d09c7",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "<OsStr as OsStrExt>::strip_prefix",
+    "parent_span_id": "57437fe97bb3b978",
+    "scope": "clap_lex",
+    "span_id": "af1a954adbb250e1",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::to_long",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "57437fe97bb3b978",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "<OsStr as OsStrExt>::strip_prefix",
+    "parent_span_id": "77eede0e62cdf76c",
+    "scope": "clap_lex",
+    "span_id": "3d72a519281c6219",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::to_short",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "77eede0e62cdf76c",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::to_value_os",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "384e4933c436b08a",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "ParsedArg<'s>::to_value_os",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "e3dbf9b2f8c8cb66",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::next_os",
+    "parent_span_id": "50558fc4f22f1393",
+    "scope": "clap_lex",
+    "span_id": "fc4e09bc5fc543a1",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "RawArgs::next",
+    "parent_span_id": "5b4da4fe3912c9dc",
+    "scope": "clap_lex",
+    "span_id": "50558fc4f22f1393",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  },
+  {
+    "name": "app_root",
+    "parent_span_id": "0000000000000000",
+    "scope": "toml2json",
+    "span_id": "5b4da4fe3912c9dc",
+    "trace_id": "36e3e3cf329bc965a188f8f07ffff1f2"
+  }
+]

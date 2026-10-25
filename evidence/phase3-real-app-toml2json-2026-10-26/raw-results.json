@@ -1,0 +1,148 @@
+{
+  "metadata": {
+    "date": "2026-10-26",
+    "application": "toml2json",
+    "revision": "840c3286589c7430c0315949d73e875592edac60",
+    "workload_input": "target/eval-workspace/test_input.toml",
+    "benchmark_iterations": 5000,
+    "spans_per_iter_variant_b": 18
+  },
+  "clean_build_seconds": {
+    "variant_a": {
+      "samples": [
+        17.9827,
+        19.4017,
+        18.7643,
+        17.7377,
+        18.6325
+      ],
+      "median": 18.6325,
+      "min": 17.7377,
+      "max": 19.4017,
+      "spread": 1.6639
+    },
+    "variant_b": {
+      "samples": [
+        29.4608,
+        31.2621,
+        31.9756,
+        31.0116,
+        34.2302
+      ],
+      "median": 31.2621,
+      "min": 29.4608,
+      "max": 34.2302,
+      "spread": 4.7694
+    },
+    "delta_abs": 12.6296,
+    "delta_pct": 67.78
+  },
+  "repeat_build_seconds": {
+    "variant_a": {
+      "samples": [
+        0.0731,
+        0.0661,
+        0.0655,
+        0.0635,
+        0.0651
+      ],
+      "median": 0.0655,
+      "min": 0.0635,
+      "max": 0.0731,
+      "spread": 0.0096
+    },
+    "variant_b": {
+      "samples": [
+        12.818,
+        12.6187,
+        12.4936,
+        12.8904,
+        12.7143
+      ],
+      "median": 12.7143,
+      "min": 12.4936,
+      "max": 12.8904,
+      "spread": 0.3968
+    },
+    "delta_abs": 12.6488,
+    "delta_pct": 19311.15
+  },
+  "incremental_app_edit_seconds": {
+    "variant_a": {
+      "samples": [
+        8.664,
+        8.652,
+        8.6021,
+        8.6181,
+        8.5951
+      ],
+      "median": 8.6181,
+      "min": 8.5951,
+      "max": 8.664,
+      "spread": 0.0689
+    },
+    "variant_b": {
+      "samples": [
+        21.6292,
+        21.446,
+        22.0362,
+        21.2549,
+        22.4542
+      ],
+      "median": 21.6292,
+      "min": 21.2549,
+      "max": 22.4542,
+      "spread": 1.1993
+    },
+    "delta_abs": 13.0111,
+    "delta_pct": 150.97
+  },
+  "runtime_ns_per_iter": {
+    "variant_a": {
+      "samples": [
+        5312.6,
+        5418.4,
+        5270.3,
+        5392.4,
+        5485.5,
+        5234.3,
+        5539.6,
+        5583.0,
+        5346.5,
+        5490.0
+      ],
+      "median": 5405.4,
+      "min": 5234.3,
+      "max": 5583.0,
+      "spread": 348.7
+    },
+    "variant_b": {
+      "samples": [
+        9922.6,
+        10088.8,
+        9638.5,
+        9607.7,
+        10048.5,
+        9473.0,
+        10470.5,
+        9810.5,
+        9687.6,
+        9593.1
+      ],
+      "median": 9749.05,
+      "min": 9473.0,
+      "max": 10470.5,
+      "spread": 997.5
+    },
+    "delta_abs": 4343.65,
+    "delta_pct": 80.36
+  },
+  "binary_size_bytes": {
+    "untouched": 1150368,
+    "variant_a": 1430872,
+    "variant_b": 1503320,
+    "telemetry_setup_delta": 280504,
+    "instrumentation_delta_abs": 72448,
+    "instrumentation_delta_pct": 5.06
+  }
+}

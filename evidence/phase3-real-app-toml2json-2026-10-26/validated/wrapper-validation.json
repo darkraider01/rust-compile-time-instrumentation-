@@ -1,0 +1,8 @@
+{
+  "python_evaluation_completed": true,
+  "original_shell_exit_status": 2,
+  "shell_error_cause": "Wrapper edited while its original shell process was still reading it; Python evaluation had already completed and saved results.",
+  "corrected_wrapper_fresh_directory_help_exit_status": 0,
+  "corrected_wrapper_existing_results_exit_status": 1,
+  "existing_session_log_preserved": true
+}

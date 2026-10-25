@@ -1,0 +1,9 @@
+[
+  {
+    "name": "app_root",
+    "parent_span_id": "0000000000000000",
+    "scope": "toml2json",
+    "span_id": "09984906b75eb54b",
+    "trace_id": "87d1900c5750db03b7642a19d886c65b"
+  }
+]

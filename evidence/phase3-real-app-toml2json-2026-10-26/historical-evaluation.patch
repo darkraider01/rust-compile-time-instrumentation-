@@ -1,0 +1,206 @@
+diff -Naur '--exclude=target' '--exclude=Cargo.lock' target/eval-workspace/toml2json-clean/Cargo.toml target/eval-workspace/toml2json-eval/Cargo.toml
+--- target/eval-workspace/toml2json-clean/Cargo.toml	2026-10-26 00:11:35.698705533 +0530
++++ target/eval-workspace/toml2json-eval/Cargo.toml	2026-10-26 00:05:55.483056335 +0530
+@@ -16,6 +16,8 @@
+ serde = { version = "1.0", features = ["derive"] }
+ serde_json = "1.0"
+ toml = "1.1"
++opentelemetry = "0.32.0"
++opentelemetry_sdk = { version = "0.32.0", features = ["testing"] }
+ 
+ [profile.release]
+ lto = true
+diff -Naur '--exclude=target' '--exclude=Cargo.lock' target/eval-workspace/toml2json-clean/src/main.rs target/eval-workspace/toml2json-eval/src/main.rs
+--- target/eval-workspace/toml2json-clean/src/main.rs	2026-10-26 00:03:19.062017048 +0530
++++ target/eval-workspace/toml2json-eval/src/main.rs	2026-10-26 00:17:17.415374957 +0530
+@@ -1,13 +1,35 @@
+-#![forbid(unsafe_code)]
+-
+ use std::fs;
+ use std::io::{self, Read};
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::Arc;
++use std::time::{Duration, Instant};
+ 
+ use anyhow::{Context, Result};
+ use clap::Parser;
++use opentelemetry::trace::Tracer;
++use opentelemetry_sdk::error::OTelSdkResult;
++use opentelemetry_sdk::trace::{
++    InMemorySpanExporter, SdkTracerProvider, Span, SpanData, SpanProcessor,
++};
++
++#[derive(Debug)]
++struct CountingProcessor(Arc<AtomicU64>);
++
++impl SpanProcessor for CountingProcessor {
++    fn on_start(&self, _: &mut Span, _: &opentelemetry::Context) {}
++    fn on_end(&self, _span: SpanData) {
++        self.0.fetch_add(1, Ordering::Relaxed);
++    }
++    fn force_flush(&self) -> OTelSdkResult {
++        Ok(())
++    }
++    fn shutdown_with_timeout(&self, _: Duration) -> OTelSdkResult {
++        Ok(())
++    }
++}
+ 
+ /// Convert TOML to JSON
+-#[derive(Parser)]
++#[derive(Parser, Debug)]
+ #[command(name = env!("CARGO_PKG_NAME"))]
+ #[command(version = env!("CARGO_PKG_VERSION"))]
+ #[command(about = env!("CARGO_PKG_DESCRIPTION"))]
+@@ -16,43 +38,139 @@
+     #[arg(short, long)]
+     pretty: bool,
+ 
++    /// dump generated OpenTelemetry spans to stderr
++    #[arg(long)]
++    dump_spans: bool,
++
++    /// run in-process benchmark for specified iterations
++    #[arg(long)]
++    bench: Option<u64>,
++
+     /// the TOML to convert
+     #[arg(default_value = "-")]
+     input: String,
+ }
+ 
+ fn main() -> Result<()> {
++    let dump_spans_requested = std::env::args().any(|a| a == "--dump-spans");
++    let span_count = Arc::new(AtomicU64::new(0));
++
++    let (maybe_exporter, provider) = if dump_spans_requested {
++        let exporter = InMemorySpanExporter::default();
++        let provider = SdkTracerProvider::builder()
++            .with_simple_exporter(exporter.clone())
++            .build();
++        (Some(exporter), provider)
++    } else {
++        let provider = SdkTracerProvider::builder()
++            .with_span_processor(CountingProcessor(span_count.clone()))
++            .build();
++        (None, provider)
++    };
++
++    opentelemetry::global::set_tracer_provider(provider.clone());
++
++    let tracer = opentelemetry::global::tracer("toml2json");
++    let root_span = tracer.span_builder("app_root").start(&tracer);
++    let cx: opentelemetry::Context =
++        opentelemetry::trace::TraceContextExt::current_with_span(root_span);
++    let _guard = cx.attach();
++
+     let args = Args::parse();
+ 
+-    // Get our input source (which can be - or a filename) and its
+-    // corresponding buffer. We don't bother streaming or chunking,
+-    // since the `toml` crate only supports slices and strings.
+     let input_src = &args.input;
+     let input_buf = match input_src.as_ref() {
+         "-" => {
+-            let mut input_buf = String::new();
++            let mut buf = String::new();
+             io::stdin()
+-                .read_to_string(&mut input_buf)
++                .read_to_string(&mut buf)
+                 .with_context(|| "failed to collect stdin")?;
+-            input_buf
++            buf
+         }
+         input => fs::read_to_string(input)
+             .with_context(|| format!("failed to collect from input: {input}"))?,
+     };
+ 
+-    // Turn our collected input into a value. We can't be more specific than
+-    // value, since we're doing arbitrary valid TOML conversions.
++    if let Some(iters) = args.bench {
++        // 1. Untimed warm-up pass
++        let warmup_iters = std::cmp::max(1, iters / 10);
++        for _ in 0..warmup_iters {
++            let _ = Args::try_parse_from(["toml2json", &args.input]);
++            let val = toml::from_str::<toml::Value>(&input_buf)
++                .with_context(|| "warmup TOML parsing failed")?;
++            let mut sink = Vec::with_capacity(1024);
++            if args.pretty {
++                serde_json::to_writer_pretty(&mut sink, &val)?;
++            } else {
++                serde_json::to_writer(&mut sink, &val)?;
++            }
++        }
++
++        // 2. Reset counters
++        span_count.store(0, Ordering::Relaxed);
++
++        // 3. Timed measured pass
++        let start = Instant::now();
++        for _ in 0..iters {
++            let _ = Args::try_parse_from(["toml2json", &args.input]);
++            let val = toml::from_str::<toml::Value>(&input_buf)
++                .with_context(|| "measured TOML parsing failed")?;
++            let mut sink = Vec::with_capacity(1024);
++            if args.pretty {
++                serde_json::to_writer_pretty(&mut sink, &val)?;
++            } else {
++                serde_json::to_writer(&mut sink, &val)?;
++            }
++        }
++        let elapsed = start.elapsed();
++
++        // End root span and flush
++        drop(_guard);
++        let _ = provider.force_flush();
++
++        let measured_spans = span_count.load(Ordering::Relaxed);
++        let total_ms = elapsed.as_secs_f64() * 1000.0;
++        let ns_per_iter = (elapsed.as_nanos() as f64) / (iters as f64);
++        eprintln!(
++            "BENCH_RESULT iters={} spans={} total_ms={:.3} ns_per_iter={:.1}",
++            iters, measured_spans, total_ms, ns_per_iter
++        );
++
++        return Ok(());
++    }
++
+     let value = toml::from_str::<toml::Value>(&input_buf)
+         .with_context(|| format!("parsing TOML from {input_src} failed"))?;
+ 
+-    // Spit back out, but as JSON. `serde_json` *does* support streaming, so
+-    // we do it.
++    let stdout = io::stdout();
++    let mut lock = stdout.lock();
+     if args.pretty {
+-        serde_json::to_writer_pretty(io::stdout(), &value)
++        serde_json::to_writer_pretty(&mut lock, &value)
+     } else {
+-        serde_json::to_writer(io::stdout(), &value)
++        serde_json::to_writer(&mut lock, &value)
+     }
+     .with_context(|| "JSON serialization and/or stdout streaming failed")?;
++    drop(lock);
++
++    // End root span
++    drop(_guard);
++    let _ = provider.force_flush();
++
++    if args.dump_spans {
++        if let Some(exporter) = maybe_exporter {
++            let spans = exporter.get_finished_spans().unwrap_or_default();
++            eprintln!("EXPORTED_SPANS_TOTAL: {}", spans.len());
++            for s in &spans {
++                eprintln!(
++                    "SPAN: name='{}' scope='{}' kind={:?} parent={:?}",
++                    s.name,
++                    s.instrumentation_scope.name(),
++                    s.span_kind,
++                    s.parent_span_id
++                );
++            }
++        }
++    }
+ 
+     Ok(())
+ }

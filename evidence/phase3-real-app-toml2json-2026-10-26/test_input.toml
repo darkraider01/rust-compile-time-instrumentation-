@@ -1,0 +1,9 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+enabled = true
+
+[database]
+connections = 10
+timeout_seconds = 30.5
+tags = ["primary", "read-write"]

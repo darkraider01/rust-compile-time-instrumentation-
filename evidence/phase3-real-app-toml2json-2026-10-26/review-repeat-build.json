@@ -1,0 +1,98 @@
+{
+  "command": [
+    "target/release/cargo-instrument",
+    "--with-dependencies",
+    "--",
+    "build",
+    "--release",
+    "--offline",
+    "--target-dir",
+    "../target-variant-b"
+  ],
+  "cwd": "target/eval-workspace/toml2json-eval",
+  "environment": {
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_LOG": "cargo::core::compiler::fingerprint=info"
+  },
+  "exit_status": 0,
+  "wall_seconds": 13.142,
+  "removed_files": 248,
+  "removed_size": "42.5MiB",
+  "post_build_artifact_snapshot": [
+    {
+      "crate": "clap_lex",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libclap_lex-cb0e465c5133c9da.rlib"
+      ],
+      "transformed_stamps": []
+    },
+    {
+      "crate": "anstream",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libanstream-eac03a9a1fddde87.rlib"
+      ],
+      "transformed_stamps": [
+        ".cargo-instrument-transformed-anstream-eac03a9a1fddde87.stamp",
+        ".cargo-instrument-transformed-anstream.stamp"
+      ]
+    },
+    {
+      "crate": "anstyle_query",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libanstyle_query-a4a3723217b36db2.rlib"
+      ],
+      "transformed_stamps": []
+    },
+    {
+      "crate": "toml",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libtoml-09d83dc70af8f3d2.rlib"
+      ],
+      "transformed_stamps": []
+    },
+    {
+      "crate": "serde_json",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libserde_json-0f71929a39bf4d3a.rlib"
+      ],
+      "transformed_stamps": []
+    },
+    {
+      "crate": "strsim",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libstrsim-4342d541b792976a.rlib"
+      ],
+      "transformed_stamps": []
+    },
+    {
+      "crate": "clap",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libclap-eca2bbc29f1370b0.rlib"
+      ],
+      "transformed_stamps": []
+    },
+    {
+      "crate": "anstyle",
+      "target_reachable": true,
+      "wrapper_excluded": false,
+      "rlib_files": [
+        "libanstyle-652a55d7e58eb456.rlib"
+      ],
+      "transformed_stamps": []
+    }
+  ]
+}

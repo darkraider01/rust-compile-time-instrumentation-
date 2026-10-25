@@ -1,0 +1,73 @@
+Verified identical JSON, exact 1/28 span counts, trace ancestry, and source-derived call edges
+clean_build_seconds sample=1 variant=a seconds=20.7138
+clean_build_seconds sample=1 variant=b seconds=34.8246
+clean_build_seconds sample=2 variant=b seconds=35.1477
+clean_build_seconds sample=2 variant=a seconds=21.2720
+clean_build_seconds sample=3 variant=a seconds=22.1947
+clean_build_seconds sample=3 variant=b seconds=35.5223
+clean_build_seconds sample=4 variant=b seconds=36.4286
+clean_build_seconds sample=4 variant=a seconds=21.8700
+clean_build_seconds sample=5 variant=a seconds=21.1881
+clean_build_seconds sample=5 variant=b seconds=37.5505
+repeat_build_seconds sample=1 variant=a seconds=0.0763
+repeat_build_seconds sample=1 variant=b seconds=17.1227
+repeat_build_seconds sample=2 variant=b seconds=19.2635
+repeat_build_seconds sample=2 variant=a seconds=0.0998
+repeat_build_seconds sample=3 variant=a seconds=0.0851
+repeat_build_seconds sample=3 variant=b seconds=17.5394
+repeat_build_seconds sample=4 variant=b seconds=17.8329
+repeat_build_seconds sample=4 variant=a seconds=0.0853
+repeat_build_seconds sample=5 variant=a seconds=0.0726
+repeat_build_seconds sample=5 variant=b seconds=15.7744
+incremental_app_edit_seconds sample=1 variant=a seconds=9.6369
+incremental_app_edit_seconds sample=1 variant=b seconds=23.5174
+incremental_app_edit_seconds sample=2 variant=b seconds=23.2842
+incremental_app_edit_seconds sample=2 variant=a seconds=9.3895
+incremental_app_edit_seconds sample=3 variant=a seconds=9.6388
+incremental_app_edit_seconds sample=3 variant=b seconds=23.8938
+incremental_app_edit_seconds sample=4 variant=b seconds=25.3718
+incremental_app_edit_seconds sample=4 variant=a seconds=9.7771
+incremental_app_edit_seconds sample=5 variant=a seconds=9.1377
+incremental_app_edit_seconds sample=5 variant=b seconds=25.1712
+Verified identical JSON, exact 1/28 span counts, trace ancestry, and source-derived call edges
+runtime sample=1 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=37.123038 ns_per_iter=7424.608 output_bytes=143
+runtime sample=1 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=68.038271 ns_per_iter=13607.654 output_bytes=143
+runtime sample=2 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=65.504370 ns_per_iter=13100.874 output_bytes=143
+runtime sample=2 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=31.793896 ns_per_iter=6358.779 output_bytes=143
+runtime sample=3 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=32.079203 ns_per_iter=6415.841 output_bytes=143
+runtime sample=3 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=58.017458 ns_per_iter=11603.492 output_bytes=143
+runtime sample=4 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=73.566486 ns_per_iter=14713.297 output_bytes=143
+runtime sample=4 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=89.876707 ns_per_iter=17975.341 output_bytes=143
+runtime sample=5 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=85.753175 ns_per_iter=17150.635 output_bytes=143
+runtime sample=5 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=123.693692 ns_per_iter=24738.738 output_bytes=143
+runtime sample=6 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=85.773324 ns_per_iter=17154.665 output_bytes=143
+runtime sample=6 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=32.573504 ns_per_iter=6514.701 output_bytes=143
+runtime sample=7 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=31.292412 ns_per_iter=6258.482 output_bytes=143
+runtime sample=7 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=60.474502 ns_per_iter=12094.900 output_bytes=143
+runtime sample=8 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=65.563332 ns_per_iter=13112.666 output_bytes=143
+runtime sample=8 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=35.651518 ns_per_iter=7130.304 output_bytes=143
+runtime sample=9 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=37.707578 ns_per_iter=7541.516 output_bytes=143
+runtime sample=9 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=70.541612 ns_per_iter=14108.322 output_bytes=143
+runtime sample=10 variant=b: WARMUP_VERIFIED iters=500 spans=9000 output_bytes=143
+BENCH_RESULT iters=5000 spans=90000 total_ms=73.252696 ns_per_iter=14650.539 output_bytes=143
+runtime sample=10 variant=a: WARMUP_VERIFIED iters=500 spans=0 output_bytes=143
+BENCH_RESULT iters=5000 spans=0 total_ms=42.219361 ns_per_iter=8443.872 output_bytes=143
+Evaluation complete; results and full command logs: /home/brandybuck/Code/rust-compile-time-instrumentation-/evidence/phase3-real-app-toml2json-2026-10-26/validated

@@ -1,0 +1,29 @@
+EXPORTED_SPANS_TOTAL: 28
+SPAN: name='<RawArgs as From<I>>::from' scope='clap_lex' kind=Internal parent=b437e2483ac7dd8c
+SPAN: name='RawArgs::new' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='ArgCursor::new' scope='clap_lex' kind=Internal parent=e744e251d6bfb30f
+SPAN: name='RawArgs::cursor' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='RawArgs::next_os' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='RawArgs::next_os' scope='clap_lex' kind=Internal parent=236afacfdea097fc
+SPAN: name='ParsedArg<'s>::new' scope='clap_lex' kind=Internal parent=236afacfdea097fc
+SPAN: name='RawArgs::next' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='ParsedArg<'s>::to_value' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='ParsedArg<'s>::is_escape' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='<OsStr as OsStrExt>::strip_prefix' scope='clap_lex' kind=Internal parent=2fb4d29ef168c0c4
+SPAN: name='<OsStr as OsStrExt>::find' scope='clap_lex' kind=Internal parent=bc6a3f61f686f832
+SPAN: name='<OsStr as OsStrExt>::split_once' scope='clap_lex' kind=Internal parent=2fb4d29ef168c0c4
+SPAN: name='ParsedArg<'s>::to_long' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='RawArgs::next_os' scope='clap_lex' kind=Internal parent=6107eda0200f2056
+SPAN: name='ParsedArg<'s>::new' scope='clap_lex' kind=Internal parent=6107eda0200f2056
+SPAN: name='RawArgs::next' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='ParsedArg<'s>::to_value' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='ParsedArg<'s>::is_escape' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='<OsStr as OsStrExt>::strip_prefix' scope='clap_lex' kind=Internal parent=d71cb7dc93abbea8
+SPAN: name='ParsedArg<'s>::to_long' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='<OsStr as OsStrExt>::strip_prefix' scope='clap_lex' kind=Internal parent=98a68976c1cbddc8
+SPAN: name='ParsedArg<'s>::to_short' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='ParsedArg<'s>::to_value_os' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='ParsedArg<'s>::to_value_os' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='RawArgs::next_os' scope='clap_lex' kind=Internal parent=0760014ba54c7f4d
+SPAN: name='RawArgs::next' scope='clap_lex' kind=Internal parent=bef51844e3d109c3
+SPAN: name='app_root' scope='toml2json' kind=Internal parent=0000000000000000

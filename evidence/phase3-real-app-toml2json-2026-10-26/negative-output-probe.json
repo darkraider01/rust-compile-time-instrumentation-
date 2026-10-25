@@ -1,0 +1,10 @@
+{
+  "arguments": [
+    "--bench",
+    "10",
+    "test_input.toml"
+  ],
+  "expected_json": "not the expected JSON",
+  "exit_status": 1,
+  "stderr": "Error: benchmark JSON differs from untouched output\n"
+}
