@@ -91,4 +91,4 @@ The Python evaluation completed all build/runtime samples and final source/lockf
 
 The original `raw-results.json`, `env-manifest.txt`, and `variant-b-spans.txt` are preserved unchanged. The manifest's original patch hash refers to `historical-evaluation.patch`. Original runtime results lacked the new output/count checks; their 241 ns/span estimate remains historical, not a validated result of this harness. The original span dump lacked span/trace IDs and proved counts only, not ancestry.
 
-The next bounded investigation is repeat-build invalidation on this application. First-party/combined instrumentation, real async services, exporter pipelines, wider input coverage, and matched manual comparisons remain deferred.
+The repeat-build invalidation causal investigation and stamp prefix defect fix on this application is completed and recorded in [phase-3-real-app-toml2json-rebuild-investigation-2026-11-05.md](phase-3-real-app-toml2json-rebuild-investigation-2026-11-05.md). First-party/combined instrumentation, real async services, exporter pipelines, wider input coverage, and matched manual comparisons remain deferred.

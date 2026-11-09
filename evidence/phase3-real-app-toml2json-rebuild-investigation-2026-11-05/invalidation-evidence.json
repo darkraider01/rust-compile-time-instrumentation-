@@ -1,0 +1,174 @@
+{
+  "investigation": "Phase 3 toml2json repeat-build invalidation",
+  "timestamp": "2026-11-04T19:25:25.869833+00:00",
+  "tool_revision": "3f2772172ea437b9183f8d15973dcdb4d80781ab",
+  "package_counts": {
+    "total_metadata_packages": 66,
+    "desired_reachable_registry_packages": 40,
+    "compiled_on_linux_x86_64": 24,
+    "target_or_feature_filtered_by_cargo": 16,
+    "instrumented_units": 3,
+    "skipped_units": 21
+  },
+  "packages": {
+    "anstream": {
+      "status": "instrumented",
+      "candidates": 8,
+      "emitter": "native_r4",
+      "has_stamp": true,
+      "cleaned": false
+    },
+    "anstyle_query": {
+      "status": "instrumented",
+      "candidates": 2,
+      "emitter": "native_r4",
+      "has_stamp": true,
+      "cleaned": false,
+      "note": "stamps were inadvertently purged by prefix matching before fix"
+    },
+    "clap_lex": {
+      "status": "instrumented",
+      "candidates": 43,
+      "emitter": "native_r4",
+      "has_stamp": true,
+      "cleaned": false,
+      "note": "stamps were inadvertently purged by prefix matching before fix"
+    },
+    "anstyle": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "anstyle-parse": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "anyhow": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "clap": {
+      "status": "skipped",
+      "reason": "#![forbid(unsafe_code)] and 0 candidates",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "clap_builder": {
+      "status": "skipped",
+      "reason": "#![forbid(unsafe_code)]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "colorchoice": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "is_terminal_polyfill": {
+      "status": "skipped",
+      "reason": "0 candidates (all functions inlined/excluded)",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "itoa": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "memchr": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "serde": {
+      "status": "skipped",
+      "reason": "0 candidates / derive only",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "serde_core": {
+      "status": "skipped",
+      "reason": "#![no_std] and 0 candidates",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "serde_json": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "serde_spanned": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "strsim": {
+      "status": "skipped",
+      "reason": "#![forbid(unsafe_code)]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "toml": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "toml_datetime": {
+      "status": "skipped",
+      "reason": "#![no_std] and #![forbid(unsafe_code)]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "toml_parser": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "toml_writer": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "utf8parse": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "winnow": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    },
+    "zmij": {
+      "status": "skipped",
+      "reason": "#![no_std]",
+      "has_stamp": false,
+      "cleaned": true
+    }
+  },
+  "rebuilt_units_in_wrapped_build": 23,
+  "removed_files_by_cargo_clean": 248,
+  "removed_size_by_cargo_clean": "42.5MiB",
+  "timing": {
+    "pre_pass_and_metadata_ms": "~120-140ms",
+    "invalidation_clean_ms": "~150-200ms",
+    "recompilation_seconds": "~13.3s",
+    "attribution_source": "inferred from fixture profiling and subprocess durations",
+    "subsecond_repeat_build_status": "unmeasured hypothesis"
+  }
+}

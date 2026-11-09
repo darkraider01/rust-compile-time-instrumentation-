@@ -1,0 +1,30 @@
+Phase 3 Real-Application No-Change Rebuild Investigation Manifest
+Captured: 2026-11-04T19:25:25.869089+00:00
+Tool Revision: 3f2772172ea437b9183f8d15973dcdb4d80781ab
+
+Tool Binaries:
+- Unmodified tool binary (baseline commit 3f27721):
+  SHA-256: f0214c6deb97bafc98823a6f5101af0a6f941c95885dc0cb8a9d1c1bc390e10d
+  Runs: initial-build.log.gz, repeat-build.log.gz
+- Modified tool binary (with prefix-matching fix in remove_package_stamps):
+  SHA-256: e4bf96cd0ee94b3382b5ed6e8bea31c04aef0976b39ba459e2716d28faf00b57
+  Runs: repeat-build-fixed.log.gz
+
+Host: Linux fedora 6.19.10-300.fc44.x86_64 x86_64
+
+Rustc Version:
+rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-unknown-linux-gnu
+release: 1.99.0
+LLVM version: 23.1.1
+
+Cargo Version:
+cargo 1.99.0 (5f94df478 2026-08-27)
+
+Application: woodruffw/toml2json
+Revision: 840c3286589c7430c0315949d73e875592edac60
+Workload Input: test_input.toml (140 bytes, SHA-256 34e0fe98696144e7e60b2eb25e7966ef4b14d3394747ec7f21287e02e525164f)
+Command: cargo-instrument --with-dependencies -- build --release --locked --offline
