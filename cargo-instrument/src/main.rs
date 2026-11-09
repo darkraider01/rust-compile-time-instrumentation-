@@ -1121,14 +1121,27 @@ fn invalidate_packages(
         }
     }
 
-    // Consolidated single-pass removal of transformed stamps and marker files
-    let prefixes: Vec<String> = package_keys
+    let package_name_refs: Vec<&str> = package_keys.iter().map(|s| s.as_str()).collect();
+    remove_package_stamps(target_dir, &package_name_refs);
+    Ok(())
+}
+
+fn remove_package_stamps(target_dir: &Path, package_names: &[&str]) {
+    // Suffix with '-' so crates sharing a common name prefix (e.g. clap vs clap_lex)
+    // do not have their unit-specific transformed markers inadvertently removed.
+    let prefixes: Vec<String> = package_names
         .iter()
-        .map(|pkg| format!(".cargo-instrument-transformed-{}", pkg.replace('-', "_")))
+        .map(|pkg| format!(".cargo-instrument-transformed-{}-", pkg.replace('-', "_")))
         .collect();
-    let exact_stamps: std::collections::HashSet<String> = package_keys
+    let exact_stamps: std::collections::HashSet<String> = package_names
         .iter()
-        .map(|pkg| format!(".instrumented_{}", pkg.replace('-', "_")))
+        .flat_map(|pkg| {
+            let norm = pkg.replace('-', "_");
+            [
+                format!(".instrumented_{norm}"),
+                format!(".cargo-instrument-transformed-{norm}.stamp"),
+            ]
+        })
         .collect();
 
     for profile in ["debug", "release"] {
@@ -1142,7 +1155,6 @@ fn invalidate_packages(
             }
         }
     }
-    Ok(())
 }
 
 fn clean_forward_flags(cargo_args: &[String]) -> Vec<String> {
@@ -1250,5 +1262,87 @@ mod tests {
             .expect("metadata-bearing unit marker");
         std::fs::write(deps.join(marker), b"1").expect("write exact transformed marker");
         assert!(uninstrumented_fresh_package_ids(&messages, &instrumented, temp.path()).is_empty());
+    }
+
+    #[test]
+    fn package_stamp_removal_preserves_sibling_prefixes() {
+        let temp = tempfile::tempdir().expect("temp target directory");
+        for profile in ["debug", "release"] {
+            let deps = temp.path().join(profile).join("deps");
+            std::fs::create_dir_all(&deps).expect("create deps dir");
+
+            // Target packages to remove
+            std::fs::write(
+                deps.join(".cargo-instrument-transformed-clap-11111111.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(deps.join(".cargo-instrument-transformed-clap.stamp"), b"1").unwrap();
+            std::fs::write(deps.join(".instrumented_clap"), b"1").unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-transformed-anstyle-22222222.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-transformed-anstyle.stamp"),
+                b"1",
+            )
+            .unwrap();
+
+            // Sibling packages sharing name prefixes that must NOT be removed
+            std::fs::write(
+                deps.join(".cargo-instrument-transformed-clap_lex-33333333.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-transformed-clap_lex.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-transformed-anstyle_query-44444444.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-transformed-anstyle_query.stamp"),
+                b"1",
+            )
+            .unwrap();
+        }
+
+        remove_package_stamps(temp.path(), &["clap", "anstyle"]);
+
+        for profile in ["debug", "release"] {
+            let deps = temp.path().join(profile).join("deps");
+            assert!(!deps
+                .join(".cargo-instrument-transformed-clap-11111111.stamp")
+                .exists());
+            assert!(!deps
+                .join(".cargo-instrument-transformed-clap.stamp")
+                .exists());
+            assert!(!deps.join(".instrumented_clap").exists());
+            assert!(!deps
+                .join(".cargo-instrument-transformed-anstyle-22222222.stamp")
+                .exists());
+            assert!(!deps
+                .join(".cargo-instrument-transformed-anstyle.stamp")
+                .exists());
+
+            assert!(deps
+                .join(".cargo-instrument-transformed-clap_lex-33333333.stamp")
+                .exists());
+            assert!(deps
+                .join(".cargo-instrument-transformed-clap_lex.stamp")
+                .exists());
+            assert!(deps
+                .join(".cargo-instrument-transformed-anstyle_query-44444444.stamp")
+                .exists());
+            assert!(deps
+                .join(".cargo-instrument-transformed-anstyle_query.stamp")
+                .exists());
+        }
     }
 }
