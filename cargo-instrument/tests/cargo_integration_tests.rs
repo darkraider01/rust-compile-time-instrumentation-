@@ -557,3 +557,266 @@ edition = "2021"
         "coordinates must point to the erroneous code snippet. Stderr:\n{stderr}"
     );
 }
+
+#[test]
+fn test_skipped_dependency_certification_and_repeat_build_freshness() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ws_root = temp_dir.path();
+
+    fs::write(
+        ws_root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "dep_nostd", "dep_forbid", "dep_empty", "dep_trans"]
+resolver = "2"
+"#,
+    )
+    .expect("write root Cargo.toml");
+
+    // 1. dep_nostd: #![no_std] crate
+    let nostd_dir = ws_root.join("dep_nostd");
+    fs::create_dir_all(nostd_dir.join("src")).expect("create dep_nostd src");
+    fs::write(
+        nostd_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_nostd\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_nostd Cargo.toml");
+    fs::write(
+        nostd_dir.join("src/lib.rs"),
+        "#![no_std]\npub fn add(a: usize, b: usize) -> usize { a + b }\n",
+    )
+    .expect("write dep_nostd lib.rs");
+
+    // 2. dep_forbid: #![forbid(unsafe_code)] crate
+    let forbid_dir = ws_root.join("dep_forbid");
+    fs::create_dir_all(forbid_dir.join("src")).expect("create dep_forbid src");
+    fs::write(
+        forbid_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_forbid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_forbid Cargo.toml");
+    fs::write(
+        forbid_dir.join("src/lib.rs"),
+        "#![forbid(unsafe_code)]\npub fn sub(a: usize, b: usize) -> usize { a.saturating_sub(b) }\n",
+    )
+    .expect("write dep_forbid lib.rs");
+
+    // 3. dep_empty: zero candidate functions
+    let empty_dir = ws_root.join("dep_empty");
+    fs::create_dir_all(empty_dir.join("src")).expect("create dep_empty src");
+    fs::write(
+        empty_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_empty\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_empty Cargo.toml");
+    fs::write(
+        empty_dir.join("src/lib.rs"),
+        "pub struct Marker;\npub const CONST_VAL: usize = 42;\n",
+    )
+    .expect("write dep_empty lib.rs");
+
+    // 4. dep_trans: transformable crate
+    let trans_dir = ws_root.join("dep_trans");
+    fs::create_dir_all(trans_dir.join("src")).expect("create dep_trans src");
+    fs::write(
+        trans_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_trans\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_trans Cargo.toml");
+    fs::write(
+        trans_dir.join("src/lib.rs"),
+        "pub fn mul(a: usize, b: usize) -> usize { a * b }\n",
+    )
+    .expect("write dep_trans lib.rs");
+
+    let current_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = current_manifest
+        .parent()
+        .expect("cargo-instrument parent is repo root");
+    let otel_shim_path = repo_root.join("otel-shim");
+    let otel_shim_path_escaped = otel_shim_path.to_string_lossy().replace('\\', "/");
+
+    // 5. app
+    let app_dir = ws_root.join("app");
+    fs::create_dir_all(app_dir.join("src")).expect("create app src");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_nostd = {{ path = "../dep_nostd" }}
+dep_forbid = {{ path = "../dep_forbid" }}
+dep_empty = {{ path = "../dep_empty" }}
+dep_trans = {{ path = "../dep_trans" }}
+otel-shim = {{ path = "{otel_shim_path_escaped}" }}
+"#
+        ),
+    )
+    .expect("write app Cargo.toml");
+    fs::write(
+        app_dir.join("src/main.rs"),
+        r#"fn main() {
+    otel_shim::init();
+    let sum = dep_nostd::add(1, 2)
+        + dep_forbid::sub(10, 4)
+        + dep_empty::CONST_VAL
+        + dep_trans::mul(3, 4);
+    println!("sum: {sum}");
+}
+"#,
+    )
+    .expect("write app main.rs");
+
+    // Generate initial Cargo.lock
+    Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(ws_root)
+        .status()
+        .expect("generate lockfile");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    // Pass 1: Clean build
+    let output1 = Command::new(cargo_instrument_bin)
+        .args(["--", "build"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("clean build");
+    assert!(
+        output1.status.success(),
+        "Clean build must succeed! Stderr:\n{}",
+        String::from_utf8_lossy(&output1.stderr)
+    );
+
+    // Verify stamp files in target/instrumented/debug/deps
+    let deps_dir = ws_root.join("target/instrumented/debug/deps");
+    let entries: Vec<String> = fs::read_dir(&deps_dir)
+        .expect("read deps dir")
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+        .collect();
+
+    // dep_nostd, dep_forbid, dep_empty must have skipped stamps
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.starts_with(".cargo-instrument-skipped-dep_nostd")),
+        "dep_nostd must have a skipped stamp. Entries: {entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.starts_with(".cargo-instrument-skipped-dep_forbid")),
+        "dep_forbid must have a skipped stamp. Entries: {entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.starts_with(".cargo-instrument-skipped-dep_empty")),
+        "dep_empty must have a skipped stamp. Entries: {entries:?}"
+    );
+
+    // dep_trans and app must have transformed stamps
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.starts_with(".cargo-instrument-transformed-dep_trans")),
+        "dep_trans must have a transformed stamp. Entries: {entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.starts_with(".cargo-instrument-transformed-app")),
+        "app must have a transformed stamp. Entries: {entries:?}"
+    );
+
+    // Pass 2: Immediate repeat build with no changes
+    let output2 = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("repeat build");
+    assert!(output2.status.success(), "Repeat build must succeed");
+    let stderr2 = strip_ansi(&String::from_utf8_lossy(&output2.stderr));
+
+    assert!(
+        !stderr2.contains("Compiling dep_nostd"),
+        "Repeat build must not recompile dep_nostd. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling dep_forbid"),
+        "Repeat build must not recompile dep_forbid. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling dep_empty"),
+        "Repeat build must not recompile dep_empty. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling dep_trans"),
+        "Repeat build must not recompile dep_trans. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling app"),
+        "Repeat build must not recompile app. Stderr:\n{stderr2}"
+    );
+
+    // Pass 3: Source change in a skipped crate triggers recompilation of only that crate and dependents
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        nostd_dir.join("src/lib.rs"),
+        "#![no_std]\npub fn add(a: usize, b: usize) -> usize { a + b + 0 }\n",
+    )
+    .expect("touch dep_nostd lib.rs");
+
+    let output3 = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("rebuild after touch");
+    assert!(output3.status.success(), "Rebuild after touch must succeed");
+    let stderr3 = strip_ansi(&String::from_utf8_lossy(&output3.stderr));
+
+    assert!(
+        stderr3.contains("Compiling dep_nostd"),
+        "Modified skipped crate must be recompiled. Stderr:\n{stderr3}"
+    );
+    assert!(
+        stderr3.contains("Compiling app"),
+        "Downstream app must be recompiled. Stderr:\n{stderr3}"
+    );
+    assert!(
+        !stderr3.contains("Compiling dep_forbid"),
+        "Unmodified dep_forbid must remain fresh. Stderr:\n{stderr3}"
+    );
+    assert!(
+        !stderr3.contains("Compiling dep_empty"),
+        "Unmodified dep_empty must remain fresh. Stderr:\n{stderr3}"
+    );
+    assert!(
+        !stderr3.contains("Compiling dep_trans"),
+        "Unmodified dep_trans must remain fresh. Stderr:\n{stderr3}"
+    );
+
+    // Pass 4: Subsequent repeat build is fresh again
+    let output4 = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("second repeat build");
+    assert!(output4.status.success(), "Second repeat build must succeed");
+    let stderr4 = strip_ansi(&String::from_utf8_lossy(&output4.stderr));
+    assert!(
+        !stderr4.contains("Compiling dep_nostd"),
+        "Second repeat build must not recompile dep_nostd. Stderr:\n{stderr4}"
+    );
+    assert!(
+        !stderr4.contains("Compiling app"),
+        "Second repeat build must not recompile app. Stderr:\n{stderr4}"
+    );
+}

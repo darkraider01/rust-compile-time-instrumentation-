@@ -50,9 +50,20 @@ impl UnitId {
     /// in the artifact path, so it is the identity shared by the wrapper and
     /// Cargo's `compiler-artifact` message. A crate name alone is insufficient.
     pub fn instrumentation_stamp_name(crate_name: &str, extra_filename: &str) -> Option<String> {
+        Self::format_stamp_name("transformed", crate_name, extra_filename)
+    }
+
+    /// Name of the marker proving that an exact Cargo artifact was compiled
+    /// under the current instrumentation policy and deliberately skipped
+    /// transformation for a stable eligibility reason.
+    pub fn skipped_stamp_name(crate_name: &str, extra_filename: &str) -> Option<String> {
+        Self::format_stamp_name("skipped", crate_name, extra_filename)
+    }
+
+    fn format_stamp_name(kind: &str, crate_name: &str, extra_filename: &str) -> Option<String> {
         let norm = crate_name.replace('-', "_");
         if extra_filename.is_empty() {
-            return Some(format!(".cargo-instrument-transformed-{norm}.stamp"));
+            return Some(format!(".cargo-instrument-{kind}-{norm}.stamp"));
         }
         let artifact_hash = extra_filename.strip_prefix('-')?;
         if artifact_hash.is_empty()
@@ -63,7 +74,7 @@ impl UnitId {
             return None;
         }
         Some(format!(
-            ".cargo-instrument-transformed-{norm}-{artifact_hash}.stamp"
+            ".cargo-instrument-{kind}-{norm}-{artifact_hash}.stamp"
         ))
     }
 }
@@ -102,6 +113,23 @@ mod tests {
         assert_ne!(
             UnitId::instrumentation_stamp_name("foo_bar", "-first"),
             UnitId::instrumentation_stamp_name("foo_bar", "-second")
+        );
+    }
+
+    #[test]
+    fn test_skipped_stamp_name_is_unit_specific() {
+        assert_eq!(
+            UnitId::skipped_stamp_name("foo_bar", "-first").as_deref(),
+            Some(".cargo-instrument-skipped-foo_bar-first.stamp")
+        );
+        assert_eq!(
+            UnitId::skipped_stamp_name("foo-bar", "").as_deref(),
+            Some(".cargo-instrument-skipped-foo_bar.stamp")
+        );
+        assert_eq!(UnitId::skipped_stamp_name("bar", "no-leading-dash"), None);
+        assert_ne!(
+            UnitId::skipped_stamp_name("foo_bar", "-first"),
+            UnitId::skipped_stamp_name("foo_bar", "-second")
         );
     }
 }

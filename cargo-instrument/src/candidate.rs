@@ -139,6 +139,8 @@ pub struct DiscoveryReport {
     pub is_no_std: bool,
     /// Whether the crate exports any C-ABI symbols colliding with `otel-shim`.
     pub has_colliding_symbols: bool,
+    /// Whether submodule discovery encountered file read, UTF-8, or parse errors.
+    pub has_discovery_errors: bool,
     /// Per-function statistics of excluded functions.
     pub skipped_stats: SkippedStats,
     /// Discovered eligible function candidates.
@@ -175,6 +177,10 @@ impl DiscoveryReport {
         out.push_str(&format!(
             "has_colliding_symbols: {}\n",
             self.has_colliding_symbols
+        ));
+        out.push_str(&format!(
+            "has_discovery_errors: {}\n",
+            self.has_discovery_errors
         ));
         out.push_str(&format!("skipped_stats: {:?}\n\n", self.skipped_stats));
         out.push_str("candidates:\n");

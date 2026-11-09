@@ -619,6 +619,7 @@ fn test_discovery_report_format_debug() {
         unsafe_policy: UnsafePolicy::Allowed,
         is_no_std: false,
         has_colliding_symbols: false,
+        has_discovery_errors: false,
         skipped_stats: Default::default(),
         candidates: Vec::new(),
         spawn_sites: Vec::new(),
@@ -626,6 +627,7 @@ fn test_discovery_report_format_debug() {
     let formatted_empty = empty_report.format_debug();
     assert!(formatted_empty.contains("crate: empty_crate"));
     assert!(formatted_empty.contains("unsafe_policy: Allowed"));
+    assert!(formatted_empty.contains("has_discovery_errors: false"));
     assert!(formatted_empty.contains("(none)"));
 
     // 2. Non-empty candidates
@@ -635,6 +637,7 @@ fn test_discovery_report_format_debug() {
         unsafe_policy: UnsafePolicy::Forbidden,
         is_no_std: true,
         has_colliding_symbols: false,
+        has_discovery_errors: false,
         skipped_stats: Default::default(),
         spawn_sites: Vec::new(),
         candidates: vec![Candidate {

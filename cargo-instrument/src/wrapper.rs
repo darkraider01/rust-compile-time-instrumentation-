@@ -90,6 +90,7 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
     let is_nested_invocation = env::var(RECURSION_GUARD_ENV).is_ok();
     let mut args_to_run = config.rustc_args.clone();
     let mut mirrored_info: Option<(MirroredCrateInfo, PathBuf)> = None;
+    let mut skipped_info: Option<SkippedCrateInfo> = None;
 
     if !is_nested_invocation {
         // 2. Parse and classify compiler invocation
@@ -243,8 +244,62 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                     }
                                 }
 
-                                // H1: Splicing pipeline integration
-                                if !report.candidates.is_empty() || !report.spawn_sites.is_empty() {
+                                let is_stable_skip = if preflight_failed
+                                    || report.has_colliding_symbols
+                                {
+                                    false
+                                } else if report.is_no_std {
+                                    eprintln!(
+                                        "warning: cargo-instrument: crate '{crate_name}' specifies `#![no_std]`. \
+                                        Skipping instrumentation per §12.3."
+                                    );
+                                    true
+                                } else if report.unsafe_policy == UnsafePolicy::Forbidden {
+                                    eprintln!(
+                                        "warning: cargo-instrument: crate '{crate_name}' specifies `#![forbid(unsafe_code)]`. \
+                                        Skipping instrumentation per R26."
+                                    );
+                                    true
+                                } else if report.candidates.is_empty()
+                                    && report.spawn_sites.is_empty()
+                                {
+                                    if report.has_discovery_errors {
+                                        eprintln!(
+                                            "warning: cargo-instrument: crate '{crate_name}' discovery had errors; omitting skip certification"
+                                        );
+                                        false
+                                    } else {
+                                        if config.debug_output {
+                                            eprintln!(
+                                                "[cargo-instrument PID={} crate={crate_name}] crate has 0 eligible candidates and 0 spawn sites; skipping instrumentation",
+                                                std::process::id()
+                                            );
+                                        }
+                                        true
+                                    }
+                                } else {
+                                    false
+                                };
+
+                                if is_stable_skip {
+                                    if let Some(out) = invocation.unit.out_dir() {
+                                        let out_dir = if out.is_absolute() {
+                                            out.to_path_buf()
+                                        } else {
+                                            current_dir.join(out)
+                                        };
+                                        skipped_info = Some(SkippedCrateInfo {
+                                            crate_name: crate_name.to_string(),
+                                            extra_filename: invocation
+                                                .unit
+                                                .extra_filename()
+                                                .map(String::from),
+                                            out_dir,
+                                        });
+                                    }
+                                } else if !report.candidates.is_empty()
+                                    || !report.spawn_sites.is_empty()
+                                {
                                     let r4_native_otel_rlib = match session_plan
                                         .r4_native_otel_artifact_for(
                                             &resolved_path,
@@ -267,18 +322,6 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                         eprintln!(
                                                 "warning: cargo-instrument: crate '{crate_name}' exports an ABI symbol conflicting with otel-shim. \
                                                 Skipping instrumentation per S11 fail-open."
-                                            );
-                                        None
-                                    } else if report.is_no_std {
-                                        eprintln!(
-                                                "warning: cargo-instrument: crate '{crate_name}' specifies `#![no_std]`. \
-                                                Skipping instrumentation per §12.3."
-                                            );
-                                        None
-                                    } else if report.unsafe_policy == UnsafePolicy::Forbidden {
-                                        eprintln!(
-                                                "warning: cargo-instrument: crate '{crate_name}' specifies `#![forbid(unsafe_code)]`. \
-                                                Skipping instrumentation per R26."
                                             );
                                         None
                                     } else if use_sentinel {
@@ -454,23 +497,97 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
     if status.success() {
         if let Some((info, out_dir)) = &mirrored_info {
             remap_dep_info_files(out_dir, info);
-            // Only a successful compile from a mirrored source tree may
-            // certify an artifact as transformed.  Skipped and fail-open
-            // invocations intentionally leave no marker.
             if let Some(extra) = info.extra_filename.as_deref() {
                 if let Some(stamp_name) =
                     UnitId::instrumentation_stamp_name(&info.crate_name, extra)
                 {
-                    let _ = fs::write(out_dir.join(stamp_name), b"1");
+                    let _ = write_atomic_stamp(out_dir, &stamp_name);
+                }
+                if let Some(stamp_name) = UnitId::skipped_stamp_name(&info.crate_name, extra) {
+                    remove_stamp_file(out_dir, &stamp_name);
                 }
             }
             if let Some(stamp_name) = UnitId::instrumentation_stamp_name(&info.crate_name, "") {
-                let _ = fs::write(out_dir.join(stamp_name), b"1");
+                let _ = write_atomic_stamp(out_dir, &stamp_name);
+            }
+            if let Some(stamp_name) = UnitId::skipped_stamp_name(&info.crate_name, "") {
+                remove_stamp_file(out_dir, &stamp_name);
+            }
+        } else if let Some(skipped) = &skipped_info {
+            if let Some(extra) = skipped.extra_filename.as_deref() {
+                if let Some(stamp_name) = UnitId::skipped_stamp_name(&skipped.crate_name, extra) {
+                    let _ = write_atomic_stamp(&skipped.out_dir, &stamp_name);
+                }
+                if let Some(stamp_name) =
+                    UnitId::instrumentation_stamp_name(&skipped.crate_name, extra)
+                {
+                    remove_stamp_file(&skipped.out_dir, &stamp_name);
+                }
+            }
+            if let Some(stamp_name) = UnitId::skipped_stamp_name(&skipped.crate_name, "") {
+                let _ = write_atomic_stamp(&skipped.out_dir, &stamp_name);
+            }
+            if let Some(stamp_name) = UnitId::instrumentation_stamp_name(&skipped.crate_name, "") {
+                remove_stamp_file(&skipped.out_dir, &stamp_name);
+            }
+        }
+    } else {
+        if let Some((info, out_dir)) = &mirrored_info {
+            if let Some(extra) = info.extra_filename.as_deref() {
+                if let Some(name) = UnitId::instrumentation_stamp_name(&info.crate_name, extra) {
+                    remove_stamp_file(out_dir, &name);
+                }
+                if let Some(name) = UnitId::skipped_stamp_name(&info.crate_name, extra) {
+                    remove_stamp_file(out_dir, &name);
+                }
+            }
+            if let Some(name) = UnitId::instrumentation_stamp_name(&info.crate_name, "") {
+                remove_stamp_file(out_dir, &name);
+            }
+            if let Some(name) = UnitId::skipped_stamp_name(&info.crate_name, "") {
+                remove_stamp_file(out_dir, &name);
+            }
+        } else if let Some(skipped) = &skipped_info {
+            if let Some(extra) = skipped.extra_filename.as_deref() {
+                if let Some(name) = UnitId::skipped_stamp_name(&skipped.crate_name, extra) {
+                    remove_stamp_file(&skipped.out_dir, &name);
+                }
+                if let Some(name) = UnitId::instrumentation_stamp_name(&skipped.crate_name, extra) {
+                    remove_stamp_file(&skipped.out_dir, &name);
+                }
+            }
+            if let Some(name) = UnitId::skipped_stamp_name(&skipped.crate_name, "") {
+                remove_stamp_file(&skipped.out_dir, &name);
+            }
+            if let Some(name) = UnitId::instrumentation_stamp_name(&skipped.crate_name, "") {
+                remove_stamp_file(&skipped.out_dir, &name);
             }
         }
     }
 
     Ok(status.code().unwrap_or(1))
+}
+
+#[derive(Debug, Clone)]
+pub struct SkippedCrateInfo {
+    pub crate_name: String,
+    pub extra_filename: Option<String>,
+    pub out_dir: PathBuf,
+}
+
+fn write_atomic_stamp(out_dir: &Path, stamp_name: &str) -> std::io::Result<()> {
+    let target = out_dir.join(stamp_name);
+    let tmp = out_dir.join(format!(".{stamp_name}.tmp.{}", std::process::id()));
+    fs::write(&tmp, b"1")?;
+    if let Err(err) = fs::rename(&tmp, &target) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn remove_stamp_file(out_dir: &Path, stamp_name: &str) {
+    let _ = fs::remove_file(out_dir.join(stamp_name));
 }
 
 #[derive(Debug, Clone)]

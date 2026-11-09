@@ -66,6 +66,7 @@ pub fn analyze_source_file(
     let mut spawn_sites = Vec::new();
     let mut skipped_stats = SkippedStats::default();
     let mut has_colliding_symbols = false;
+    let mut has_discovery_errors = false;
 
     analyze_file_and_submodules(
         root_path,
@@ -76,6 +77,7 @@ pub fn analyze_source_file(
         &mut spawn_sites,
         &mut skipped_stats,
         &mut has_colliding_symbols,
+        &mut has_discovery_errors,
     );
 
     Ok(DiscoveryReport {
@@ -84,6 +86,7 @@ pub fn analyze_source_file(
         unsafe_policy,
         is_no_std,
         has_colliding_symbols,
+        has_discovery_errors,
         skipped_stats,
         candidates,
         spawn_sites,
@@ -110,6 +113,7 @@ pub fn analyze_source_str(
     let mut spawn_sites = Vec::new();
     let mut skipped_stats = SkippedStats::default();
     let mut has_colliding_symbols = false;
+    let mut has_discovery_errors = false;
 
     analyze_file_and_submodules(
         source_path,
@@ -120,6 +124,7 @@ pub fn analyze_source_str(
         &mut spawn_sites,
         &mut skipped_stats,
         &mut has_colliding_symbols,
+        &mut has_discovery_errors,
     );
 
     Ok(DiscoveryReport {
@@ -128,6 +133,7 @@ pub fn analyze_source_str(
         unsafe_policy,
         is_no_std,
         has_colliding_symbols,
+        has_discovery_errors,
         skipped_stats,
         candidates,
         spawn_sites,
@@ -150,6 +156,7 @@ fn analyze_file_and_submodules(
     spawn_sites: &mut Vec<SpawnSite>,
     skipped_stats: &mut SkippedStats,
     has_colliding_symbols: &mut bool,
+    has_discovery_errors: &mut bool,
 ) {
     let canonical = file_path
         .canonicalize()
@@ -208,6 +215,7 @@ fn analyze_file_and_submodules(
         spawn_sites,
         skipped_stats,
         has_colliding_symbols,
+        has_discovery_errors,
     );
 }
 
@@ -222,6 +230,7 @@ fn discover_submodules(
     spawn_sites: &mut Vec<SpawnSite>,
     skipped_stats: &mut SkippedStats,
     has_colliding_symbols: &mut bool,
+    has_discovery_errors: &mut bool,
 ) {
     for item in items {
         if let syn::Item::Mod(item_mod) = item {
@@ -249,6 +258,7 @@ fn discover_submodules(
                     spawn_sites,
                     skipped_stats,
                     has_colliding_symbols,
+                    has_discovery_errors,
                 );
             } else {
                 // Out-of-line module: mod foo;
@@ -268,6 +278,7 @@ fn discover_submodules(
                                         spawn_sites,
                                         skipped_stats,
                                         has_colliding_symbols,
+                                        has_discovery_errors,
                                     );
                                 }
                                 Err(e) => {
@@ -275,6 +286,7 @@ fn discover_submodules(
                                         "warning: cargo-instrument: failed to parse submodule '{}': {e}",
                                         target_file.display()
                                     );
+                                    *has_discovery_errors = true;
                                 }
                             },
                             Err(e) => {
@@ -282,6 +294,7 @@ fn discover_submodules(
                                     "warning: cargo-instrument: submodule '{}' is not valid UTF-8: {e}",
                                     target_file.display()
                                 );
+                                *has_discovery_errors = true;
                             }
                         },
                         Err(e) => {
@@ -289,6 +302,7 @@ fn discover_submodules(
                                 "warning: cargo-instrument: failed to read submodule '{}': {e}",
                                 target_file.display()
                             );
+                            *has_discovery_errors = true;
                         }
                     }
                 }

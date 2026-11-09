@@ -843,6 +843,22 @@ fn uninstrumented_fresh_package_ids(
         if !message["fresh"].as_bool().unwrap_or(false) {
             continue;
         }
+        // Build scripts (custom-build) and proc macros are never instrumented by the wrapper.
+        // Ignore non-library, non-binary targets so fresh build scripts don't falsely dirty the package.
+        let is_instrumentable = message["target"]["kind"]
+            .as_array()
+            .map(|kinds| {
+                kinds.iter().any(|k| {
+                    matches!(
+                        k.as_str(),
+                        Some("lib" | "rlib" | "dylib" | "cdylib" | "staticlib" | "bin")
+                    )
+                })
+            })
+            .unwrap_or(true);
+        if !is_instrumentable {
+            continue;
+        }
         let Some(target_name) = message["target"]["name"].as_str() else {
             uninstrumented.insert(pkg_id.to_string());
             continue;
@@ -863,7 +879,8 @@ fn uninstrumented_fresh_package_ids(
 
         let norm_target = target_name.replace('-', "_");
         let mut artifact_mtimes = Vec::new();
-        let mut stamp_files = std::collections::HashSet::new();
+        let mut transformed_stamps = std::collections::HashSet::new();
+        let mut skipped_stamps = std::collections::HashSet::new();
         for file_str in &target_files {
             let p = Path::new(file_str);
             let file_path = if p.is_absolute() {
@@ -880,31 +897,36 @@ fn uninstrumented_fresh_package_ids(
             let Some(parent_dir) = file_path.parent() else {
                 continue;
             };
-            let Some(stamp_name) = artifact_stamp_name(&norm_target, &file_path) else {
+            let Some((trans_name, skip_name)) = artifact_stamp_names(&norm_target, &file_path)
+            else {
                 continue;
             };
-            let stamp_file = if parent_dir.ends_with("deps") {
-                parent_dir.join(stamp_name)
+            let stamp_dir = if parent_dir.ends_with("deps") {
+                parent_dir.to_path_buf()
             } else {
-                parent_dir.join("deps").join(stamp_name)
+                parent_dir.join("deps")
             };
             artifact_mtimes.push(file_mtime);
-            stamp_files.insert(stamp_file);
+            transformed_stamps.insert(stamp_dir.join(trans_name));
+            skipped_stamps.insert(stamp_dir.join(skip_name));
         }
 
-        let is_valid_instrumented = !artifact_mtimes.is_empty()
-            && !stamp_files.is_empty()
-            && stamp_files.iter().all(|stamp_file| {
-                std::fs::metadata(stamp_file)
-                    .and_then(|metadata| metadata.modified())
-                    .map(|stamp_mtime| {
-                        artifact_mtimes
-                            .iter()
-                            .all(|mtime| stamp_mtime + std::time::Duration::from_secs(1) >= *mtime)
-                    })
-                    .unwrap_or(false)
-            });
-        if !is_valid_instrumented {
+        let is_valid = |stamps: &std::collections::HashSet<PathBuf>| -> bool {
+            !artifact_mtimes.is_empty()
+                && !stamps.is_empty()
+                && stamps.iter().all(|stamp_file| {
+                    std::fs::metadata(stamp_file)
+                        .and_then(|metadata| metadata.modified())
+                        .map(|stamp_mtime| {
+                            artifact_mtimes.iter().all(|mtime| {
+                                stamp_mtime + std::time::Duration::from_secs(1) >= *mtime
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+        };
+
+        if !is_valid(&transformed_stamps) && !is_valid(&skipped_stamps) {
             uninstrumented.insert(pkg_id.to_string());
         }
     }
@@ -914,20 +936,23 @@ fn uninstrumented_fresh_package_ids(
 /// Recover Cargo's `extra-filename` hash from a hashed artifact filename.
 /// Pairing it with the normalized target name uniquely identifies the artifact
 /// that Cargo reports as fresh.
-fn artifact_stamp_name(normalized_target: &str, artifact: &Path) -> Option<String> {
+fn artifact_stamp_names(normalized_target: &str, artifact: &Path) -> Option<(String, String)> {
     let stem = artifact.file_stem()?.to_str()?;
     let direct_prefix = format!("{normalized_target}-");
     let library_prefix = format!("lib{normalized_target}-");
-    if let Some(artifact_hash) = stem
+    let extra = if let Some(artifact_hash) = stem
         .strip_prefix(&direct_prefix)
         .or_else(|| stem.strip_prefix(&library_prefix))
     {
-        UnitId::instrumentation_stamp_name(normalized_target, &format!("-{artifact_hash}"))
+        format!("-{artifact_hash}")
     } else if stem == normalized_target || stem == format!("lib{normalized_target}") {
-        UnitId::instrumentation_stamp_name(normalized_target, "")
+        String::new()
     } else {
-        None
-    }
+        return None;
+    };
+    let transformed = UnitId::instrumentation_stamp_name(normalized_target, &extra)?;
+    let skipped = UnitId::skipped_stamp_name(normalized_target, &extra)?;
+    Some((transformed, skipped))
 }
 
 fn desired_instrumented_package_ids(
@@ -1131,7 +1156,13 @@ fn remove_package_stamps(target_dir: &Path, package_names: &[&str]) {
     // do not have their unit-specific transformed markers inadvertently removed.
     let prefixes: Vec<String> = package_names
         .iter()
-        .map(|pkg| format!(".cargo-instrument-transformed-{}-", pkg.replace('-', "_")))
+        .flat_map(|pkg| {
+            let norm = pkg.replace('-', "_");
+            [
+                format!(".cargo-instrument-transformed-{norm}-"),
+                format!(".cargo-instrument-skipped-{norm}-"),
+            ]
+        })
         .collect();
     let exact_stamps: std::collections::HashSet<String> = package_names
         .iter()
@@ -1140,6 +1171,7 @@ fn remove_package_stamps(target_dir: &Path, package_names: &[&str]) {
             [
                 format!(".instrumented_{norm}"),
                 format!(".cargo-instrument-transformed-{norm}.stamp"),
+                format!(".cargo-instrument-skipped-{norm}.stamp"),
             ]
         })
         .collect();
@@ -1271,13 +1303,19 @@ mod tests {
             let deps = temp.path().join(profile).join("deps");
             std::fs::create_dir_all(&deps).expect("create deps dir");
 
-            // Target packages to remove
+            // Target packages to remove (both transformed and skipped)
             std::fs::write(
                 deps.join(".cargo-instrument-transformed-clap-11111111.stamp"),
                 b"1",
             )
             .unwrap();
             std::fs::write(deps.join(".cargo-instrument-transformed-clap.stamp"), b"1").unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-skipped-clap-11111111.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(deps.join(".cargo-instrument-skipped-clap.stamp"), b"1").unwrap();
             std::fs::write(deps.join(".instrumented_clap"), b"1").unwrap();
             std::fs::write(
                 deps.join(".cargo-instrument-transformed-anstyle-22222222.stamp"),
@@ -1289,6 +1327,12 @@ mod tests {
                 b"1",
             )
             .unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-skipped-anstyle-22222222.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(deps.join(".cargo-instrument-skipped-anstyle.stamp"), b"1").unwrap();
 
             // Sibling packages sharing name prefixes that must NOT be removed
             std::fs::write(
@@ -1302,12 +1346,28 @@ mod tests {
             )
             .unwrap();
             std::fs::write(
+                deps.join(".cargo-instrument-skipped-clap_lex-33333333.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(deps.join(".cargo-instrument-skipped-clap_lex.stamp"), b"1").unwrap();
+            std::fs::write(
                 deps.join(".cargo-instrument-transformed-anstyle_query-44444444.stamp"),
                 b"1",
             )
             .unwrap();
             std::fs::write(
                 deps.join(".cargo-instrument-transformed-anstyle_query.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-skipped-anstyle_query-44444444.stamp"),
+                b"1",
+            )
+            .unwrap();
+            std::fs::write(
+                deps.join(".cargo-instrument-skipped-anstyle_query.stamp"),
                 b"1",
             )
             .unwrap();
@@ -1323,12 +1383,22 @@ mod tests {
             assert!(!deps
                 .join(".cargo-instrument-transformed-clap.stamp")
                 .exists());
+            assert!(!deps
+                .join(".cargo-instrument-skipped-clap-11111111.stamp")
+                .exists());
+            assert!(!deps.join(".cargo-instrument-skipped-clap.stamp").exists());
             assert!(!deps.join(".instrumented_clap").exists());
             assert!(!deps
                 .join(".cargo-instrument-transformed-anstyle-22222222.stamp")
                 .exists());
             assert!(!deps
                 .join(".cargo-instrument-transformed-anstyle.stamp")
+                .exists());
+            assert!(!deps
+                .join(".cargo-instrument-skipped-anstyle-22222222.stamp")
+                .exists());
+            assert!(!deps
+                .join(".cargo-instrument-skipped-anstyle.stamp")
                 .exists());
 
             assert!(deps
@@ -1338,11 +1408,73 @@ mod tests {
                 .join(".cargo-instrument-transformed-clap_lex.stamp")
                 .exists());
             assert!(deps
+                .join(".cargo-instrument-skipped-clap_lex-33333333.stamp")
+                .exists());
+            assert!(deps
+                .join(".cargo-instrument-skipped-clap_lex.stamp")
+                .exists());
+            assert!(deps
                 .join(".cargo-instrument-transformed-anstyle_query-44444444.stamp")
                 .exists());
             assert!(deps
                 .join(".cargo-instrument-transformed-anstyle_query.stamp")
                 .exists());
+            assert!(deps
+                .join(".cargo-instrument-skipped-anstyle_query-44444444.stamp")
+                .exists());
+            assert!(deps
+                .join(".cargo-instrument-skipped-anstyle_query.stamp")
+                .exists());
         }
+    }
+
+    #[test]
+    fn uninstrumented_fresh_package_ids_accepts_skipped_and_transformed_stamps() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let deps = temp.path().join("deps");
+        std::fs::create_dir_all(&deps).expect("create deps dir");
+
+        let artifact_path = deps.join("libutf8parse-12345678.rlib");
+        std::fs::write(&artifact_path, b"dummy rlib").expect("write artifact");
+
+        let pkg_id = "utf8parse 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)";
+        let instrumented_ids = std::collections::HashSet::from([pkg_id.to_string()]);
+        let cargo_json = format!(
+            "{{\"reason\":\"compiler-artifact\",\"package_id\":\"{pkg_id}\",\"target\":{{\"name\":\"utf8parse\"}},\"filenames\":[\"{}\"],\"fresh\":true}}\n",
+            artifact_path.display()
+        );
+
+        // 1. Without any stamp: reported as uninstrumented
+        let uninstrumented =
+            uninstrumented_fresh_package_ids(cargo_json.as_bytes(), &instrumented_ids, temp.path());
+        assert!(uninstrumented.contains(pkg_id));
+
+        // 2. With valid skipped stamp: certified, not reported as uninstrumented
+        let skipped_stamp = deps.join(".cargo-instrument-skipped-utf8parse-12345678.stamp");
+        std::fs::write(&skipped_stamp, b"1").expect("write skipped stamp");
+        let uninstrumented =
+            uninstrumented_fresh_package_ids(cargo_json.as_bytes(), &instrumented_ids, temp.path());
+        assert!(uninstrumented.is_empty());
+        let _ = std::fs::remove_file(&skipped_stamp);
+
+        // 3. With valid transformed stamp: certified, not reported as uninstrumented
+        let transformed_stamp = deps.join(".cargo-instrument-transformed-utf8parse-12345678.stamp");
+        std::fs::write(&transformed_stamp, b"1").expect("write transformed stamp");
+        let uninstrumented =
+            uninstrumented_fresh_package_ids(cargo_json.as_bytes(), &instrumented_ids, temp.path());
+        assert!(uninstrumented.is_empty());
+
+        // 4. Custom build scripts (build.rs) are not instrumented and must not dirty the package
+        let build_script_path = temp.path().join("build/utf8parse-1234/build-script-build");
+        let custom_build_json = format!(
+            "{{\"reason\":\"compiler-artifact\",\"package_id\":\"{pkg_id}\",\"target\":{{\"name\":\"build-script-build\",\"kind\":[\"custom-build\"]}},\"filenames\":[\"{}\"],\"fresh\":true}}\n",
+            build_script_path.display()
+        );
+        let uninstrumented = uninstrumented_fresh_package_ids(
+            custom_build_json.as_bytes(),
+            &instrumented_ids,
+            temp.path(),
+        );
+        assert!(uninstrumented.is_empty());
     }
 }
