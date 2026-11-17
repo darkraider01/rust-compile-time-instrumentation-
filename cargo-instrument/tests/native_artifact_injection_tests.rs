@@ -535,7 +535,7 @@ fn r4_extern_injection_path_dependency_proof() {
     let (_, session_file, rlib) = prepare_r4_session(workspace, &target);
 
     // A second plausible filename proves the wrapper is not selecting an artifact by globbing.
-    let duplicate_name = target.join("debug/deps/libopentelemetry-r4-ambiguous.rlib");
+    let duplicate_name = rlib.with_file_name("libopentelemetry-r4-ambiguous.rlib");
     fs::copy(&rlib, &duplicate_name).expect("create decoy artifact");
 
     let cold = run_cargo(

@@ -300,20 +300,22 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                 } else if !report.candidates.is_empty()
                                     || !report.spawn_sites.is_empty()
                                 {
-                                    let r4_native_otel_rlib = match session_plan
+                                    let (r4_native_otel_rlib, r4_search_paths) = match session_plan
                                         .r4_native_otel_artifact_for(
                                             &resolved_path,
                                             &config.rustc_args,
                                         ) {
-                                        Ok(artifact) => {
-                                            artifact.map(|artifact| artifact.rlib_path.clone())
-                                        }
+                                        Ok(Some(artifact)) => (
+                                            Some(artifact.rlib_path.clone()),
+                                            artifact.search_paths.clone(),
+                                        ),
+                                        Ok(None) => (None, Vec::new()),
                                         Err(reason) => {
                                             eprintln!(
                                                 "warning: cargo-instrument: R-4 native OpenTelemetry resolution for '{crate_name}' is unsafe: {reason}. \
                                                  Preserving the existing Tier-2 path per S11 fail-open."
                                             );
-                                            None
+                                            (None, Vec::new())
                                         }
                                     };
                                     let emitter: Option<Box<dyn Emitter>> = if preflight_failed {
@@ -430,6 +432,17 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                                                     "opentelemetry={}",
                                                     otel_rlib.display()
                                                 ));
+                                                for dir in &r4_search_paths {
+                                                    let flag =
+                                                        format!("dependency={}", dir.display());
+                                                    if !args_to_run
+                                                        .windows(2)
+                                                        .any(|w| w[0] == "-L" && w[1] == flag)
+                                                    {
+                                                        args_to_run.push("-L".to_string());
+                                                        args_to_run.push(flag);
+                                                    }
+                                                }
                                             }
                                         }
                                         match mirror_and_transform_crate_sources(

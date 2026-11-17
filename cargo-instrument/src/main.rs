@@ -68,11 +68,7 @@ fn is_wrapper_invocation(args: &[String]) -> bool {
     }
 
     // Also check if args[1] is an executable file path and not a flag
-    if !first.starts_with('-') && !first.ends_with(".rs") && path.exists() {
-        return true;
-    }
-
-    false
+    !first.starts_with('-') && !first.ends_with(".rs") && path.exists()
 }
 
 /// Handle CLI entry point (`cargo instrument [OPTIONS] -- <cargo args...>`).
@@ -901,20 +897,45 @@ fn uninstrumented_fresh_package_ids(
             else {
                 continue;
             };
-            let stamp_dir = if parent_dir.ends_with("deps") {
-                parent_dir.to_path_buf()
-            } else {
-                parent_dir.join("deps")
-            };
+            let mut candidate_stamp_dirs = vec![parent_dir.to_path_buf(), parent_dir.join("deps")];
+            let build_target_dir = parent_dir.join("build").join(&norm_target);
+            if let Ok(entries) = std::fs::read_dir(&build_target_dir) {
+                for entry in entries.flatten() {
+                    candidate_stamp_dirs.push(entry.path().join("out"));
+                }
+            }
+
+            let mut found_stamp = false;
+            for stamp_dir in &candidate_stamp_dirs {
+                let trans_path = stamp_dir.join(&trans_name);
+                let skip_path = stamp_dir.join(&skip_name);
+                if trans_path.exists() {
+                    transformed_stamps.insert(trans_path);
+                    found_stamp = true;
+                }
+                if skip_path.exists() {
+                    skipped_stamps.insert(skip_path);
+                    found_stamp = true;
+                }
+            }
+            if !found_stamp {
+                let default_dir = if parent_dir.ends_with("deps") {
+                    parent_dir.to_path_buf()
+                } else if parent_dir.join("deps").is_dir() {
+                    parent_dir.join("deps")
+                } else {
+                    parent_dir.to_path_buf()
+                };
+                transformed_stamps.insert(default_dir.join(trans_name));
+                skipped_stamps.insert(default_dir.join(skip_name));
+            }
             artifact_mtimes.push(file_mtime);
-            transformed_stamps.insert(stamp_dir.join(trans_name));
-            skipped_stamps.insert(stamp_dir.join(skip_name));
         }
 
         let is_valid = |stamps: &std::collections::HashSet<PathBuf>| -> bool {
             !artifact_mtimes.is_empty()
                 && !stamps.is_empty()
-                && stamps.iter().all(|stamp_file| {
+                && stamps.iter().any(|stamp_file| {
                     std::fs::metadata(stamp_file)
                         .and_then(|metadata| metadata.modified())
                         .map(|stamp_mtime| {
@@ -1177,13 +1198,32 @@ fn remove_package_stamps(target_dir: &Path, package_names: &[&str]) {
         .collect();
 
     for profile in ["debug", "release"] {
-        let deps = target_dir.join(profile).join("deps");
-        if let Ok(entries) = std::fs::read_dir(&deps) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if exact_stamps.contains(&name) || prefixes.iter().any(|p| name.starts_with(p)) {
-                    let _ = std::fs::remove_file(entry.path());
-                }
+        let profile_dir = target_dir.join(profile);
+        for sub in ["deps", "build"] {
+            let dir = profile_dir.join(sub);
+            if dir.is_dir() {
+                remove_matching_stamps_in_dir(&dir, &exact_stamps, &prefixes);
+            }
+        }
+    }
+}
+
+fn remove_matching_stamps_in_dir(
+    dir: &Path,
+    exact_stamps: &std::collections::HashSet<String>,
+    prefixes: &[String],
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            remove_matching_stamps_in_dir(&path, exact_stamps, prefixes);
+        } else {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if exact_stamps.contains(&name) || prefixes.iter().any(|p| name.starts_with(p)) {
+                let _ = std::fs::remove_file(path);
             }
         }
     }

@@ -49,6 +49,34 @@ fn run_cargo(manifest_dir: &Path, target_dir: &Path, args: &[&str], instrumented
     cmd.output().expect("failed to execute cargo")
 }
 
+fn find_all_mirror_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut mirrors = Vec::new();
+    find_mirrors_recursive(dir, &mut mirrors);
+    mirrors
+}
+
+fn find_mirrors_recursive(dir: &Path, acc: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() == "instrumented_sources" {
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            let sub_path = sub.path();
+                            if sub_path.is_dir() {
+                                acc.push(sub_path);
+                            }
+                        }
+                    }
+                } else {
+                    find_mirrors_recursive(&path, acc);
+                }
+            }
+        }
+    }
+}
+
 fn describe(output: &Output) -> String {
     format!(
         "exit: {:?}\n--- stdout ---\n{}\n--- stderr ---\n{}",
@@ -172,23 +200,7 @@ fn test_scale_graph_100_units_parallel_compilation() {
     );
 
     // 3. Verify mirror directory isolation: exactly 104 library mirrors should be created
-    let mirror_root = target_dir
-        .join("debug")
-        .join("deps")
-        .join("instrumented_sources");
-    assert!(
-        mirror_root.is_dir(),
-        "instrumented_sources directory must exist at {}",
-        mirror_root.display()
-    );
-
-    let entries: Vec<_> = fs::read_dir(&mirror_root)
-        .expect("read instrumented_sources")
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .collect();
-
-    // Each crate must have its own isolated mirror directory
+    let entries = find_all_mirror_dirs(&target_dir);
     assert!(
         entries.len() >= 104,
         "expected at least 104 isolated mirror directories, found {}. Mirrors: {:?}",
@@ -198,7 +210,7 @@ fn test_scale_graph_100_units_parallel_compilation() {
 
     // 4. Verify no temporary staging files (.tmp.<pid>.*) leaked in any mirror directory
     for entry in &entries {
-        for file in fs::read_dir(entry.path().join("src"))
+        for file in fs::read_dir(entry.join("src"))
             .into_iter()
             .flatten()
             .flatten()
@@ -589,16 +601,7 @@ fn test_scale_graph_deep_linear_chain_execution() {
         "expected CHAIN_RESULT=15, got:\n{stdout}"
     );
 
-    let mirror_root = target_dir
-        .join("debug")
-        .join("deps")
-        .join("instrumented_sources");
-    let entries: Vec<_> = fs::read_dir(&mirror_root)
-        .expect("read instrumented_sources")
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .collect();
-
+    let entries = find_all_mirror_dirs(&target_dir);
     assert!(
         entries.len() >= chain_len,
         "expected at least {chain_len} mirror directories, found {}. Mirrors: {:?}",

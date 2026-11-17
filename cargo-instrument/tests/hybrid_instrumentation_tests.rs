@@ -245,25 +245,21 @@ pub fn unannotated_clean(x: i32) -> i32 {
 
     // Inspect mirrored files: verify unannotated_clean is instrumented,
     // while function_with_propagate_context and function_with_body_context are NOT.
-    let mirror_dir = target_dir
-        .join("debug")
-        .join("deps")
-        .join("instrumented_sources");
+    let mut mirror_dirs = Vec::new();
+    find_mirrors_recursive(&target_dir, &mut mirror_dirs);
 
     let mut mirrored_lib_paths = Vec::new();
-    if let Ok(entries) = fs::read_dir(&mirror_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path().join("src").join("lib.rs");
-            if path.exists() {
-                mirrored_lib_paths.push(path);
-            }
+    for dir in &mirror_dirs {
+        let path = dir.join("src").join("lib.rs");
+        if path.exists() {
+            mirrored_lib_paths.push(path);
         }
     }
 
     assert!(
         !mirrored_lib_paths.is_empty(),
-        "Expected at least one mirrored source file in {:?}",
-        mirror_dir
+        "Expected at least one mirrored source file under {:?}",
+        target_dir
     );
 
     let mirrored_content =
@@ -614,4 +610,26 @@ async fn test_async_parenting() {
         "async_suite tests failed under cargo-instrument!\n{}",
         describe(&output)
     );
+}
+
+fn find_mirrors_recursive(dir: &Path, acc: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() == "instrumented_sources" {
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            let sub_path = sub.path();
+                            if sub_path.is_dir() {
+                                acc.push(sub_path);
+                            }
+                        }
+                    }
+                } else {
+                    find_mirrors_recursive(&path, acc);
+                }
+            }
+        }
+    }
 }

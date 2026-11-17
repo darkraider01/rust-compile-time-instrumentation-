@@ -1150,20 +1150,21 @@ fn main() {
     );
 
     // 3. Verify the mirrored source exists under target/instrumented and contains the sentinel
-    let instrumented_sources = target_dir
-        .join("debug")
-        .join("deps")
-        .join("instrumented_sources");
-
-    let live_pkg_dir = fs::read_dir(&instrumented_sources)
-        .ok()
-        .and_then(|entries| {
-            entries.flatten().map(|e| e.path()).find(|p| {
-                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                name == "live_pkg" || name.starts_with("live_pkg-")
-            })
+    let mut mirror_dirs = Vec::new();
+    find_mirrors_recursive(&target_dir, &mut mirror_dirs);
+    let live_pkg_dir = mirror_dirs
+        .into_iter()
+        .find(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name == "live_pkg" || name.starts_with("live_pkg-")
         })
-        .unwrap_or_else(|| instrumented_sources.join("live_pkg"));
+        .unwrap_or_else(|| {
+            target_dir
+                .join("debug")
+                .join("deps")
+                .join("instrumented_sources")
+                .join("live_pkg")
+        });
 
     let mirrored_sources_dir = live_pkg_dir.join("src");
 
@@ -1304,4 +1305,26 @@ fn main() {
         !original_content.contains("__cargo_instrument_anchor"),
         "Original source was modified in-place!"
     );
+}
+
+fn find_mirrors_recursive(dir: &Path, acc: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() == "instrumented_sources" {
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            let sub_path = sub.path();
+                            if sub_path.is_dir() {
+                                acc.push(sub_path);
+                            }
+                        }
+                    }
+                } else {
+                    find_mirrors_recursive(&path, acc);
+                }
+            }
+        }
+    }
 }

@@ -692,11 +692,14 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
         String::from_utf8_lossy(&output1.stderr)
     );
 
-    // Verify stamp files in target/instrumented/debug/deps
-    let deps_dir = ws_root.join("target/instrumented/debug/deps");
-    let entries: Vec<String> = fs::read_dir(&deps_dir)
-        .expect("read deps dir")
-        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
+    // Verify stamp files in target/instrumented/debug (deps or build/*/out)
+    let stamp_paths = get_stamps_matching(
+        &ws_root.join("target/instrumented/debug"),
+        ".cargo-instrument-",
+    );
+    let entries: Vec<String> = stamp_paths
+        .iter()
+        .filter_map(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
         .collect();
 
     // dep_nostd, dep_forbid, dep_empty must have skipped stamps
@@ -821,21 +824,30 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
     );
 }
 
-fn get_stamps_matching(deps_dir: &Path, prefix: &str) -> Vec<PathBuf> {
-    if !deps_dir.exists() {
-        return Vec::new();
-    }
+fn get_stamps_matching(dir: &Path, prefix: &str) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    if let Ok(entries) = fs::read_dir(deps_dir) {
+    find_stamps_recursive(dir, prefix, &mut files);
+    files.sort();
+    files
+}
+
+fn find_stamps_recursive(dir: &Path, prefix: &str, files: &mut Vec<PathBuf>) {
+    if !dir.exists() {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with(prefix) {
-                files.push(entry.path());
+            let path = entry.path();
+            if path.is_dir() {
+                find_stamps_recursive(&path, prefix, files);
+            } else {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(prefix) {
+                    files.push(path);
+                }
             }
         }
     }
-    files.sort();
-    files
 }
 
 fn latest_mtime(paths: &[PathBuf]) -> Option<std::time::SystemTime> {
@@ -1185,7 +1197,7 @@ fn main() {{
     }
 
     fn get_stamps(&self, prefix: &str) -> Vec<PathBuf> {
-        get_stamps_matching(&self.target_dir.join("debug/deps"), prefix)
+        get_stamps_matching(&self.target_dir.join("debug"), prefix)
     }
 
     fn latest_stamp_mtime(&self, prefix: &str) -> Option<std::time::SystemTime> {

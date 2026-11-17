@@ -131,29 +131,41 @@ fn run_verbose(root: &Path) -> Output {
     )
 }
 
-fn find_mirror_root(target_dir: &Path) -> PathBuf {
-    let instrumented = target_dir.join("instrumented/debug/deps/instrumented_sources");
-    if instrumented.is_dir() {
-        return instrumented;
+fn find_all_mirror_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut mirrors = Vec::new();
+    find_mirrors_recursive(dir, &mut mirrors);
+    mirrors
+}
+
+fn find_mirrors_recursive(dir: &Path, acc: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() == "instrumented_sources" {
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            let sub_path = sub.path();
+                            if sub_path.is_dir() {
+                                acc.push(sub_path);
+                            }
+                        }
+                    }
+                } else {
+                    find_mirrors_recursive(&path, acc);
+                }
+            }
+        }
     }
-    target_dir.join("debug/deps/instrumented_sources")
 }
 
 fn count_mirrors(target_dir: &Path) -> usize {
-    let mirror_root = find_mirror_root(target_dir);
-    if !mirror_root.is_dir() {
-        return 0;
-    }
-    fs::read_dir(&mirror_root)
-        .expect("read mirror root")
-        .filter_map(Result::ok)
-        .filter(|e| e.path().is_dir())
-        .count()
+    find_all_mirror_dirs(target_dir).len()
 }
 
 fn verify_native_mirrors(target_dir: &Path, expected_scopes: &[&str]) {
-    let mirror_root = find_mirror_root(target_dir);
-    assert!(mirror_root.is_dir(), "mirror directory must exist");
+    let mirror_dirs = find_all_mirror_dirs(target_dir);
+    assert!(!mirror_dirs.is_empty(), "mirror directory must exist");
 
     let mut found_scopes = HashSet::new();
     fn search_dir(dir: &Path, found: &mut HashSet<String>) {
@@ -179,7 +191,9 @@ fn verify_native_mirrors(target_dir: &Path, expected_scopes: &[&str]) {
         }
     }
 
-    search_dir(&mirror_root, &mut found_scopes);
+    for dir in &mirror_dirs {
+        search_dir(dir, &mut found_scopes);
+    }
     for scope in expected_scopes {
         assert!(
             found_scopes.contains(*scope),
@@ -753,9 +767,9 @@ fn test_public_workflow_incremental_cycles_at_scale() {
         snapshot(root),
         "dependency build must not modify other inputs"
     );
-    let mirror_dir = find_mirror_root(&root.join("target"));
+    let mirror_dirs = find_all_mirror_dirs(&root.join("target"));
     assert!(
-        mirror_contains_text(&mirror_dir, "999"),
+        mirror_dirs.iter().any(|d| mirror_contains_text(d, "999")),
         "modified dependency must be re-instrumented into mirror"
     );
 
@@ -887,8 +901,8 @@ fn main() {{
         "must select Tier-2 fallback when native opentelemetry is absent:\n{stderr}"
     );
 
-    let mirror_root = find_mirror_root(&root.join("target"));
-    assert!(mirror_root.is_dir());
+    let mirror_dirs = find_all_mirror_dirs(&root.join("target"));
+    assert!(!mirror_dirs.is_empty(), "mirror directory must exist");
 
     // Check trampoline generation in mirrored sources
     let mut found_trampoline = false;
@@ -909,7 +923,12 @@ fn main() {{
             }
         }
     }
-    search_trampoline(&mirror_root, &mut found_trampoline);
+    for dir in &mirror_dirs {
+        search_trampoline(dir, &mut found_trampoline);
+        if found_trampoline {
+            break;
+        }
+    }
     assert!(
         found_trampoline,
         "mirrored files must contain C-ABI trampolines"

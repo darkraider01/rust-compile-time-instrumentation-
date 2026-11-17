@@ -70,8 +70,61 @@ fn write_file(path: &Path, contents: &str) {
     fs::write(path, contents).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
 }
 
-/// `<target-dir>/debug/deps/instrumented_sources` — the directory `wrapper.rs`
-/// mirrors instrumented crate sources into, one subdirectory per `--crate-name`.
+fn find_all_mirror_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut mirrors = Vec::new();
+    find_mirrors_recursive(dir, &mut mirrors);
+    mirrors
+}
+
+fn find_mirrors_recursive(dir: &Path, acc: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() == "instrumented_sources" {
+                    if let Ok(sub_entries) = fs::read_dir(&path) {
+                        for sub in sub_entries.flatten() {
+                            let sub_path = sub.path();
+                            if sub_path.is_dir() {
+                                acc.push(sub_path);
+                            }
+                        }
+                    }
+                } else {
+                    find_mirrors_recursive(&path, acc);
+                }
+            }
+        }
+    }
+}
+
+fn mirror_dir_path(target_dir: &Path, dir_name: &str) -> PathBuf {
+    if let Some(path) = find_all_mirror_dirs(target_dir)
+        .into_iter()
+        .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(dir_name))
+    {
+        path
+    } else {
+        mirror_root(target_dir).join(dir_name)
+    }
+}
+
+fn clean_all_mirrors(dir: &Path) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if entry.file_name() == "instrumented_sources" {
+                    let _ = fs::remove_dir_all(&path);
+                } else {
+                    clean_all_mirrors(&path);
+                }
+            }
+        }
+    }
+}
+
+/// `<target-dir>/debug/deps/instrumented_sources` — legacy fallback directory
 fn mirror_root(target_dir: &Path) -> PathBuf {
     target_dir
         .join("debug")
@@ -81,14 +134,9 @@ fn mirror_root(target_dir: &Path) -> PathBuf {
 
 /// Sorted names of every per-crate mirror directory produced by a build.
 fn mirror_dirs(target_dir: &Path) -> Vec<String> {
-    let root = mirror_root(target_dir);
-    let Ok(entries) = fs::read_dir(&root) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
+    let mut names: Vec<String> = find_all_mirror_dirs(target_dir)
+        .into_iter()
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .collect();
     names.sort();
     names
@@ -326,7 +374,7 @@ fn test_multiple_versions_of_one_package_must_not_share_a_mirror() {
 
     // Mechanism assertion 2: no single mirror may hold sources from both versions.
     for dir_name in &foo_mirrors {
-        let files = rs_file_names_under(&mirror_root(&instrumented_target).join(dir_name));
+        let files = rs_file_names_under(&mirror_dir_path(&instrumented_target, dir_name));
         let has_v1 = files.iter().any(|f| f == "only_v1.rs");
         let has_v2 = files.iter().any(|f| f == "only_v2.rs");
         assert!(
@@ -566,7 +614,7 @@ fn test_no_shim_provider_must_not_emit_trampolines() {
     // Checked first because mirroring precedes `rustc`, so this evidence survives the
     // link failure that follows from it.
     for dir_name in mirror_dirs_for(&target_dir, "dep_lib") {
-        let dir = mirror_root(&target_dir).join(&dir_name);
+        let dir = mirror_dir_path(&target_dir, &dir_name);
         assert!(
             !contains_trampoline_symbols(&dir),
             "mirror '{dir_name}' had C-ABI trampolines spliced into it, but no crate in \
@@ -659,10 +707,7 @@ fn test_d1_session_cache_fingerprint_invalidation_both_directions() {
     );
 
     // Clean mirror directory from Step 1 to isolate Step 2's mirror creation
-    let mirror_path = mirror_root(&target_dir);
-    if mirror_path.exists() {
-        let _ = fs::remove_dir_all(&mirror_path);
-    }
+    clean_all_mirrors(&target_dir);
 
     let out2 = run_cargo_instrument_cli(&app_dir, &target_dir, &["build"]);
     assert!(
@@ -718,7 +763,7 @@ fn test_d1_session_cache_fingerprint_invalidation_both_directions() {
     let dep_mirrors = mirror_dirs_for(&target_dir, "dep_lib");
     assert!(!dep_mirrors.is_empty(), "dep_lib must have mirror");
     let has_trampoline = dep_mirrors.iter().any(|d| {
-        let dir = mirror_root(&target_dir).join(d);
+        let dir = mirror_dir_path(&target_dir, d);
         contains_trampoline_symbols(&dir)
     });
     assert!(
@@ -926,7 +971,7 @@ fn test_d3_cli_session_plan_respects_manifest_path_flag() {
     let dep_mirrors = mirror_dirs_for(&target_dir, "dep_lib");
     assert!(!dep_mirrors.is_empty(), "dep_lib must have mirror");
     let has_trampoline = dep_mirrors.iter().any(|d| {
-        let dir = mirror_root(&target_dir).join(d);
+        let dir = mirror_dir_path(&target_dir, d);
         contains_trampoline_symbols(&dir)
     });
     assert!(
@@ -1026,7 +1071,7 @@ fn test_g7_mixed_provider_workspace_fails_open_for_common_dep() {
     // Verify common was not instrumented with Tier-2 trampolines
     let common_mirrors = mirror_dirs_for(&target_dir, "common");
     let has_trampoline = common_mirrors.iter().any(|d| {
-        let dir = mirror_root(&target_dir).join(d);
+        let dir = mirror_dir_path(&target_dir, d);
         contains_trampoline_symbols(&dir)
     });
     assert!(
@@ -1117,7 +1162,7 @@ fn test_g7_single_binary_with_shim_instruments_common_dep() {
         "common must have a mirror directory in single-binary workspace"
     );
     let has_trampoline = common_mirrors.iter().any(|d| {
-        let dir = mirror_root(&target_dir).join(d);
+        let dir = mirror_dir_path(&target_dir, d);
         contains_trampoline_symbols(&dir)
     });
     assert!(

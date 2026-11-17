@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,6 +41,8 @@ pub struct R4NativeOtelArtifact {
     pub target: Option<String>,
     pub profile: R4Profile,
     pub rlib_path: PathBuf,
+    #[serde(default)]
+    pub search_paths: Vec<PathBuf>,
 }
 
 /// A compiled Tokio artifact reported by Cargo's `compiler-artifact` JSON message.
@@ -296,7 +298,24 @@ impl SessionPlan {
             return Ok(());
         }
 
-        let mut artifacts = Vec::new();
+        let mut edges: HashMap<&str, Vec<&str>> = HashMap::new();
+        if let Some(nodes) = metadata["resolve"]["nodes"].as_array() {
+            for node in nodes {
+                if let Some(id) = node["id"].as_str() {
+                    let deps = node["deps"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|dep| dep["pkg"].as_str())
+                        .collect();
+                    edges.insert(id, deps);
+                }
+            }
+        }
+
+        let mut artifact_dirs_by_package: HashMap<String, HashSet<PathBuf>> = HashMap::new();
+        let mut raw_candidates = Vec::new();
+
         for line in cargo_messages.split(|byte| *byte == b'\n') {
             if line.is_empty() {
                 continue;
@@ -306,6 +325,20 @@ impl SessionPlan {
             if message["reason"].as_str() != Some("compiler-artifact") {
                 continue;
             }
+
+            if let Some(pkg_id) = message["package_id"].as_str() {
+                if let Some(filenames) = message["filenames"].as_array() {
+                    for filename in filenames.iter().filter_map(|v| v.as_str()) {
+                        if let Some(parent) = Path::new(filename).parent() {
+                            artifact_dirs_by_package
+                                .entry(pkg_id.to_string())
+                                .or_default()
+                                .insert(parent.to_path_buf());
+                        }
+                    }
+                }
+            }
+
             let package_id = match message["package_id"].as_str() {
                 Some(id) if wanted_packages.contains(id) => id,
                 _ => continue,
@@ -353,19 +386,8 @@ impl SessionPlan {
             artifact_features.sort();
             artifact_features.dedup();
 
-            artifacts.push(R4NativeOtelArtifact {
-                package_id: package_id.to_string(),
-                package_version: versions_by_package
-                    .get(package_id)
-                    .cloned()
-                    .ok_or_else(|| format!("Cargo metadata lacks version for '{package_id}'"))?,
-                resolved_features: artifact_features,
-                target: target.clone(),
-                profile,
-                rlib_path: rlibs.into_iter().next().unwrap(),
-            });
-            let rlib = &artifacts.last().unwrap().rlib_path;
-            let metadata_paths = message["filenames"]
+            let rlib = rlibs.into_iter().next().unwrap();
+            let metadata_paths: Vec<PathBuf> = message["filenames"]
                 .as_array()
                 .into_iter()
                 .flatten()
@@ -373,8 +395,61 @@ impl SessionPlan {
                 .map(PathBuf::from)
                 .filter(|path| path.extension().is_some_and(|ext| ext == "rmeta"))
                 .collect();
+
+            raw_candidates.push((
+                package_id.to_string(),
+                artifact_features,
+                profile,
+                rlib,
+                metadata_paths,
+            ));
+        }
+
+        let mut artifacts = Vec::new();
+        for (package_id, artifact_features, profile, rlib_path, metadata_paths) in raw_candidates {
+            let version = versions_by_package
+                .get(&package_id)
+                .cloned()
+                .ok_or_else(|| format!("Cargo metadata lacks version for '{package_id}'"))?;
+
+            let mut closure = HashSet::new();
+            closure.insert(package_id.as_str());
+            let mut queue = VecDeque::new();
+            queue.push_back(package_id.as_str());
+            while let Some(id) = queue.pop_front() {
+                if let Some(deps) = edges.get(id) {
+                    for dep in deps {
+                        if closure.insert(*dep) {
+                            queue.push_back(*dep);
+                        }
+                    }
+                }
+            }
+
+            let mut search_paths: Vec<PathBuf> = closure
+                .iter()
+                .filter_map(|dep_id| artifact_dirs_by_package.get(*dep_id))
+                .flatten()
+                .cloned()
+                .collect();
+            if let Some(parent) = rlib_path.parent() {
+                search_paths.push(parent.to_path_buf());
+            }
+            search_paths.sort();
+            search_paths.dedup();
+
             self.artifact_metadata_paths
-                .insert(rlib.clone(), metadata_paths);
+                .insert(rlib_path.clone(), metadata_paths);
+
+            artifacts.push(R4NativeOtelArtifact {
+                package_id,
+                package_version: version,
+                resolved_features: artifact_features,
+                target: target.clone(),
+                profile,
+                rlib_path,
+                search_paths,
+            });
         }
 
         for artifact in artifacts {
