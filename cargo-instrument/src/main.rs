@@ -1480,8 +1480,14 @@ mod tests {
         let pkg_id = "utf8parse 0.2.1 (registry+https://github.com/rust-lang/crates.io-index)";
         let instrumented_ids = std::collections::HashSet::from([pkg_id.to_string()]);
         let cargo_json = format!(
-            "{{\"reason\":\"compiler-artifact\",\"package_id\":\"{pkg_id}\",\"target\":{{\"name\":\"utf8parse\"}},\"filenames\":[\"{}\"],\"fresh\":true}}\n",
-            artifact_path.display()
+            "{}\n",
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "package_id": pkg_id,
+                "target": { "name": "utf8parse" },
+                "filenames": [artifact_path],
+                "fresh": true,
+            })
         );
 
         // 1. Without any stamp: reported as uninstrumented
@@ -1507,8 +1513,14 @@ mod tests {
         // 4. Custom build scripts (build.rs) are not instrumented and must not dirty the package
         let build_script_path = temp.path().join("build/utf8parse-1234/build-script-build");
         let custom_build_json = format!(
-            "{{\"reason\":\"compiler-artifact\",\"package_id\":\"{pkg_id}\",\"target\":{{\"name\":\"build-script-build\",\"kind\":[\"custom-build\"]}},\"filenames\":[\"{}\"],\"fresh\":true}}\n",
-            build_script_path.display()
+            "{}\n",
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "package_id": pkg_id,
+                "target": { "name": "build-script-build", "kind": ["custom-build"] },
+                "filenames": [build_script_path],
+                "fresh": true,
+            })
         );
         let uninstrumented = uninstrumented_fresh_package_ids(
             custom_build_json.as_bytes(),
