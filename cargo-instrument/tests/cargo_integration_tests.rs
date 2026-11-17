@@ -820,3 +820,946 @@ otel-shim = {{ path = "{otel_shim_path_escaped}" }}
         "Second repeat build must not recompile app. Stderr:\n{stderr4}"
     );
 }
+
+fn get_stamps_matching(deps_dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    if !deps_dir.exists() {
+        return Vec::new();
+    }
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(deps_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(prefix) {
+                files.push(entry.path());
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+fn latest_mtime(paths: &[PathBuf]) -> Option<std::time::SystemTime> {
+    paths
+        .iter()
+        .filter_map(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
+        .max()
+}
+
+#[test]
+fn test_scenario_d_instrumentable_path_dependency_automatic_source_change_invalidation() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ws_root = temp_dir.path();
+
+    fs::write(
+        ws_root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "dep_trans", "dep_nostd", "dep_forbid", "dep_empty"]
+resolver = "2"
+"#,
+    )
+    .expect("write root Cargo.toml");
+
+    let trans_dir = ws_root.join("dep_trans");
+    fs::create_dir_all(trans_dir.join("src")).expect("create dep_trans src");
+    fs::write(
+        trans_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_trans\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_trans Cargo.toml");
+    fs::write(
+        trans_dir.join("src/lib.rs"),
+        "pub fn compute(a: usize, b: usize) -> usize { a * b + 1 }\n",
+    )
+    .expect("write dep_trans lib.rs");
+
+    let nostd_dir = ws_root.join("dep_nostd");
+    fs::create_dir_all(nostd_dir.join("src")).expect("create dep_nostd src");
+    fs::write(
+        nostd_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_nostd\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_nostd Cargo.toml");
+    fs::write(
+        nostd_dir.join("src/lib.rs"),
+        "#![no_std]\npub fn add(a: usize, b: usize) -> usize { a + b }\n",
+    )
+    .expect("write dep_nostd lib.rs");
+
+    let forbid_dir = ws_root.join("dep_forbid");
+    fs::create_dir_all(forbid_dir.join("src")).expect("create dep_forbid src");
+    fs::write(
+        forbid_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_forbid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_forbid Cargo.toml");
+    fs::write(
+        forbid_dir.join("src/lib.rs"),
+        "#![forbid(unsafe_code)]\npub fn sub(a: usize, b: usize) -> usize { a.saturating_sub(b) }\n",
+    )
+    .expect("write dep_forbid lib.rs");
+
+    let empty_dir = ws_root.join("dep_empty");
+    fs::create_dir_all(empty_dir.join("src")).expect("create dep_empty src");
+    fs::write(
+        empty_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_empty\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_empty Cargo.toml");
+    fs::write(
+        empty_dir.join("src/lib.rs"),
+        "pub struct Marker;\npub const CONST_VAL: usize = 42;\n",
+    )
+    .expect("write dep_empty lib.rs");
+
+    let current_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = current_manifest
+        .parent()
+        .expect("cargo-instrument parent is repo root");
+    let otel_shim_path = repo_root.join("otel-shim");
+    let otel_shim_path_escaped = otel_shim_path.to_string_lossy().replace('\\', "/");
+
+    let app_dir = ws_root.join("app");
+    fs::create_dir_all(app_dir.join("src")).expect("create app src");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_trans = {{ path = "../dep_trans" }}
+dep_nostd = {{ path = "../dep_nostd" }}
+dep_forbid = {{ path = "../dep_forbid" }}
+dep_empty = {{ path = "../dep_empty" }}
+otel-shim = {{ path = "{otel_shim_path_escaped}" }}
+opentelemetry = "0.32.0"
+opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
+"#
+        ),
+    )
+    .expect("write app Cargo.toml");
+
+    fs::write(
+        app_dir.join("src/main.rs"),
+        r#"use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+use opentelemetry::trace::TracerProvider;
+
+fn main() {
+    otel_shim::init();
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    opentelemetry::global::set_tracer_provider(provider);
+
+    let val = dep_trans::compute(3, 4)
+        + dep_nostd::add(1, 2)
+        + dep_forbid::sub(10, 4)
+        + dep_empty::CONST_VAL;
+    println!("APP_RESULT:{val}");
+
+    let spans = exporter.get_finished_spans().unwrap();
+    println!("SPANS_COUNT:{}", spans.len());
+    for s in &spans {
+        println!("SPAN:name='{}'", s.name);
+    }
+}
+"#,
+    )
+    .expect("write app main.rs");
+
+    Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(ws_root)
+        .status()
+        .expect("generate lockfile");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+
+    // 1. Initial clean build
+    let output1 = Command::new(cargo_instrument_bin)
+        .args(["--", "build"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("clean build");
+    assert!(
+        output1.status.success(),
+        "Initial build must succeed. Stderr:\n{}",
+        String::from_utf8_lossy(&output1.stderr)
+    );
+
+    // 2. Execute app: verify output and spans
+    let app_bin = ws_root.join("target/instrumented/debug/app");
+    let run1 = Command::new(&app_bin).output().expect("run app 1");
+    assert!(run1.status.success());
+    let stdout1 = String::from_utf8_lossy(&run1.stdout);
+    assert!(
+        stdout1.contains("APP_RESULT:64"),
+        "Expected APP_RESULT:64 (13 + 3 + 6 + 42). Stdout:\n{stdout1}"
+    );
+    assert!(
+        stdout1.contains("SPAN:name='compute'"),
+        "Expected span from dep_trans::compute. Stdout:\n{stdout1}"
+    );
+
+    // 3. Inspect certification stamps
+    let deps_dir = ws_root.join("target/instrumented/debug/deps");
+    let trans_stamps = get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_trans");
+    assert!(
+        !trans_stamps.is_empty(),
+        "dep_trans must have transformed stamp"
+    );
+    let trans_mtime_1 = latest_mtime(&trans_stamps).expect("stamp mtime");
+
+    assert!(
+        !get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_nostd").is_empty(),
+        "dep_nostd skipped stamp"
+    );
+    assert!(
+        !get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_forbid").is_empty(),
+        "dep_forbid skipped stamp"
+    );
+    assert!(
+        !get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_empty").is_empty(),
+        "dep_empty skipped stamp"
+    );
+
+    // 4. Modify mutable path dependency source without touching manifest or running clean
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        trans_dir.join("src/lib.rs"),
+        "pub fn compute(a: usize, b: usize) -> usize { a * b + 100 }\n",
+    )
+    .expect("modify dep_trans lib.rs");
+
+    // 5. Rebuild with cargo-instrument
+    let output2 = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("rebuild after source modification");
+    assert!(
+        output2.status.success(),
+        "Rebuild must succeed. Stderr:\n{}",
+        String::from_utf8_lossy(&output2.stderr)
+    );
+    let stderr2 = strip_ansi(&String::from_utf8_lossy(&output2.stderr));
+
+    // 6. Verify Cargo recompiled dep_trans and app, while unrelated dependencies remain fresh
+    assert!(
+        stderr2.contains("Compiling dep_trans"),
+        "Modified dep_trans must recompile. Stderr:\n{stderr2}"
+    );
+    assert!(
+        stderr2.contains("Compiling app"),
+        "Dependent app must recompile. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling dep_nostd"),
+        "dep_nostd must remain fresh. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling dep_forbid"),
+        "dep_forbid must remain fresh. Stderr:\n{stderr2}"
+    );
+    assert!(
+        !stderr2.contains("Compiling dep_empty"),
+        "dep_empty must remain fresh. Stderr:\n{stderr2}"
+    );
+
+    // 7. Verify transformed stamp was updated
+    let trans_stamps_2 = get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_trans");
+    let trans_mtime_2 = latest_mtime(&trans_stamps_2).expect("stamp mtime 2");
+    assert!(
+        trans_mtime_2 > trans_mtime_1,
+        "Transformed stamp must be updated upon source modification"
+    );
+
+    // 8. Run updated application: verify new output and span
+    let run2 = Command::new(&app_bin).output().expect("run app 2");
+    assert!(run2.status.success());
+    let stdout2 = String::from_utf8_lossy(&run2.stdout);
+    assert!(
+        stdout2.contains("APP_RESULT:163"),
+        "Expected APP_RESULT:163 (112 + 3 + 6 + 42). Stdout:\n{stdout2}"
+    );
+    assert!(
+        stdout2.contains("SPAN:name='compute'"),
+        "Expected span from dep_trans::compute. Stdout:\n{stdout2}"
+    );
+
+    // 9. Repeat build with no further changes: must be completely fresh
+    let output3 = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("repeat build");
+    assert!(output3.status.success());
+    let stderr3 = strip_ansi(&String::from_utf8_lossy(&output3.stderr));
+    assert!(
+        !stderr3.contains("Compiling dep_trans"),
+        "Repeat build must not recompile dep_trans"
+    );
+    assert!(
+        !stderr3.contains("Compiling app"),
+        "Repeat build must not recompile app"
+    );
+}
+
+#[test]
+fn test_scenario_e_skipped_path_dependency_source_modification_and_transition() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ws_root = temp_dir.path();
+
+    fs::write(
+        ws_root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "dep_trans", "dep_nostd", "dep_forbid", "dep_empty"]
+resolver = "2"
+"#,
+    )
+    .expect("write root Cargo.toml");
+
+    let nostd_dir = ws_root.join("dep_nostd");
+    fs::create_dir_all(nostd_dir.join("src")).expect("create dep_nostd src");
+    fs::write(
+        nostd_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_nostd\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_nostd Cargo.toml");
+    fs::write(
+        nostd_dir.join("src/lib.rs"),
+        "#![no_std]\npub fn add(a: usize, b: usize) -> usize { a + b }\n",
+    )
+    .expect("write dep_nostd lib.rs");
+
+    let forbid_dir = ws_root.join("dep_forbid");
+    fs::create_dir_all(forbid_dir.join("src")).expect("create dep_forbid src");
+    fs::write(
+        forbid_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_forbid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_forbid Cargo.toml");
+    fs::write(
+        forbid_dir.join("src/lib.rs"),
+        "#![forbid(unsafe_code)]\npub fn sub(a: usize, b: usize) -> usize { a.saturating_sub(b) }\n",
+    )
+    .expect("write dep_forbid lib.rs");
+
+    let empty_dir = ws_root.join("dep_empty");
+    fs::create_dir_all(empty_dir.join("src")).expect("create dep_empty src");
+    fs::write(
+        empty_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_empty\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_empty Cargo.toml");
+    fs::write(
+        empty_dir.join("src/lib.rs"),
+        "pub struct Marker;\npub const CONST_VAL: usize = 42;\n",
+    )
+    .expect("write dep_empty lib.rs");
+
+    let trans_dir = ws_root.join("dep_trans");
+    fs::create_dir_all(trans_dir.join("src")).expect("create dep_trans src");
+    fs::write(
+        trans_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_trans\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_trans Cargo.toml");
+    fs::write(
+        trans_dir.join("src/lib.rs"),
+        "pub fn compute(a: usize, b: usize) -> usize { a * b }\n",
+    )
+    .expect("write dep_trans lib.rs");
+
+    let current_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = current_manifest
+        .parent()
+        .expect("cargo-instrument parent is repo root");
+    let otel_shim_path = repo_root.join("otel-shim");
+    let otel_shim_path_escaped = otel_shim_path.to_string_lossy().replace('\\', "/");
+
+    let app_dir = ws_root.join("app");
+    fs::create_dir_all(app_dir.join("src")).expect("create app src");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_trans = {{ path = "../dep_trans" }}
+dep_nostd = {{ path = "../dep_nostd" }}
+dep_forbid = {{ path = "../dep_forbid" }}
+dep_empty = {{ path = "../dep_empty" }}
+otel-shim = {{ path = "{otel_shim_path_escaped}" }}
+opentelemetry = "0.32.0"
+opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
+"#
+        ),
+    )
+    .expect("write app Cargo.toml");
+
+    let write_app_main = |call_extra: bool| {
+        let extra_call = if call_extra {
+            "+ dep_empty::compute_extra(5)"
+        } else {
+            ""
+        };
+        fs::write(
+            app_dir.join("src/main.rs"),
+            format!(
+                r#"use opentelemetry_sdk::trace::{{InMemorySpanExporter, SdkTracerProvider}};
+use opentelemetry::trace::TracerProvider;
+
+fn main() {{
+    otel_shim::init();
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    opentelemetry::global::set_tracer_provider(provider);
+
+    let val = dep_trans::compute(3, 4)
+        + dep_nostd::add(1, 2)
+        + dep_forbid::sub(10, 4)
+        + dep_empty::CONST_VAL
+        {extra_call};
+    println!("APP_RESULT:{{val}}");
+
+    let spans = exporter.get_finished_spans().unwrap();
+    println!("SPANS_COUNT:{{}}", spans.len());
+    for s in &spans {{
+        println!("SPAN:name='{{}}'", s.name);
+    }}
+}}
+"#
+            ),
+        )
+        .expect("write app main.rs");
+    };
+    write_app_main(false);
+
+    Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(ws_root)
+        .status()
+        .expect("generate lockfile");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let deps_dir = ws_root.join("target/instrumented/debug/deps");
+
+    // 1. Initial clean build
+    let output1 = Command::new(cargo_instrument_bin)
+        .args(["--", "build"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("clean build");
+    assert!(
+        output1.status.success(),
+        "Initial build must succeed. Stderr:\n{}",
+        String::from_utf8_lossy(&output1.stderr)
+    );
+
+    assert!(!get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_nostd").is_empty());
+    assert!(!get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_forbid").is_empty());
+    assert!(!get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_empty").is_empty());
+    assert!(get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_nostd").is_empty());
+    assert!(get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_forbid").is_empty());
+    assert!(get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_empty").is_empty());
+
+    // 2. Part A: Source modification in skipped crate (dep_nostd) without manual cleaning
+    let nostd_stamps_1 = get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_nostd");
+    let nostd_mtime_1 = latest_mtime(&nostd_stamps_1).expect("nostd stamp mtime 1");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    fs::write(
+        nostd_dir.join("src/lib.rs"),
+        "#![no_std]\npub fn add(a: usize, b: usize) -> usize { a + b + 50 }\n",
+    )
+    .expect("modify dep_nostd lib.rs");
+
+    let output_a = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("rebuild after dep_nostd touch");
+    assert!(output_a.status.success(), "Rebuild must succeed");
+    let stderr_a = strip_ansi(&String::from_utf8_lossy(&output_a.stderr));
+    assert!(
+        stderr_a.contains("Compiling dep_nostd"),
+        "dep_nostd must recompile"
+    );
+    assert!(stderr_a.contains("Compiling app"), "app must recompile");
+    assert!(
+        !stderr_a.contains("Compiling dep_forbid"),
+        "dep_forbid must remain fresh"
+    );
+    assert!(
+        !stderr_a.contains("Compiling dep_empty"),
+        "dep_empty must remain fresh"
+    );
+    assert!(
+        !stderr_a.contains("Compiling dep_trans"),
+        "dep_trans must remain fresh"
+    );
+
+    let nostd_stamps_2 = get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_nostd");
+    let nostd_mtime_2 = latest_mtime(&nostd_stamps_2).expect("nostd stamp mtime 2");
+    assert!(
+        nostd_mtime_2 > nostd_mtime_1,
+        "dep_nostd skipped stamp mtime must be refreshed"
+    );
+    assert!(
+        get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_nostd").is_empty(),
+        "dep_nostd must NOT have transformed stamp"
+    );
+
+    let app_bin = ws_root.join("target/instrumented/debug/app");
+    let run_a = Command::new(&app_bin)
+        .output()
+        .expect("run app after nostd mod");
+    assert!(
+        String::from_utf8_lossy(&run_a.stdout).contains("APP_RESULT:113"),
+        "Expected 12 + 53 + 6 + 42 = 113"
+    );
+
+    // Repeat build is fresh
+    let repeat_a = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("repeat build a");
+    assert!(!strip_ansi(&String::from_utf8_lossy(&repeat_a.stderr)).contains("Compiling"));
+
+    // 3. Part B: Source modification in zero-candidate crate (dep_empty)
+    let empty_stamps_1 = get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_empty");
+    let empty_mtime_1 = latest_mtime(&empty_stamps_1).expect("empty stamp mtime 1");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    fs::write(
+        empty_dir.join("src/lib.rs"),
+        "pub struct Marker;\npub const CONST_VAL: usize = 99;\n",
+    )
+    .expect("modify dep_empty lib.rs");
+
+    let output_b = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("rebuild after dep_empty touch");
+    assert!(output_b.status.success());
+    let stderr_b = strip_ansi(&String::from_utf8_lossy(&output_b.stderr));
+    assert!(
+        stderr_b.contains("Compiling dep_empty"),
+        "dep_empty must recompile"
+    );
+    assert!(stderr_b.contains("Compiling app"), "app must recompile");
+    assert!(
+        !stderr_b.contains("Compiling dep_nostd"),
+        "dep_nostd must remain fresh"
+    );
+    assert!(
+        !stderr_b.contains("Compiling dep_forbid"),
+        "dep_forbid must remain fresh"
+    );
+    assert!(
+        !stderr_b.contains("Compiling dep_trans"),
+        "dep_trans must remain fresh"
+    );
+
+    let empty_stamps_2 = get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_empty");
+    let empty_mtime_2 = latest_mtime(&empty_stamps_2).expect("empty stamp mtime 2");
+    assert!(
+        empty_mtime_2 > empty_mtime_1,
+        "dep_empty skipped stamp mtime must be refreshed"
+    );
+    assert!(
+        get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_empty").is_empty(),
+        "dep_empty must NOT have transformed stamp"
+    );
+
+    let run_b = Command::new(&app_bin)
+        .output()
+        .expect("run app after empty mod");
+    assert!(
+        String::from_utf8_lossy(&run_b.stdout).contains("APP_RESULT:170"),
+        "Expected 12 + 53 + 6 + 99 = 170"
+    );
+
+    // 4. Part C: Transition from skipped (0 candidates) to instrumentable (candidate function added)
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        empty_dir.join("src/lib.rs"),
+        "pub struct Marker;\npub const CONST_VAL: usize = 99;\npub fn compute_extra(x: usize) -> usize { x + 7 }\n",
+    )
+    .expect("add candidate function to dep_empty");
+    write_app_main(true);
+
+    let output_c = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("rebuild after dep_empty transition to instrumentable");
+    assert!(
+        output_c.status.success(),
+        "Transition build must succeed. Stderr:\n{}",
+        String::from_utf8_lossy(&output_c.stderr)
+    );
+    let stderr_c = strip_ansi(&String::from_utf8_lossy(&output_c.stderr));
+    assert!(
+        stderr_c.contains("Compiling dep_empty"),
+        "dep_empty must recompile on transition"
+    );
+    assert!(
+        stderr_c.contains("Compiling app"),
+        "app must recompile on transition"
+    );
+
+    // Mutual exclusion: old skipped stamp must be REMOVED, and transformed stamp must be WRITTEN
+    assert!(
+        get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_empty").is_empty(),
+        "dep_empty skipped stamp must be deleted when crate becomes instrumentable"
+    );
+    assert!(
+        !get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_empty").is_empty(),
+        "dep_empty transformed stamp must be written when crate becomes instrumentable"
+    );
+
+    let run_c = Command::new(&app_bin)
+        .output()
+        .expect("run app after empty becomes instrumentable");
+    assert!(run_c.status.success());
+    let stdout_c = String::from_utf8_lossy(&run_c.stdout);
+    assert!(
+        stdout_c.contains("APP_RESULT:182"),
+        "Expected 170 + 12 = 182. Stdout:\n{stdout_c}"
+    );
+    assert!(
+        stdout_c.contains("SPAN:name='compute_extra'"),
+        "Newly instrumented compute_extra must emit span. Stdout:\n{stdout_c}"
+    );
+
+    // Repeat build is fresh
+    let repeat_c = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("repeat build c");
+    assert!(!strip_ansi(&String::from_utf8_lossy(&repeat_c.stderr)).contains("Compiling"));
+
+    // 5. Part D: Reverse transition: instrumentable becomes skipped (add #![no_std])
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    fs::write(
+        trans_dir.join("src/lib.rs"),
+        "#![no_std]\npub fn compute(a: usize, b: usize) -> usize { a * b }\n",
+    )
+    .expect("make dep_trans no_std");
+
+    let output_d = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("rebuild after dep_trans becomes no_std");
+    assert!(output_d.status.success());
+    let stderr_d = strip_ansi(&String::from_utf8_lossy(&output_d.stderr));
+    assert!(
+        stderr_d.contains("Compiling dep_trans"),
+        "dep_trans must recompile when becoming no_std"
+    );
+    assert!(
+        stderr_d.contains("Compiling app"),
+        "app must recompile when dep_trans changes"
+    );
+
+    // Mutual exclusion: old transformed stamp must be REMOVED, and skipped stamp must be WRITTEN
+    assert!(
+        get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_trans").is_empty(),
+        "dep_trans transformed stamp must be deleted when crate becomes no_std"
+    );
+    assert!(
+        !get_stamps_matching(&deps_dir, ".cargo-instrument-skipped-dep_trans").is_empty(),
+        "dep_trans skipped stamp must be written when crate becomes no_std"
+    );
+
+    // Subsequent repeat build is fresh
+    let repeat_d = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("repeat build d");
+    assert!(!strip_ansi(&String::from_utf8_lossy(&repeat_d.stderr)).contains("Compiling"));
+}
+
+#[test]
+fn test_scenario_h_plain_cargo_recompilation_and_reinstrumentation_transition() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ws_root = temp_dir.path();
+
+    fs::write(
+        ws_root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app", "dep_trans"]
+resolver = "2"
+"#,
+    )
+    .expect("write root Cargo.toml");
+
+    let trans_dir = ws_root.join("dep_trans");
+    fs::create_dir_all(trans_dir.join("src")).expect("create dep_trans src");
+    fs::write(
+        trans_dir.join("Cargo.toml"),
+        "[package]\nname = \"dep_trans\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write dep_trans Cargo.toml");
+    fs::write(
+        trans_dir.join("src/lib.rs"),
+        "pub fn compute(a: usize, b: usize) -> usize { a * b + 1 }\n",
+    )
+    .expect("write dep_trans lib.rs");
+
+    let current_manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = current_manifest
+        .parent()
+        .expect("cargo-instrument parent is repo root");
+    let otel_shim_path = repo_root.join("otel-shim");
+    let otel_shim_path_escaped = otel_shim_path.to_string_lossy().replace('\\', "/");
+
+    let app_dir = ws_root.join("app");
+    fs::create_dir_all(app_dir.join("src")).expect("create app src");
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_trans = {{ path = "../dep_trans" }}
+otel-shim = {{ path = "{otel_shim_path_escaped}" }}
+opentelemetry = "0.32.0"
+opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
+"#
+        ),
+    )
+    .expect("write app Cargo.toml");
+
+    fs::write(
+        app_dir.join("src/main.rs"),
+        r#"use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+use opentelemetry::trace::TracerProvider;
+
+fn main() {
+    otel_shim::init();
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    opentelemetry::global::set_tracer_provider(provider);
+
+    let val = dep_trans::compute(3, 4);
+    println!("APP_RESULT:{val}");
+
+    let spans = exporter.get_finished_spans().unwrap();
+    println!("SPANS_COUNT:{}", spans.len());
+    for s in &spans {
+        println!("SPAN:name='{}'", s.name);
+    }
+}
+"#,
+    )
+    .expect("write app main.rs");
+
+    Command::new("cargo")
+        .arg("generate-lockfile")
+        .current_dir(ws_root)
+        .status()
+        .expect("generate lockfile");
+
+    let cargo_instrument_bin = env!("CARGO_BIN_EXE_cargo-instrument");
+    let deps_dir = ws_root.join("target/instrumented/debug/deps");
+
+    // 1. Initial instrumented build
+    let output1 = Command::new(cargo_instrument_bin)
+        .args(["--", "build"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("clean build");
+    assert!(
+        output1.status.success(),
+        "Initial build must succeed. Stderr:\n{}",
+        String::from_utf8_lossy(&output1.stderr)
+    );
+
+    let app_bin = ws_root.join("target/instrumented/debug/app");
+    let run1 = Command::new(&app_bin).output().expect("run app 1");
+    let stdout1 = String::from_utf8_lossy(&run1.stdout);
+    assert!(
+        stdout1.contains("APP_RESULT:13"),
+        "Expected 13. Stdout:\n{stdout1}"
+    );
+    assert!(
+        stdout1.contains("SPAN:name='compute'"),
+        "Expected compute span. Stdout:\n{stdout1}"
+    );
+
+    let trans_stamps = get_stamps_matching(&deps_dir, ".cargo-instrument-transformed-dep_trans");
+    assert!(!trans_stamps.is_empty(), "Transformed stamp must exist");
+    let stamp_mtime_1 = latest_mtime(&trans_stamps).expect("stamp mtime");
+
+    // 2. Plain Cargo reuse verification:
+    // When no source changes, plain Cargo targeting target/instrumented reuses instrumented artifacts
+    let output_plain_reuse = Command::new("cargo")
+        .args(["build", "--target-dir", "target/instrumented", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTC_WRAPPER")
+        .current_dir(ws_root)
+        .output()
+        .expect("plain cargo reuse build");
+    assert!(output_plain_reuse.status.success());
+    let stderr_reuse = strip_ansi(&String::from_utf8_lossy(&output_plain_reuse.stderr));
+    assert!(
+        !stderr_reuse.contains("Compiling dep_trans"),
+        "Plain Cargo must reuse fresh instrumented dep_trans without recompiling. Stderr:\n{stderr_reuse}"
+    );
+    assert!(
+        !stderr_reuse.contains("Compiling app"),
+        "Plain Cargo must reuse fresh app without recompiling. Stderr:\n{stderr_reuse}"
+    );
+
+    // 3. Source modification under plain Cargo (without wrapper)
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    fs::write(
+        trans_dir.join("src/lib.rs"),
+        "pub fn compute(a: usize, b: usize) -> usize { a * b + 777 }\n",
+    )
+    .expect("modify dep_trans lib.rs for plain cargo");
+
+    let output_plain_rebuild = Command::new("cargo")
+        .args(["build", "--target-dir", "target/instrumented", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .env_remove("RUSTC_WRAPPER")
+        .current_dir(ws_root)
+        .output()
+        .expect("plain cargo rebuild");
+    assert!(output_plain_rebuild.status.success());
+    let stderr_plain = strip_ansi(&String::from_utf8_lossy(&output_plain_rebuild.stderr));
+    assert!(
+        stderr_plain.contains("Compiling dep_trans"),
+        "Plain Cargo must recompile modified dep_trans"
+    );
+    assert!(
+        stderr_plain.contains("Compiling app"),
+        "Plain Cargo must recompile dependent app"
+    );
+
+    // Verify: Plain Cargo updated the rlib artifact, but NOT the transformed stamp
+    let trans_rlibs = get_stamps_matching(&deps_dir, "libdep_trans");
+    let rlib_mtime = latest_mtime(&trans_rlibs).expect("rlib mtime");
+    let stamp_mtime_after_plain = latest_mtime(&get_stamps_matching(
+        &deps_dir,
+        ".cargo-instrument-transformed-dep_trans",
+    ))
+    .expect("stamp mtime");
+    assert_eq!(
+        stamp_mtime_1, stamp_mtime_after_plain,
+        "Plain Cargo must not touch or refresh the instrumentation stamp"
+    );
+    assert!(
+        rlib_mtime > stamp_mtime_after_plain + std::time::Duration::from_millis(500),
+        "Plain Cargo produced an artifact newer than its certification stamp"
+    );
+
+    // Running the app compiled by plain Cargo reflects updated logic, but lacks dependency instrumentation
+    let run_plain = Command::new(&app_bin).output().expect("run plain app");
+    let stdout_plain = String::from_utf8_lossy(&run_plain.stdout);
+    assert!(
+        stdout_plain.contains("APP_RESULT:789"),
+        "Expected 789. Stdout:\n{stdout_plain}"
+    );
+    assert!(
+        !stdout_plain.contains("SPAN:name='compute'"),
+        "Plain-Cargo build of dep_trans must not emit spans. Stdout:\n{stdout_plain}"
+    );
+
+    // 4. Run cargo-instrument again: tool identifies uncertified artifact (artifact.mtime > stamp.mtime)
+    // and forces clean + re-instrumentation
+    let output_reinstrument = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("cargo-instrument recovery build");
+    assert!(
+        output_reinstrument.status.success(),
+        "Recovery build must succeed. Stderr:\n{}",
+        String::from_utf8_lossy(&output_reinstrument.stderr)
+    );
+    let stderr_reinst = strip_ansi(&String::from_utf8_lossy(&output_reinstrument.stderr));
+    assert!(
+        stderr_reinst.contains("Compiling dep_trans"),
+        "cargo-instrument must invalidate and recompile uncertified dep_trans. Stderr:\n{stderr_reinst}"
+    );
+    assert!(
+        stderr_reinst.contains("Compiling app"),
+        "cargo-instrument must recompile app. Stderr:\n{stderr_reinst}"
+    );
+
+    // Verify: stamp was updated with fresh mtime >= artifact
+    let stamp_mtime_reinst = latest_mtime(&get_stamps_matching(
+        &deps_dir,
+        ".cargo-instrument-transformed-dep_trans",
+    ))
+    .expect("stamp mtime reinst");
+    assert!(
+        stamp_mtime_reinst > stamp_mtime_after_plain,
+        "Transformed stamp must be refreshed during re-instrumentation"
+    );
+
+    // Running app now restores expected spans!
+    let run_reinst = Command::new(&app_bin).output().expect("run reinst app");
+    let stdout_reinst = String::from_utf8_lossy(&run_reinst.stdout);
+    assert!(
+        stdout_reinst.contains("APP_RESULT:789"),
+        "Output must remain 789. Stdout:\n{stdout_reinst}"
+    );
+    assert!(
+        stdout_reinst.contains("SPAN:name='compute'"),
+        "Exported spans must be restored after re-instrumentation. Stdout:\n{stdout_reinst}"
+    );
+
+    // 5. Subsequent repeat build is fresh
+    let output_repeat = Command::new(cargo_instrument_bin)
+        .args(["--", "build", "-vv"])
+        .env("CARGO_TERM_COLOR", "never")
+        .current_dir(ws_root)
+        .output()
+        .expect("repeat build after reinstrumentation");
+    assert!(output_repeat.status.success());
+    let stderr_repeat = strip_ansi(&String::from_utf8_lossy(&output_repeat.stderr));
+    assert!(
+        !stderr_repeat.contains("Compiling dep_trans"),
+        "Repeat build must be fresh"
+    );
+    assert!(
+        !stderr_repeat.contains("Compiling app"),
+        "Repeat build must be fresh"
+    );
+}
