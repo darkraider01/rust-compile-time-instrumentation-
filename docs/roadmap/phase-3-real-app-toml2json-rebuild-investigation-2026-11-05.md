@@ -1,6 +1,6 @@
 # Phase 3 — `toml2json` Repeat-Build Invalidation Investigation (2026-11-05)
 
-[Project README](../../README.md) · [Phase 3 roadmap](phase-3-evaluation.md) · [Real-application evaluation (2026-10-26)](phase-3-real-app-toml2json-2026-10-26.md) · [Repeat-build profiling (2026-10-09)](phase-3-repeat-build-profiling-2026-10-09.md) · [Reuse investigation (2026-10-09)](phase-3-repeat-build-reuse-investigation-2026-10-09.md)
+[Project README](../../README.md) · [Phase 3 roadmap](phase-3-evaluation.md) · [Real-application evaluation (2026-10-26)](phase-3-real-app-toml2json-2026-10-26.md) · [Repeat-build verification (2026-11-17)](phase-3-real-app-toml2json-verification-2026-11-17.md) · [Repeat-build profiling (2026-10-09)](phase-3-repeat-build-profiling-2026-10-09.md) · [Reuse investigation (2026-10-09)](phase-3-repeat-build-reuse-investigation-2026-10-09.md)
 
 **Date**: 2026-11-05  
 **Status**: Completed Bounded Investigation & Defect Fix; Architectural Design Decision Identified for Direction  

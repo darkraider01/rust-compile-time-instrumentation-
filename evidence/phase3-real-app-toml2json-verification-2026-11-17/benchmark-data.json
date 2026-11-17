@@ -1,0 +1,111 @@
+{
+  "metadata": {
+    "captured": "2026-11-17T17:16:50.661639+00:00",
+    "tool_revision": "53d2230849b893d7a2ac5db16ec02fab9f73c3d5",
+    "tool_binary_sha256": "74222542695d2285b01d58f8af4cf530a83bf97c65f013757d853476e5ef85e8",
+    "host": "Linux 6.19.10-300.fc44.x86_64 x86_64",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "application": "woodruffw/toml2json",
+    "application_revision": "840c3286589c7430c0315949d73e875592edac60",
+    "workload_input": "test_input.toml"
+  },
+  "clean_build": {
+    "baseline": {
+      "n": 5,
+      "samples": [
+        10.8218,
+        10.7556,
+        10.7595,
+        11.8299,
+        11.3201
+      ],
+      "median": 10.8218,
+      "mean": 11.0974,
+      "stddev": 0.4226,
+      "min": 10.7556,
+      "max": 11.8299,
+      "spread": 1.0743
+    },
+    "instrumented": {
+      "n": 5,
+      "samples": [
+        27.0906,
+        27.1133,
+        27.1431,
+        28.125,
+        27.3985
+      ],
+      "median": 27.1431,
+      "mean": 27.3741,
+      "stddev": 0.3915,
+      "min": 27.0906,
+      "max": 28.125,
+      "spread": 1.0344
+    },
+    "overhead_ratio": 2.5082
+  },
+  "repeat_build": {
+    "baseline": {
+      "n": 10,
+      "samples": [
+        0.0467,
+        0.0474,
+        0.0468,
+        0.0462,
+        0.0468,
+        0.0458,
+        0.0462,
+        0.0457,
+        0.0461,
+        0.0452
+      ],
+      "median": 0.0462,
+      "mean": 0.0463,
+      "stddev": 0.0006,
+      "min": 0.0452,
+      "max": 0.0474,
+      "spread": 0.0022
+    },
+    "instrumented": {
+      "n": 10,
+      "samples": [
+        0.2622,
+        0.2989,
+        0.2648,
+        0.2623,
+        0.2677,
+        0.2639,
+        0.2652,
+        0.2637,
+        0.2641,
+        0.2652
+      ],
+      "median": 0.2645,
+      "mean": 0.2678,
+      "stddev": 0.0105,
+      "min": 0.2622,
+      "max": 0.2989,
+      "spread": 0.0367
+    },
+    "overhead_ratio": 5.7251,
+    "historical_rebuild_sec": {
+      "min": 13.67,
+      "max": 17.54,
+      "median": 14.73
+    },
+    "speedup_vs_historical_median": 55.69
+  },
+  "repeat_phase_breakdown": {
+    "metadata_sec": 0.0645,
+    "pre_pass_sec": 0.0949,
+    "invalidation_sec": 0.0,
+    "wrapped_cargo_sec": 0.0976,
+    "total_observed_repeat_sec": 0.257
+  },
+  "runtime_trace": {
+    "span_count": 28,
+    "expected_span_count": 28,
+    "output_identity_verified": true
+  }
+}

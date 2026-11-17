@@ -1,0 +1,219 @@
+{
+  "metadata": {
+    "captured": "2026-11-17T17:16:50.661639+00:00",
+    "tool_revision": "53d2230849b893d7a2ac5db16ec02fab9f73c3d5",
+    "tool_binary_sha256": "74222542695d2285b01d58f8af4cf530a83bf97c65f013757d853476e5ef85e8",
+    "host": "Linux 6.19.10-300.fc44.x86_64 x86_64",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
+    "application": "woodruffw/toml2json",
+    "application_revision": "840c3286589c7430c0315949d73e875592edac60",
+    "workload_input": "test_input.toml"
+  },
+  "scenarios": {
+    "scenario_a": {
+      "status": "PASS",
+      "elapsed_sec": 27.7292,
+      "compiling_units": 25,
+      "transformed_stamps_file_count": 6,
+      "transformed_packages_count": 3,
+      "transformed_packages": [
+        "anstream",
+        "anstyle_query",
+        "clap_lex"
+      ],
+      "transformed_stamps": [
+        ".cargo-instrument-transformed-anstream-eac03a9a1fddde87.stamp",
+        ".cargo-instrument-transformed-anstream.stamp",
+        ".cargo-instrument-transformed-anstyle_query-a4a3723217b36db2.stamp",
+        ".cargo-instrument-transformed-anstyle_query.stamp",
+        ".cargo-instrument-transformed-clap_lex-cb0e465c5133c9da.stamp",
+        ".cargo-instrument-transformed-clap_lex.stamp"
+      ],
+      "skipped_stamps_file_count": 42,
+      "skipped_packages_count": 21,
+      "skipped_packages": [
+        "anstyle",
+        "anstyle_parse",
+        "anyhow",
+        "clap",
+        "clap_builder",
+        "colorchoice",
+        "is_terminal_polyfill",
+        "itoa",
+        "memchr",
+        "serde",
+        "serde_core",
+        "serde_json",
+        "serde_spanned",
+        "strsim",
+        "toml",
+        "toml_datetime",
+        "toml_parser",
+        "toml_writer",
+        "utf8parse",
+        "winnow",
+        "zmij"
+      ],
+      "skipped_stamps": [
+        ".cargo-instrument-skipped-anstyle-652a55d7e58eb456.stamp",
+        ".cargo-instrument-skipped-anstyle.stamp",
+        ".cargo-instrument-skipped-anstyle_parse-e19969ff73351038.stamp",
+        ".cargo-instrument-skipped-anstyle_parse.stamp",
+        ".cargo-instrument-skipped-anyhow-6bde4137c9e824c9.stamp",
+        ".cargo-instrument-skipped-anyhow.stamp",
+        ".cargo-instrument-skipped-clap-eca2bbc29f1370b0.stamp",
+        ".cargo-instrument-skipped-clap.stamp",
+        ".cargo-instrument-skipped-clap_builder-52a37be4aa5dfb60.stamp",
+        ".cargo-instrument-skipped-clap_builder.stamp",
+        ".cargo-instrument-skipped-colorchoice-e2acdea982709ef1.stamp",
+        ".cargo-instrument-skipped-colorchoice.stamp",
+        ".cargo-instrument-skipped-is_terminal_polyfill-5ffb8f05aaf95a41.stamp",
+        ".cargo-instrument-skipped-is_terminal_polyfill.stamp",
+        ".cargo-instrument-skipped-itoa-251a78bdd2f23d59.stamp",
+        ".cargo-instrument-skipped-itoa.stamp",
+        ".cargo-instrument-skipped-memchr-81810b6eb8ebb5e9.stamp",
+        ".cargo-instrument-skipped-memchr.stamp",
+        ".cargo-instrument-skipped-serde-ae124e44a7bedf09.stamp",
+        ".cargo-instrument-skipped-serde.stamp",
+        ".cargo-instrument-skipped-serde_core-bfca94c6876e51e8.stamp",
+        ".cargo-instrument-skipped-serde_core.stamp",
+        ".cargo-instrument-skipped-serde_json-0f71929a39bf4d3a.stamp",
+        ".cargo-instrument-skipped-serde_json.stamp",
+        ".cargo-instrument-skipped-serde_spanned-375e8ca93e8db45e.stamp",
+        ".cargo-instrument-skipped-serde_spanned.stamp",
+        ".cargo-instrument-skipped-strsim-4342d541b792976a.stamp",
+        ".cargo-instrument-skipped-strsim.stamp",
+        ".cargo-instrument-skipped-toml-09d83dc70af8f3d2.stamp",
+        ".cargo-instrument-skipped-toml.stamp",
+        ".cargo-instrument-skipped-toml_datetime-4bacfee153880f4e.stamp",
+        ".cargo-instrument-skipped-toml_datetime.stamp",
+        ".cargo-instrument-skipped-toml_parser-9af4b805656f5db4.stamp",
+        ".cargo-instrument-skipped-toml_parser.stamp",
+        ".cargo-instrument-skipped-toml_writer-e52721e6b42f243d.stamp",
+        ".cargo-instrument-skipped-toml_writer.stamp",
+        ".cargo-instrument-skipped-utf8parse-15518c37b6fb8ca7.stamp",
+        ".cargo-instrument-skipped-utf8parse.stamp",
+        ".cargo-instrument-skipped-winnow-1a5587ec7876d610.stamp",
+        ".cargo-instrument-skipped-winnow.stamp",
+        ".cargo-instrument-skipped-zmij-532f1ef9ab114538.stamp",
+        ".cargo-instrument-skipped-zmij.stamp"
+      ],
+      "functional_output_match": true,
+      "spans_count": 28
+    },
+    "scenario_b": {
+      "status": "PASS",
+      "elapsed_sec": 0.2707,
+      "compiling_units": 0,
+      "cleaned_invocations": 0
+    },
+    "scenario_c": {
+      "status": "PASS",
+      "times": [
+        0.263,
+        0.2763,
+        0.2634,
+        0.2633,
+        0.2638
+      ],
+      "stats": {
+        "n": 5,
+        "samples": [
+          0.263,
+          0.2763,
+          0.2634,
+          0.2633,
+          0.2638
+        ],
+        "median": 0.2634,
+        "mean": 0.2659,
+        "stddev": 0.0052,
+        "min": 0.263,
+        "max": 0.2763,
+        "spread": 0.0133
+      },
+      "compiling_units": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cleaned_invocations": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "scenario_d": {
+      "status": "PASS",
+      "registry_immutability_recompiled_units": 0,
+      "invalidation_recompiled_units": [
+        "clap_lex",
+        "clap_builder",
+        "clap",
+        "toml2json"
+      ],
+      "elapsed_sec": 20.5505,
+      "repeat_sec": 0.2791
+    },
+    "scenario_e": {
+      "status": "PASS",
+      "registry_immutability_recompiled_units": 0,
+      "invalidation_recompiled_units": [
+        "utf8parse",
+        "anstyle-parse",
+        "anstream",
+        "clap_builder",
+        "clap",
+        "toml2json"
+      ],
+      "elapsed_sec": 21.4504,
+      "repeat_sec": 0.2633
+    },
+    "scenario_f": {
+      "status": "PASS",
+      "binary_updated": true,
+      "dependency_recompiled_count": 0,
+      "elapsed_sec": 8.2527
+    },
+    "scenario_g": {
+      "status": "PASS",
+      "units_compiled_with_features": [
+        "serde_core",
+        "serde_json",
+        "serde",
+        "toml_datetime",
+        "serde_spanned",
+        "toml",
+        "toml2json"
+      ],
+      "elapsed_with_features": 20.9547,
+      "repeat_with_features_sec": 0.2628,
+      "revert_repeat_sec": 0.2736
+    },
+    "scenario_h": {
+      "status": "PASS",
+      "plain_cargo_reuse_units": 0,
+      "cargo_instrument_reinstrumented": [
+        "clap_lex",
+        "clap_builder",
+        "clap",
+        "toml2json"
+      ],
+      "subsequent_repeat_sec": 0.2641
+    },
+    "scenario_i": {
+      "status": "PASS",
+      "initial_policy": "dependencies-v1",
+      "legacy_switch_policy": "legacy-v1",
+      "legacy_elapsed_sec": 23.7014,
+      "dep_switch_policy": "dependencies-v1",
+      "dep_elapsed_sec": 27.1832,
+      "subsequent_repeat_sec": 0.2634
+    }
+  }
+}

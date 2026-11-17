@@ -1,6 +1,6 @@
 # Phase 3 Real-Application Evaluation — `toml2json` (2026-10-26)
 
-[Project README](../../README.md) · [Phase 3 roadmap](phase-3-evaluation.md) · [Earlier repeat-build profile](phase-3-repeat-build-profiling-2026-10-09.md)
+[Project README](../../README.md) · [Phase 3 roadmap](phase-3-evaluation.md) · [Repeat-build verification (2026-11-17)](phase-3-real-app-toml2json-verification-2026-11-17.md) · [Rebuild investigation (2026-11-05)](phase-3-real-app-toml2json-rebuild-investigation-2026-11-05.md) · [Earlier repeat-build profile](phase-3-repeat-build-profiling-2026-10-09.md)
 
 The corrected Python harness completed the full evaluation on 2026-10-26 from fresh, temporary application checkouts using the preserved lockfiles and a local Git object source. Phase 3 remains open. This is one synchronous CLI workload, without first-party source application, async services, or network exporting.
 

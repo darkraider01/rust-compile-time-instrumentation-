@@ -1,0 +1,23 @@
+Phase 3 Real-Application Verification Manifest
+Captured: 2026-11-17T17:16:50.662205+00:00
+Tool Revision: 53d2230849b893d7a2ac5db16ec02fab9f73c3d5
+Tool Binary SHA-256: 74222542695d2285b01d58f8af4cf530a83bf97c65f013757d853476e5ef85e8
+
+Host: Linux 6.19.10-300.fc44.x86_64 x86_64
+
+Rustc Version:
+rustc 1.99.0 (b940084d7 2026-09-28)
+binary: rustc
+commit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4
+commit-date: 2026-09-28
+host: x86_64-unknown-linux-gnu
+release: 1.99.0
+LLVM version: 23.1.1
+
+Cargo Version:
+cargo 1.99.0 (5f94df478 2026-08-27)
+
+Application: woodruffw/toml2json
+Revision: 840c3286589c7430c0315949d73e875592edac60
+Workload Input: test_input.toml (140 bytes, SHA-256 61fe359402fd397a4192c1d34f525a22100df134ffd16c03b6567f04b319f696)
+Command: cargo-instrument --with-dependencies -- build --release --locked --offline
