@@ -8,7 +8,8 @@
     "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
     "application": "woodruffw/toml2json",
     "application_revision": "840c3286589c7430c0315949d73e875592edac60",
-    "workload_input": "test_input.toml"
+    "workload_input": "test_input.toml",
+    "workload_input_sha256": "61fe359402fd397a4192c1d34f525a22100df134ffd16c03b6567f04b319f696"
   },
   "clean_build": {
     "baseline": {
@@ -90,11 +91,29 @@
     },
     "overhead_ratio": 5.7251,
     "historical_rebuild_sec": {
-      "min": 13.67,
-      "max": 17.54,
-      "median": 14.73
+      "validated_evaluation_2026_10_26": {
+        "n": 5,
+        "samples": [
+          17.1227,
+          19.2635,
+          17.5394,
+          17.8329,
+          15.7744
+        ],
+        "median": 17.5394,
+        "mean": 17.5066,
+        "stddev": 1.1352,
+        "min": 15.7744,
+        "max": 19.2635,
+        "spread": 3.4891
+      },
+      "reproduction_investigation_2026_11_05": {
+        "n": 1,
+        "sample": 13.673
+      }
     },
-    "speedup_vs_historical_median": 55.69
+    "speedup_vs_historical_validated_median": 66.31,
+    "speedup_vs_historical_reproduction": 51.69
   },
   "repeat_phase_breakdown": {
     "metadata_sec": 0.0645,
@@ -106,6 +125,18 @@
   "runtime_trace": {
     "span_count": 28,
     "expected_span_count": 28,
-    "output_identity_verified": true
+    "output_identity_verified": true,
+    "scope_breakdown": {
+      "toml2json": 1,
+      "clap_lex": 27,
+      "anstream": 0,
+      "anstyle_query": 0
+    },
+    "static_transformed_functions": {
+      "clap_lex": 43,
+      "anstream": 8,
+      "anstyle_query": 2
+    },
+    "notes": "Workload non-interactive stdout does not invoke ANSI color formatting or terminal queries; anstream and anstyle_query were correctly transformed at compile time but not exercised at runtime."
   }
 }

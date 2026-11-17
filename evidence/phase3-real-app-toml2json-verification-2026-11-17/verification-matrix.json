@@ -8,7 +8,8 @@
     "cargo": "cargo 1.99.0 (5f94df478 2026-08-27)",
     "application": "woodruffw/toml2json",
     "application_revision": "840c3286589c7430c0315949d73e875592edac60",
-    "workload_input": "test_input.toml"
+    "workload_input": "test_input.toml",
+    "workload_input_sha256": "61fe359402fd397a4192c1d34f525a22100df134ffd16c03b6567f04b319f696"
   },
   "scenarios": {
     "scenario_a": {
@@ -158,7 +159,9 @@
         "toml2json"
       ],
       "elapsed_sec": 20.5505,
-      "repeat_sec": 0.2791
+      "repeat_sec": 0.2791,
+      "path_dependency_regression_test": "test_scenario_d_instrumentable_path_dependency_automatic_source_change_invalidation",
+      "path_dependency_verified": true
     },
     "scenario_e": {
       "status": "PASS",
@@ -172,7 +175,15 @@
         "toml2json"
       ],
       "elapsed_sec": 21.4504,
-      "repeat_sec": 0.2633
+      "repeat_sec": 0.2633,
+      "path_dependency_regression_test": "test_scenario_e_skipped_path_dependency_source_modification_and_transition",
+      "transitions_verified": [
+        "skipped_touch_recompile_and_stamp_refresh",
+        "zero_candidates_touch_recompile_and_stamp_refresh",
+        "skipped_to_transformed_mutual_exclusion",
+        "transformed_to_skipped_mutual_exclusion"
+      ],
+      "path_dependency_verified": true
     },
     "scenario_f": {
       "status": "PASS",
@@ -204,7 +215,11 @@
         "clap",
         "toml2json"
       ],
-      "subsequent_repeat_sec": 0.2641
+      "subsequent_repeat_sec": 0.2641,
+      "path_dependency_regression_test": "test_scenario_h_plain_cargo_recompilation_and_reinstrumentation_transition",
+      "plain_cargo_clean_reuse_verified": true,
+      "plain_cargo_recompilation_detection_verified": true,
+      "span_restoration_verified": true
     },
     "scenario_i": {
       "status": "PASS",

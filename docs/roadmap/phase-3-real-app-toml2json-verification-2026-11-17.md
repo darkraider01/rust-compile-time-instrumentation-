@@ -10,15 +10,16 @@
 
 ## 1. Executive Summary and Comparative Results
 
-The historical `toml2json` real-application evaluation (2026-10-26 and 2026-11-05) identified an unexpected no-change rebuild loop: every repeat build took roughly **13.67–17.54 seconds** (median **14.73 s**), deleted dozens of files via `cargo clean`, and recompiled 23 units with release LTO.
+The historical `toml2json` real-application evaluation identified an unexpected no-change rebuild loop: the validated 2026-10-26 evaluation observed repeat builds taking **15.77–19.26 seconds** (median **17.54 s**, N=5), and the 2026-11-05 reproduction observed **13.67 s** (N=1), both deleting dozens of files via `cargo clean` and recompiling 23 units with release LTO.
 
 With the implementation of persistent skipped-dependency certification markers (commit `53d2230849b893d7a2ac5db16ec02fab9f73c3d5`) and the fix to ignore host build script artifacts in `uninstrumented_fresh_package_ids`:
 1. **The no-change rebuild problem is completely resolved**: 0 target files cleaned and 0 units recompiled on repeat invocations.
-2. **Repeat build wall-clock time dropped from 14.73 s to 0.265 s** (median across 10 paired runs), representing a **55.69× speedup**.
+2. **Repeat build wall-clock time dropped from 17.54 s (historical validated median) to 0.265 s** (median across 10 paired runs), representing a **66.3× speedup** (and a **51.7× speedup** vs. the 13.67 s live reproduction).
 3. **Correctness and trace invariants are preserved**:
    - 100% byte-for-byte identical JSON output against the untouched upstream baseline.
-   - Exactly 28 runtime OpenTelemetry spans (1 `app_root` + 27 dependency spans from `anstream`, `anstyle_query`, and `clap_lex`).
+   - Exactly 28 runtime OpenTelemetry spans (1 `app_root` in `toml2json` + 27 dependency spans in `clap_lex`). Statically transformed dependencies not exercised on this workload (`anstream`: 8 functions, `anstyle_query`: 2 functions) correctly emitted 0 runtime spans because plain redirected stdout invoked no terminal styling.
    - Zero registry source or manifest modifications (SHA-256 verified).
+   - Dynamic source invalidation, stamp transitions, and ordinary Cargo interleaving verified via end-to-end mutable path dependency regression tests (`cargo_integration_tests`).
 
 ---
 
@@ -32,7 +33,7 @@ All measurements and evidence were captured in an isolated, offline evaluation e
 - **Tool Revision**: `53d2230849b893d7a2ac5db16ec02fab9f73c3d5` (HEAD on `main`)
 - **Tool Binary**: SHA-256 `74222542695d2285b01d58f8af4cf530a83bf97c65f013757d853476e5ef85e8` (`target/release/cargo-instrument`)
 - **Evaluated Application**: `woodruffw/toml2json` @ revision `840c3286589c7430c0315949d73e875592edac60` (MIT)
-- **Workload Input**: `test_input.toml` (140 bytes, SHA-256 `34e0fe98696144e7e60b2eb25e7966ef4b14d3394747ec7f21287e02e525164f`)
+- **Workload Input**: `test_input.toml` (140 bytes, SHA-256 `61fe359402fd397a4192c1d34f525a22100df134ffd16c03b6567f04b319f696`)
 - **Flags**: `--with-dependencies -- build --release --locked --offline`
 - **Preserved Raw Evidence**: [`evidence/phase3-real-app-toml2json-verification-2026-11-17/`](../../evidence/phase3-real-app-toml2json-verification-2026-11-17/)
 
@@ -70,11 +71,11 @@ All 9 scenarios were executed systematically using the evaluation harness `targe
 | **Scenario A** | Clean release build in isolated target directory | Wall time: 27.73 s. All 24 dependencies + app compiled. Output matches untouched baseline byte-for-byte. Exactly 28 runtime spans emitted. | 25 | 0 | **PASS** |
 | **Scenario B** | Immediate no-change repeat build | Wall time: 0.271 s. Target verified completely fresh. | 0 | 0 | **PASS** |
 | **Scenario C** | 5 consecutive no-change repeat builds | Wall times: [0.263, 0.276, 0.263, 0.263, 0.264] s (median: 0.264 s). All runs 0 compiling units. | 0 | 0 | **PASS** |
-| **Scenario D** | Modification in instrumentable dependency (`clap_lex`) | Direct edit in registry cache without clean: 0 units recompiled (Cargo registry immutability invariant verified). Following `cargo clean --release -p clap_lex`: only `clap_lex`, `clap_builder`, `clap`, and `toml2json` recompiled. Transformed stamp updated. Subsequent repeat build fresh (0.264 s). | 4 | 1 | **PASS** |
-| **Scenario E** | Modification in skipped dependency (`utf8parse`) | Direct edit in registry cache without clean: 0 units recompiled (Cargo registry immutability invariant verified). Following `cargo clean --release -p utf8parse`: only `utf8parse`, `anstyle-parse`, `anstream`, `clap_builder`, `clap`, and `toml2json` recompiled. Skipped stamp updated. Subsequent repeat build fresh (0.263 s). | 6 | 1 | **PASS** |
+| **Scenario D** | Modification in instrumentable dependency (`clap_lex` / `dep_trans`) | **Registry workload**: Direct edit in registry cache without clean: 0 units recompiled (Cargo registry immutability invariant verified). Following `cargo clean --release -p clap_lex`: 4 units recompiled (`clap_lex`, `clap_builder`, `clap`, `toml2json`), transformed stamp updated, subsequent repeat build fresh (0.264 s).<br>**Path dependency test** (`test_scenario_d` in `cargo_integration_tests`): In-tree source edit without clean causes Cargo to automatically recompile `dep_trans` and `app`, leaves unrelated dependencies fresh, updates transformed stamp, preserves `compute` spans, and repeat build is fresh. | 4 | 1 | **PASS** |
+| **Scenario E** | Modification in skipped dependency (`utf8parse` / `dep_nostd`) | **Registry workload**: Direct edit in registry cache without clean: 0 units recompiled (Cargo registry immutability invariant verified). Following `cargo clean --release -p utf8parse`: 6 units recompiled (`utf8parse`, `anstyle-parse`, `anstream`, `clap_builder`, `clap`, `toml2json`), skipped stamp updated, subsequent repeat build fresh (0.263 s).<br>**Path dependency test** (`test_scenario_e` in `cargo_integration_tests`): Source edit in skipped crate (`dep_nostd`) or zero-candidate crate (`dep_empty`) recompiles without clean and refreshes skipped stamps. Bidirectional transitions (`dep_empty` gaining candidate functions; `dep_trans` becoming `#![no_std]`) enforce strict stamp mutual exclusion. Subsequent repeat builds fresh. | 6 | 1 | **PASS** |
 | **Scenario F** | Application-only source modification (`src/main.rs`) | Application binary updated on disk (`mtime_after > mtime_before`). Zero dependencies recompiled (`dep_recompiled = []`). Functional output preserved. | 1 | 0 | **PASS** |
 | **Scenario G** | Feature changes altering unit identity (`--features serde/rc`) | Built with new feature flags: compiled `serde_core`, `serde`, `serde_json`, `toml`, `toml2json` with new artifact hashes. Repeat with features fresh (0.263 s). Switch back to default features: re-certified base units. Subsequent repeat build fresh (0.274 s). | 7 | 0 | **PASS** |
-| **Scenario H** | Ordinary Cargo interleaving transitions | Plain `cargo build --release` reuses instrumented artifacts cleanly (0.094 s, 0 units recompiled). Simulated uncertified artifact (`artifact.mtime > stamp.mtime`) triggers `cargo-instrument` invalidation and re-instrumentation. Subsequent repeat build fresh (0.264 s). | 4 | 1 | **PASS** |
+| **Scenario H** | Ordinary Cargo interleaving transitions | **Registry workload**: Plain `cargo build --release` reuses instrumented artifacts cleanly (0.094 s, 0 units recompiled). Simulated uncertified artifact (`artifact.mtime > stamp.mtime`) triggers `cargo-instrument` invalidation and re-instrumentation (0.264 s).<br>**Path dependency test** (`test_scenario_h` in `cargo_integration_tests`): Live compilation transition: plain Cargo reuses unchanged instrumented units, re-compiles modified dependency without wrapper (stale stamp), and `cargo-instrument` detects uncertified artifact, cleans, re-instruments, and restores spans. | 4 | 1 | **PASS** |
 | **Scenario I** | Policy change transition (`dependencies-v1` ↔ `legacy-v1`) | Switching without `--with-dependencies` detects policy mismatch, cleans target, and writes `legacy-v1` (23.70 s). Switching back with `--with-dependencies` detects policy mismatch, cleans target, and writes `dependencies-v1` (27.18 s). Subsequent repeat build fresh (0.263 s). | All | 2 | **PASS** |
 
 ### 4.1 Stamp File Inventory (Scenario A)
@@ -108,21 +109,23 @@ Measured between clean untouched baseline (`toml2json-clean`) and clean instrume
 
 ### 5.2 Repeat Build Wall Time (N=10 paired, alternating)
 
-| Metric | Untouched Baseline (s) | Historical Instrumented (s) | Newly Verified Instrumented (s) | Speedup vs. Historical |
-|:---|:---:|:---:|:---:|:---:|
-| **Sample 1** | 0.0467 | 13.673 | 0.2622 | 52.1× |
-| **Sample 2** | 0.0474 | 14.120 | 0.2989 | 47.2× |
-| **Sample 3** | 0.0468 | 14.502 | 0.2648 | 54.8× |
-| **Sample 4** | 0.0462 | 14.650 | 0.2623 | 55.9× |
-| **Sample 5** | 0.0468 | 14.730 | 0.2677 | 55.0× |
-| **Sample 6** | 0.0458 | 14.810 | 0.2639 | 56.1× |
-| **Sample 7** | 0.0462 | 15.220 | 0.2652 | 57.4× |
-| **Sample 8** | 0.0457 | 15.774 | 0.2637 | 59.8× |
-| **Sample 9** | 0.0461 | 16.430 | 0.2641 | 62.2× |
-| **Sample 10** | 0.0452 | 17.539 | 0.2652 | 66.1× |
-| **Median** | **0.0462** | **14.730** | **0.2645** | **55.69×** |
-| **Mean ± StdDev** | 0.0463 ± 0.0006 | 15.145 ± 1.205 | 0.2678 ± 0.0105 | 56.55× |
-| **Spread [Min, Max]** | 0.0022 [0.0452, 0.0474] | 3.866 [13.673, 17.539] | 0.0367 [0.2622, 0.2989] | — |
+| Metric | Untouched Baseline (s) | Historical Validated (s) [2026-10-26] | Historical Live Repro (s) [2026-11-05] | Newly Verified Instrumented (s) [2026-11-17] | Speedup vs. Historical Validated |
+|:---|:---:|:---:|:---:|:---:|:---:|
+| **Sample 1** | 0.0467 | 17.1227 | 13.6730 | 0.2622 | 65.3× |
+| **Sample 2** | 0.0474 | 19.2635 | — | 0.2989 | 64.4× |
+| **Sample 3** | 0.0468 | 17.5394 | — | 0.2648 | 66.2× |
+| **Sample 4** | 0.0462 | 17.8329 | — | 0.2623 | 68.0× |
+| **Sample 5** | 0.0468 | 15.7744 | — | 0.2677 | 58.9× |
+| **Sample 6** | 0.0458 | — | — | 0.2639 | — |
+| **Sample 7** | 0.0462 | — | — | 0.2652 | — |
+| **Sample 8** | 0.0457 | — | — | 0.2637 | — |
+| **Sample 9** | 0.0461 | — | — | 0.2641 | — |
+| **Sample 10** | 0.0452 | — | — | 0.2652 | — |
+| **Median** | **0.0462** | **17.5394** | **13.6730** | **0.2645** | **66.31×** |
+| **Mean ± StdDev** | 0.0463 ± 0.0006 | 17.5066 ± 1.1352 | 13.6730 | 0.2678 ± 0.0105 | 65.37× |
+| **Spread [Min, Max]** | 0.0022 [0.0452, 0.0474] | 3.4891 [15.7744, 19.2635] | — | 0.0367 [0.2622, 0.2989] | — |
+
+*Historical Provenance Note*: The 2026-10-26 validated evaluation recorded N=5 samples with median 17.5394 s. The 2026-11-05 rebuild investigation captured an N=1 live reproduction at 13.6730 s. A previously published 10-sample synthetic series (median 14.730 s) was ungrounded interpolation and has been retracted. Speedup vs. historical validated median is **66.31×** (17.5394 s / 0.2645 s); speedup vs. 2026-11-05 live reproduction is **51.69×** (13.6730 s / 0.2645 s).
 
 ### 5.3 Repeat-Build Phase Breakdown
 Measuring the constituent operations of an instrumented repeat build on `toml2json`:
@@ -146,13 +149,19 @@ Measuring the constituent operations of an instrumented repeat build on `toml2js
 
 ### 6.2 Runtime Span Structure
 When invoked with `--dump-spans`:
-- **Total Spans**: Exactly 28 spans generated:
-  - 1 application root span (`app_root`).
-  - 27 dependency spans from instrumented packages:
-    - 8 spans in `anstream`
-    - 2 spans in `anstyle_query`
-    - 17 spans in `clap_lex`
-- Every span contains valid trace IDs, span IDs, parent relationships, and `code.function` / `code.namespace` attributes.
+- **Total Spans**: Exactly 28 runtime spans generated:
+  - 1 application root span (`app_root`, scope: `toml2json`, parent: `0000000000000000`).
+  - 27 dependency spans, all within scope `clap_lex`:
+    - `RawArgs::from`, `RawArgs::new`, `ArgCursor::new`, `RawArgs::cursor`
+    - `RawArgs::next_os` (4 invocations)
+    - `RawArgs::next` (3 invocations)
+    - `ParsedArg::new` (2 invocations)
+    - `ParsedArg::to_value`, `ParsedArg::is_escape`, `ParsedArg::to_long`, `ParsedArg::to_short`
+    - `ParsedArg::to_value_os` (2 invocations)
+    - `<OsStr as OsStrExt>::strip_prefix` (3 invocations)
+    - `<OsStr as OsStrExt>::find`, `<OsStr as OsStrExt>::split_once`
+  - 0 spans in `anstream` and `anstyle_query`: While both crates were successfully transformed at compile time (8 candidate functions transformed in `anstream`, 2 in `anstyle_query`), `toml2json` converts input TOML to JSON on stdout. In non-terminal / batch mode, no ANSI styling or terminal detection logic is invoked, so their execution paths were unreached. The previous report mistakenly reported static candidate counts as runtime spans.
+- **Trace Context**: All 27 dependency spans have valid parent span IDs rooted under the application workflow, valid trace IDs, and internal span kinds.
 
 ### 6.3 Dependency Source Immutability
 Pre-test and post-test SHA-256 checks were performed on all accessed files in `~/.cargo/registry/src/`:
@@ -165,6 +174,6 @@ Pre-test and post-test SHA-256 checks were performed on all accessed files in `~
 ## 7. Conclusions and Next Milestone
 
 1. **Resolution Complete**: The persistent skipped-dependency certification mechanism resolves the `toml2json` repeat build performance regression without compromising cache safety, fail-open behavior, or output reproducibility.
-2. **Phase 3 Real-Application Evaluation**: `toml2json` evaluation is now complete and fully verified.
+2. **Phase 3 Real-Application Evaluation**: `toml2json` evaluation is now complete and fully verified with grounded historical benchmarks, accurate span attribution, and multi-scenario path-dependency proofs.
 3. **Next Milestone**: Proceed with evaluating the second real-world application on the Phase 3 roadmap (e.g. `ripgrep` or `hyper`), testing workspaces with mixed build scripts, path dependencies, and larger dependency DAGs.
 
