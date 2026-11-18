@@ -1129,3 +1129,267 @@ fn test_prepass_session_stale_and_corrupt_safety() {
     // Case 3: Fresh fingerprint -> matches
     assert_eq!(loaded.fingerprint, "hash_alpha");
 }
+
+#[test]
+fn test_exact_otel_identity_isolation_multiple_versions() {
+    use cargo_instrument::{CargoDepEdge, R4NativeOtelArtifact, R4Profile, SessionPlan};
+
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let otel_dir_v1 = temp.path().join("otel_v1");
+    let otel_dir_v2 = temp.path().join("otel_v2");
+    fs::create_dir_all(&otel_dir_v1).unwrap();
+    fs::create_dir_all(&otel_dir_v2).unwrap();
+
+    let rlib_v1 = otel_dir_v1.join("libopentelemetry.rlib");
+    let rlib_v2 = otel_dir_v2.join("libopentelemetry.rlib");
+    fs::write(&rlib_v1, b"rlib v1").unwrap();
+    fs::write(&rlib_v2, b"rlib v2").unwrap();
+
+    let app_a_source = temp.path().join("app_a/src/main.rs");
+    let app_b_source = temp.path().join("app_b/src/main.rs");
+    let dep_a_source = temp.path().join("dep_a/src/lib.rs");
+    let dep_b_source = temp.path().join("dep_b/src/lib.rs");
+    let unrelated_source = temp.path().join("unrelated/src/lib.rs");
+
+    fs::create_dir_all(app_a_source.parent().unwrap()).unwrap();
+    fs::create_dir_all(app_b_source.parent().unwrap()).unwrap();
+    fs::create_dir_all(dep_a_source.parent().unwrap()).unwrap();
+    fs::create_dir_all(dep_b_source.parent().unwrap()).unwrap();
+    fs::create_dir_all(unrelated_source.parent().unwrap()).unwrap();
+
+    fs::write(&app_a_source, b"fn main() {}").unwrap();
+    fs::write(&app_b_source, b"fn main() {}").unwrap();
+    fs::write(&dep_a_source, b"pub fn a() {}").unwrap();
+    fs::write(&dep_b_source, b"pub fn b() {}").unwrap();
+    fs::write(&unrelated_source, b"pub fn u() {}").unwrap();
+
+    let app_a_id = "app_a 0.1.0".to_string();
+    let app_b_id = "app_b 0.1.0".to_string();
+    let dep_a_id = "dep_a 0.1.0".to_string();
+    let dep_b_id = "dep_b 0.1.0".to_string();
+    let unrelated_id = "unrelated 0.1.0".to_string();
+    let otel_v1_id =
+        "opentelemetry 0.24.0 (registry+https://github.com/rust-lang/crates.io-index)".to_string();
+    let otel_v2_id =
+        "opentelemetry 0.27.0 (registry+https://github.com/rust-lang/crates.io-index)".to_string();
+
+    let mut plan = SessionPlan::default();
+    plan.package_names_by_id
+        .insert(app_a_id.clone(), "app_a".into());
+    plan.package_names_by_id
+        .insert(app_b_id.clone(), "app_b".into());
+    plan.package_names_by_id
+        .insert(dep_a_id.clone(), "dep_a".into());
+    plan.package_names_by_id
+        .insert(dep_b_id.clone(), "dep_b".into());
+    plan.package_names_by_id
+        .insert(unrelated_id.clone(), "unrelated".into());
+    plan.package_names_by_id
+        .insert(otel_v1_id.clone(), "opentelemetry".into());
+    plan.package_names_by_id
+        .insert(otel_v2_id.clone(), "opentelemetry".into());
+
+    plan.package_manifest_dirs
+        .insert(app_a_id.clone(), temp.path().join("app_a"));
+    plan.package_manifest_dirs
+        .insert(app_b_id.clone(), temp.path().join("app_b"));
+    plan.package_manifest_dirs
+        .insert(dep_a_id.clone(), temp.path().join("dep_a"));
+    plan.package_manifest_dirs
+        .insert(dep_b_id.clone(), temp.path().join("dep_b"));
+    plan.package_manifest_dirs
+        .insert(unrelated_id.clone(), temp.path().join("unrelated"));
+
+    // dep_a is paired with otel_v1; dep_b is paired with otel_v2
+    plan.r4_otel_package_by_dependency
+        .insert(dep_a_id.clone(), otel_v1_id.clone());
+    plan.r4_otel_package_by_dependency
+        .insert(dep_b_id.clone(), otel_v2_id.clone());
+
+    // Dependency graph:
+    // app_a -> dep_a
+    // app_b -> dep_b
+    // unrelated -> []
+    plan.package_dependencies.insert(
+        app_a_id.clone(),
+        vec![CargoDepEdge {
+            binding_name: "dep_a".into(),
+            package_id: dep_a_id.clone(),
+            kinds: vec![None],
+        }],
+    );
+    plan.package_dependencies.insert(
+        app_b_id.clone(),
+        vec![CargoDepEdge {
+            binding_name: "dep_b".into(),
+            package_id: dep_b_id.clone(),
+            kinds: vec![None],
+        }],
+    );
+    plan.package_dependencies.insert(dep_a_id.clone(), vec![]);
+    plan.package_dependencies.insert(dep_b_id.clone(), vec![]);
+    plan.package_dependencies
+        .insert(unrelated_id.clone(), vec![]);
+
+    let profile = R4Profile {
+        opt_level: "3".to_string(),
+        debug_assertions: false,
+        overflow_checks: false,
+        test: false,
+    };
+
+    plan.r4_native_otel_artifacts.push(R4NativeOtelArtifact {
+        package_id: otel_v1_id.clone(),
+        package_version: "0.24.0".to_string(),
+        resolved_features: vec!["trace".into()],
+        target: None,
+        profile: profile.clone(),
+        rlib_path: rlib_v1,
+        search_paths: vec![otel_dir_v1.clone()],
+    });
+
+    plan.r4_native_otel_artifacts.push(R4NativeOtelArtifact {
+        package_id: otel_v2_id.clone(),
+        package_version: "0.27.0".to_string(),
+        resolved_features: vec!["trace".into()],
+        target: None,
+        profile: profile.clone(),
+        rlib_path: rlib_v2,
+        search_paths: vec![otel_dir_v2.clone()],
+    });
+
+    let args = vec!["-C".to_string(), "opt-level=3".to_string()];
+
+    // 1. app_a transitively depends only on dep_a (which requires otel_v1).
+    // It must receive ONLY otel_dir_v1, NEVER otel_dir_v2.
+    let paths_app_a = plan.validated_native_otel_search_paths("app_a", Some(&app_a_source), &args);
+    assert_eq!(
+        paths_app_a,
+        vec![otel_dir_v1.clone()],
+        "app_a must only receive otel_v1 paths"
+    );
+
+    // 2. app_b transitively depends only on dep_b (which requires otel_v2).
+    // It must receive ONLY otel_dir_v2, NEVER otel_dir_v1.
+    let paths_app_b = plan.validated_native_otel_search_paths("app_b", Some(&app_b_source), &args);
+    assert_eq!(
+        paths_app_b,
+        vec![otel_dir_v2.clone()],
+        "app_b must only receive otel_v2 paths"
+    );
+
+    // 3. dep_a itself receives ONLY otel_dir_v1.
+    let paths_dep_a = plan.validated_native_otel_search_paths("dep_a", Some(&dep_a_source), &args);
+    assert_eq!(
+        paths_dep_a,
+        vec![otel_dir_v1.clone()],
+        "dep_a must only receive otel_v1 paths"
+    );
+
+    // 4. dep_b itself receives ONLY otel_dir_v2.
+    let paths_dep_b = plan.validated_native_otel_search_paths("dep_b", Some(&dep_b_source), &args);
+    assert_eq!(
+        paths_dep_b,
+        vec![otel_dir_v2.clone()],
+        "dep_b must only receive otel_v2 paths"
+    );
+
+    // 5. Unrelated crate receives nothing.
+    let paths_unrelated =
+        plan.validated_native_otel_search_paths("unrelated", Some(&unrelated_source), &args);
+    assert!(
+        paths_unrelated.is_empty(),
+        "unrelated crate must receive no search paths"
+    );
+}
+
+#[test]
+fn test_native_otel_search_paths_requires_existing_rlib_and_trace_feature() {
+    use cargo_instrument::{R4NativeOtelArtifact, R4Profile, SessionPlan};
+
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let otel_dir = temp.path().join("otel");
+    fs::create_dir_all(&otel_dir).unwrap();
+
+    let app_source = temp.path().join("app/src/main.rs");
+    fs::create_dir_all(app_source.parent().unwrap()).unwrap();
+    fs::write(&app_source, b"fn main() {}").unwrap();
+
+    let app_id = "app 0.1.0".to_string();
+    let otel_id = "opentelemetry 0.27.0".to_string();
+
+    let mut plan = SessionPlan::default();
+    plan.package_names_by_id
+        .insert(app_id.clone(), "app".into());
+    plan.package_names_by_id
+        .insert(otel_id.clone(), "opentelemetry".into());
+    plan.package_manifest_dirs
+        .insert(app_id.clone(), temp.path().join("app"));
+    plan.r4_otel_package_by_dependency
+        .insert(app_id.clone(), otel_id.clone());
+
+    let profile = R4Profile {
+        opt_level: "3".to_string(),
+        debug_assertions: false,
+        overflow_checks: false,
+        test: false,
+    };
+    let args = vec!["-C".to_string(), "opt-level=3".to_string()];
+
+    // Case 1: Artifact rlib does NOT exist on disk -> rejected
+    let non_existent_rlib = otel_dir.join("non_existent_libopentelemetry.rlib");
+    plan.r4_native_otel_artifacts.push(R4NativeOtelArtifact {
+        package_id: otel_id.clone(),
+        package_version: "0.27.0".to_string(),
+        resolved_features: vec!["trace".into()],
+        target: None,
+        profile: profile.clone(),
+        rlib_path: non_existent_rlib,
+        search_paths: vec![otel_dir.clone()],
+    });
+
+    let paths = plan.validated_native_otel_search_paths("app", Some(&app_source), &args);
+    assert!(
+        paths.is_empty(),
+        "missing rlib file must cause artifact rejection"
+    );
+
+    // Case 2: Artifact rlib exists, but features lack 'trace' (e.g. metrics only) -> rejected
+    let existing_rlib = otel_dir.join("libopentelemetry.rlib");
+    fs::write(&existing_rlib, b"rlib").unwrap();
+    plan.r4_native_otel_artifacts.clear();
+    plan.r4_native_otel_artifacts.push(R4NativeOtelArtifact {
+        package_id: otel_id.clone(),
+        package_version: "0.27.0".to_string(),
+        resolved_features: vec!["metrics".into(), "logs".into()],
+        target: None,
+        profile: profile.clone(),
+        rlib_path: existing_rlib.clone(),
+        search_paths: vec![otel_dir.clone()],
+    });
+
+    let paths_no_trace = plan.validated_native_otel_search_paths("app", Some(&app_source), &args);
+    assert!(
+        paths_no_trace.is_empty(),
+        "artifact lacking 'trace' feature must be rejected"
+    );
+
+    // Case 3: Artifact has both existing rlib and 'trace' feature -> accepted
+    plan.r4_native_otel_artifacts.clear();
+    plan.r4_native_otel_artifacts.push(R4NativeOtelArtifact {
+        package_id: otel_id.clone(),
+        package_version: "0.27.0".to_string(),
+        resolved_features: vec!["metrics".into(), "trace".into()],
+        target: None,
+        profile: profile.clone(),
+        rlib_path: existing_rlib,
+        search_paths: vec![otel_dir.clone()],
+    });
+
+    let paths_valid = plan.validated_native_otel_search_paths("app", Some(&app_source), &args);
+    assert_eq!(
+        paths_valid,
+        vec![otel_dir],
+        "valid artifact must be accepted"
+    );
+}

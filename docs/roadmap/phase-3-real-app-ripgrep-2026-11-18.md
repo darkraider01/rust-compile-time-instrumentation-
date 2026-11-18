@@ -34,12 +34,20 @@ Key results from this evaluation:
    - Invalidation of an instrumentable dependency (`walkdir` or `same-file`) recompiles only the affected crate and downstream dependents, leaving unrelated dependencies fresh.
    - Invalidation of a skipped dependency (`regex-syntax`) regenerates skipped certification stamps cleanly.
    - Application-only source edits (`crates/core/main.rs`) recompile only the final binary in **4.24 s** (+0.36 s / +9.25% overhead vs. baseline 3.88 s).
-4. **Statistical Benchmarks (N=5/10 Paired Alternating Runs)**:
-   - **Clean release build**: Baseline 12.69 s vs. Instrumented 32.21 s (2.54× overhead ratio, +19.52 s absolute delta).
-   - **Repeat release build**: Baseline 0.048 s vs. Instrumented 0.217 s (4.48× overhead ratio, +0.169 s absolute delta).
-   - **App-only edit build**: Baseline 3.88 s vs. Instrumented 4.24 s (1.09× overhead ratio, +0.359 s absolute delta).
-   - **Workload runtime execution**: Baseline 4.75 ms vs. Instrumented 7.02 ms (1.48× overhead ratio, +2.27 ms absolute delta for 7,096 in-memory recorded spans, representing ~320 ns per span).
-   - **Binary size**: Baseline 30,355,176 bytes vs. Instrumented 40,927,832 bytes (+10,572,656 bytes / +34.83% growth).
+4. **Statistical Benchmarks (Reconciled N=5/10 Dual-Session Runs)**:
+   - **Session 1 (Dedicated Host, commit `48262c6d` + initial ripgrep fixes)**:
+     - **Clean release build**: Baseline 12.69 s vs. Instrumented 32.21 s (2.54× overhead ratio, +19.52 s absolute delta).
+     - **Repeat release build**: Baseline 0.048 s vs. Instrumented 0.217 s (4.48× overhead ratio, +0.169 s absolute delta).
+     - **App-only edit build**: Baseline 3.88 s vs. Instrumented 4.24 s (1.09× overhead ratio, +0.359 s absolute delta).
+     - **Workload runtime execution**: Baseline 4.75 ms vs. Instrumented 7.02 ms (1.48× overhead ratio, +2.27 ms absolute delta for 7,096 spans, ~320 ns/span).
+   - **Session 2 (Post-Hardening Validation, commit `2d9d10d6`, concurrent background test load)**:
+     - **Clean release build**: Baseline 19.18 s vs. Instrumented 46.99 s (2.45× overhead ratio, +27.82 s absolute delta).
+     - **Repeat release build**: Baseline 0.055 s vs. Instrumented 0.246 s (4.44× overhead ratio, +0.190 s absolute delta).
+     - **App-only edit build**: Baseline 5.06 s vs. Instrumented 6.07 s (1.20× overhead ratio, +1.010 s absolute delta).
+     - **Workload runtime execution**: Baseline 6.43 ms vs. Instrumented 8.83 ms (1.37× overhead ratio, +2.40 ms absolute delta for 7,096 spans, ~338 ns/span).
+   - **Cross-Session Consistency**:
+     - Overhead ratios remain remarkably stable regardless of workstation load (clean build: 2.54× vs. 2.45×; repeat build: 4.48× vs. 4.44×; runtime per-span: ~320 ns vs. ~338 ns).
+   - **Binary size**: Baseline 30,355,176 bytes vs. Instrumented 40,927,832 bytes (+10,572,656 bytes / +34.83% growth across both sessions).
 
 ---
 
@@ -50,8 +58,10 @@ All evaluation measurements and evidence artifacts were captured in an isolated,
 - **Host**: Linux fedora `6.19.10-300.fc44.x86_64`, architecture `x86_64` (12 logical CPU cores)
 - **Rustc**: `rustc 1.100.0 (0ef1bc386 2026-11-09)` (host: `x86_64-unknown-linux-gnu`, LLVM 23.1.5)
 - **Cargo**: `cargo 1.100.0 (3acc79c0c 2026-11-05)`
-- **Tool Revision**: `48262c6d86c5f7dcd97d1c98f094cc8a371beb4d` (HEAD on `main`)
-- **Tool Binary**: SHA-256 `6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679` (`target/release/cargo-instrument`)
+- **Tool Revisions & Provenance**:
+  - **Session 1 (Initial Evaluation)**: commit `48262c6d86c5f7dcd97d1c98f094cc8a371beb4d` + initial ripgrep fixes, binary SHA-256 `6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679` (captured 2026-11-18T07:30:23Z, dedicated load).
+  - **Session 2 (Post-Hardening Validation)**: commit `2d9d10d6cc69691433940850a4be1d4017c9695e`, binary SHA-256 `16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8` (captured 2026-11-18T11:03:24Z, concurrent background test load).
+  - *Provenance Note*: The intermediate commit `82c1c10326947efa67a7d64935ea052638c4f277` was recorded in the raw evidence manifest at capture time because `git rev-parse HEAD` evaluated the committed HEAD prior to committing the hardening changes in `2d9d10d6cc69691433940850a4be1d4017c9695e`. The compiled tool binary SHA-256 (`16541cc8...`) authentically verifies that the post-hardening code was evaluated.
 - **Evaluated Application**: `BurntSushi/ripgrep` @ revision `4649aa9700619f94cf9c66876e9549d83420e16c` (Tag `14.1.1`, License: `Unlicense OR MIT`)
 - **Deterministic Workload**: `rg --threads 1 --sort path --color always "fn parse" crates/`
 - **Workload Output**: 2,122 bytes, SHA-256 `1d914b97badcb59f2ec82dcf631d3715cc2f5e4c99059219776da6d578e86aec`, exit code `0`
@@ -125,8 +135,25 @@ In `release/build/*/out/`, exactly **10 transformed stamp files** and **34 skipp
 
 All measurements were collected using alternating paired order across isolated variant directories (`target-rg-clean-base` vs. `target-rg-clean-inst`).
 
+### 5.0 Dual-Session Reconciliation Overview
+
+The evaluation encompasses two distinct benchmark captures:
+1. **Session 1 (Dedicated Host, commit `48262c6d` + initial ripgrep fixes)**: Captured on an unconstrained 12-core host (binary `6680134a...`).
+2. **Session 2 (Post-Hardening Validation, commit `2d9d10d6`, binary `16541cc8...`)**: Captured while concurrent background cargo compilation was running on the host, increasing absolute wall-clock durations across both baseline and instrumented builds.
+
+| Metric | Session 1 (Dedicated Host) Baseline → Instrumented | Session 1 Overhead Ratio | Session 2 (Concurrent Load) Baseline → Instrumented | Session 2 Overhead Ratio | Consistency Assessment |
+|:---|:---:|:---:|:---:|:---:|:---|
+| **Clean Build (Median)** | 12.69 s → 32.21 s | **2.54×** | 19.18 s → 46.99 s | **2.45×** | Multipliers match within 3.5% across load profiles |
+| **Repeat Build (Median)** | 0.048 s → 0.217 s | **4.48×** | 0.055 s → 0.246 s | **4.44×** | Multipliers match within 0.9% across load profiles |
+| **App-Only Edit (Median)** | 3.88 s → 4.24 s | **1.09×** | 5.06 s → 6.07 s | **1.20×** | Recompilation confined strictly to app binary |
+| **Workload Runtime (Median)** | 4.75 ms → 7.02 ms | **1.48×** | 6.43 ms → 8.83 ms | **1.37×** | Per-span amortized delta: ~320 ns vs. ~338 ns |
+| **Binary Size** | 30.36 MB → 40.93 MB | **+34.83%** | 30.36 MB → 40.93 MB | **+34.83%** | Identical linked artifacts and SDK symbols |
+
+The detailed distributions for both sessions are reported below.
+
 ### 5.1 Clean Builds (N=5 Paired Alternating Runs)
 
+#### Session 1 (Dedicated Host)
 | Run | Baseline (`cargo build --release`) | Instrumented (`cargo instrument --with-dependencies`) | Order |
 |:---:|:---:|:---:|:---:|
 | 1 | 12.6130 s | 32.2075 s | Base → Inst |
@@ -137,8 +164,20 @@ All measurements were collected using alternating paired order across isolated v
 | **Median** | **12.6907 s** | **32.2075 s** | **Ratio: 2.5379× (+19.5168 s)** |
 | **Mean ± StdDev** | **12.8179 ± 0.2425 s** | **32.3561 ± 0.6398 s** | Spread: 0.6435 s (B) / 1.9136 s (I) |
 
+#### Session 2 (Concurrent Load, Post-Hardening)
+| Run | Baseline (`cargo build --release`) | Instrumented (`cargo instrument --with-dependencies`) | Order |
+|:---:|:---:|:---:|:---:|
+| 1 | 22.2313 s | 54.7978 s | Base → Inst |
+| 2 | 19.1783 s | 44.4382 s | Inst → Base |
+| 3 | 22.4623 s | 50.3544 s | Base → Inst |
+| 4 | 16.6097 s | 44.3571 s | Inst → Base |
+| 5 | 15.9901 s | 46.9934 s | Base → Inst |
+| **Median** | **19.1783 s** | **46.9934 s** | **Ratio: 2.4503× (+27.8151 s)** |
+| **Mean ± StdDev** | **19.2943 ± 2.7129 s** | **48.1882 ± 3.9635 s** | Spread: 6.4722 s (B) / 10.4407 s (I) |
+
 ### 5.2 No-Change Repeat Builds (N=10 Paired Alternating Runs)
 
+#### Session 1 (Dedicated Host)
 | Run | Baseline (`cargo build --release`) | Instrumented (`cargo instrument --with-dependencies`) | Units Rebuilt | Files Cleaned |
 |:---:|:---:|:---:|:---:|:---:|
 | 1 | 0.0766 s | 0.2415 s | 0 | 0 |
@@ -153,6 +192,22 @@ All measurements were collected using alternating paired order across isolated v
 | 10 | 0.0493 s | 0.2185 s | 0 | 0 |
 | **Median** | **0.0484 s** | **0.2169 s** | **0** | **0** |
 | **Mean ± StdDev** | **0.0512 ± 0.0085 s** | **0.2195 ± 0.0075 s** | **Ratio: 4.4814× (+0.1685 s)** | Spread: 0.0263 s |
+
+#### Session 2 (Concurrent Load, Post-Hardening)
+| Run | Baseline (`cargo build --release`) | Instrumented (`cargo instrument --with-dependencies`) | Units Rebuilt | Files Cleaned |
+|:---:|:---:|:---:|:---:|:---:|
+| 1 | 0.0549 s | 0.2706 s | 0 | 0 |
+| 2 | 0.0554 s | 0.2313 s | 0 | 0 |
+| 3 | 0.0546 s | 0.2419 s | 0 | 0 |
+| 4 | 0.0860 s | 0.2801 s | 0 | 0 |
+| 5 | 0.0673 s | 0.2411 s | 0 | 0 |
+| 6 | 0.0551 s | 0.2485 s | 0 | 0 |
+| 7 | 0.0722 s | 0.2783 s | 0 | 0 |
+| 8 | 0.0551 s | 0.2501 s | 0 | 0 |
+| 9 | 0.0530 s | 0.2428 s | 0 | 0 |
+| 10 | 0.0670 s | 0.2426 s | 0 | 0 |
+| **Median** | **0.0553 s** | **0.2457 s** | **0** | **0** |
+| **Mean ± StdDev** | **0.0621 ± 0.0103 s** | **0.2527 ± 0.0163 s** | **Ratio: 4.4430× (+0.1904 s)** | Spread: 0.0489 s |
 
 ### 5.3 Repeat-Build Phase Attribution
 

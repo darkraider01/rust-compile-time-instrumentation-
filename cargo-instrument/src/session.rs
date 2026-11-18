@@ -1019,9 +1019,15 @@ impl SessionPlan {
             if artifact.profile != unit_profile {
                 continue;
             }
+            if !artifact.rlib_path.is_file() {
+                continue;
+            }
+            if !artifact.resolved_features.iter().any(|f| f == "trace") {
+                continue;
+            }
 
             let is_relevant = if pkg_id == &artifact.package_id
-                || self.r4_otel_package_by_dependency.contains_key(pkg_id)
+                || self.r4_otel_package_by_dependency.get(pkg_id) == Some(&artifact.package_id)
             {
                 true
             } else {
@@ -1035,9 +1041,8 @@ impl SessionPlan {
                     if let Some(deps) = self.package_dependencies.get(curr) {
                         for edge in deps {
                             if edge.package_id == artifact.package_id
-                                || self
-                                    .r4_otel_package_by_dependency
-                                    .contains_key(&edge.package_id)
+                                || self.r4_otel_package_by_dependency.get(&edge.package_id)
+                                    == Some(&artifact.package_id)
                             {
                                 found = true;
                                 break;

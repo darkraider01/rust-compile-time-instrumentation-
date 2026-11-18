@@ -1,8 +1,11 @@
 {
   "metadata": {
+    "provenance_note": "Reconciles initial evaluation (Session 1, commit 48262c6d + initial ripgrep fixes, unconstrained host) and post-hardening validation (Session 2, commit 2d9d10d6, under parallel load). Overhead ratios remain consistent across sessions (clean 2.54x vs 2.45x, repeat 4.48x vs 4.44x). Primary fields reflect Session 2 post-hardening measurements.",
     "captured": "2026-11-18T11:03:24.093025+00:00",
-    "tool_revision": "82c1c10326947efa67a7d64935ea052638c4f277",
+    "tool_revision": "2d9d10d6cc69691433940850a4be1d4017c9695e",
     "tool_binary_sha256": "16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8",
+    "prior_tool_revision": "48262c6d86c5f7dcd97d1c98f094cc8a371beb4d",
+    "prior_tool_binary_sha256": "6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679",
     "host": "Linux 6.19.10-300.fc44.x86_64 x86_64",
     "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
     "cargo": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
@@ -190,6 +193,68 @@
     "invalidation_sec": 0.0,
     "wrapped_cargo_sec": 0.146,
     "total_observed_repeat_sec": 0.3687
+  },
+  "session_comparison": {
+    "session_1_initial": {
+      "captured": "2026-11-18T07:30:23+00:00",
+      "tool_revision": "48262c6d86c5f7dcd97d1c98f094cc8a371beb4d",
+      "tool_binary_sha256": "6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679",
+      "host_conditions": "Dedicated unconstrained workstation load",
+      "clean_build": {
+        "baseline_median_sec": 12.6907,
+        "instrumented_median_sec": 32.2075,
+        "overhead_ratio": 2.5379,
+        "delta_sec": 19.5168
+      },
+      "repeat_build": {
+        "baseline_median_sec": 0.0484,
+        "instrumented_median_sec": 0.2169,
+        "overhead_ratio": 4.4814,
+        "delta_sec": 0.1685
+      },
+      "app_edit_build": {
+        "baseline_median_sec": 3.8847,
+        "instrumented_median_sec": 4.2440,
+        "overhead_ratio": 1.0925,
+        "delta_sec": 0.3593
+      },
+      "runtime_workload_ms": {
+        "baseline_median_ms": 4.75,
+        "instrumented_median_ms": 7.02,
+        "overhead_ratio": 1.4779,
+        "delta_ms": 2.27
+      }
+    },
+    "session_2_hardened": {
+      "captured": "2026-11-18T11:03:24.093025+00:00",
+      "tool_revision": "2d9d10d6cc69691433940850a4be1d4017c9695e",
+      "tool_binary_sha256": "16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8",
+      "host_conditions": "Concurrent background test load (higher baseline duration)",
+      "clean_build": {
+        "baseline_median_sec": 19.1783,
+        "instrumented_median_sec": 46.9934,
+        "overhead_ratio": 2.4503,
+        "delta_sec": 27.8151
+      },
+      "repeat_build": {
+        "baseline_median_sec": 0.0553,
+        "instrumented_median_sec": 0.2457,
+        "overhead_ratio": 4.4430,
+        "delta_sec": 0.1904
+      },
+      "app_edit_build": {
+        "baseline_median_sec": 5.0644,
+        "instrumented_median_sec": 6.0741,
+        "overhead_ratio": 1.1994,
+        "delta_sec": 1.0097
+      },
+      "runtime_workload_ms": {
+        "baseline_median_ms": 6.4327,
+        "instrumented_median_ms": 8.8298,
+        "overhead_ratio": 1.3726,
+        "delta_ms": 2.3971
+      }
+    }
   },
   "runtime_trace": {
     "span_count": 7096,

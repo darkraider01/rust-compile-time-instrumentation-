@@ -22,4 +22,8 @@ pub use transform::{
     TrampolineEmitter, TransformError, TransformationPlan, INSTRUMENT_ANCHOR_PREFIX,
 };
 pub use unit::UnitId;
-pub use wrapper::{run_wrapper, WrapperConfig, WrapperError, DEBUG_ENV, RECURSION_GUARD_ENV};
+pub use wrapper::{
+    is_valid_prepass_token, run_prepass_wrapper, run_wrapper, WrapperConfig, WrapperError,
+    DEBUG_ENV, PREPASS_FINGERPRINT_ENV, PREPASS_SESSION_ENV, PREPASS_TOKEN_ENV,
+    RECURSION_GUARD_ENV, WRAPPER_MODE_ENV,
+};

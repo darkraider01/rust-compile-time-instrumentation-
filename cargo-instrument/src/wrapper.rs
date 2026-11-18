@@ -17,6 +17,46 @@ use crate::unit::UnitId;
 
 pub const RECURSION_GUARD_ENV: &str = "CARGO_INSTRUMENT_ACTIVE";
 pub const DEBUG_ENV: &str = "INSTRUMENT_DEBUG";
+pub const WRAPPER_MODE_ENV: &str = "CARGO_INSTRUMENT_WRAPPER_MODE";
+pub const PREPASS_TOKEN_ENV: &str = "CARGO_INSTRUMENT_INTERNAL_PREPASS_TOKEN";
+pub const PREPASS_SESSION_ENV: &str = "CARGO_INSTRUMENT_PREPASS_SESSION";
+pub const PREPASS_FINGERPRINT_ENV: &str = "CARGO_INSTRUMENT_PREPASS_FINGERPRINT";
+
+/// Validate whether an internal pre-pass authorization token matches the required format.
+pub fn is_valid_prepass_token(token: &str) -> bool {
+    let rest = match token.strip_prefix("prepass_") {
+        Some(r) => r,
+        None => return false,
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let parts: Vec<&str> = rest.split('_').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    parts
+        .iter()
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+}
+
+/// Validate whether an internal pre-pass authorization token matches the required format.
+pub fn is_valid_prepass_token(token: &str) -> bool {
+    let rest = match token.strip_prefix("prepass_") {
+        Some(r) => r,
+        None => return false,
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let parts: Vec<&str> = rest.split('_').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    parts.iter().all(|part| {
+        !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
+}
 
 #[derive(Debug, Error)]
 pub enum WrapperError {
@@ -591,6 +631,60 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
         }
     }
 
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Pre-pass compiler wrapper mode.
+///
+/// Executes the compiler directly without AST transformation or stamp writing.
+/// If a valid session plan is provided and matches the active build fingerprint,
+/// validated native OpenTelemetry search paths are injected into rustc arguments.
+pub fn run_prepass_wrapper(
+    config: &WrapperConfig,
+    session_file: Option<&Path>,
+) -> Result<i32, WrapperError> {
+    let mut args_to_run = config.rustc_args.clone();
+
+    if let Some(session_path) = session_file {
+        if session_path.is_file() {
+            if let Ok(plan) = SessionPlan::load_from_file(session_path) {
+                let fingerprint_valid = match env::var(PREPASS_FINGERPRINT_ENV) {
+                    Ok(expected_fp) => !expected_fp.is_empty() && plan.fingerprint == expected_fp,
+                    Err(_) => true,
+                };
+
+                if fingerprint_valid {
+                    if let Ok(invocation) = CrateInvocation::parse(&config.rustc_args) {
+                        if let (Some(crate_name), Some(source_file)) =
+                            (invocation.unit.crate_name(), invocation.unit.source_file())
+                        {
+                            let current_dir =
+                                env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                            let resolved_path = if source_file.is_absolute() {
+                                source_file.to_path_buf()
+                            } else {
+                                current_dir.join(source_file)
+                            };
+                            let search_paths = plan.validated_native_otel_search_paths(
+                                crate_name,
+                                Some(&resolved_path),
+                                &config.rustc_args,
+                            );
+                            for dir in search_paths {
+                                let flag = format!("dependency={}", dir.display());
+                                if !args_to_run.windows(2).any(|w| w[0] == "-L" && w[1] == flag) {
+                                    args_to_run.push("-L".to_string());
+                                    args_to_run.push(flag);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let status = execute_real_rustc(&config.rustc_binary, &args_to_run)?;
     Ok(status.code().unwrap_or(1))
 }
 
