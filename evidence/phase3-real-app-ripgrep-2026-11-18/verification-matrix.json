@@ -1,8 +1,8 @@
 {
   "metadata": {
-    "captured": "2026-11-18T07:30:23.901591+00:00",
-    "tool_revision": "48262c6d86c5f7dcd97d1c98f094cc8a371beb4d",
-    "tool_binary_sha256": "6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679",
+    "captured": "2026-11-18T11:03:24.093025+00:00",
+    "tool_revision": "82c1c10326947efa67a7d64935ea052638c4f277",
+    "tool_binary_sha256": "16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8",
     "host": "Linux 6.19.10-300.fc44.x86_64 x86_64",
     "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
     "cargo": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
@@ -17,7 +17,7 @@
   "scenarios": {
     "scenario_a": {
       "status": "PASS",
-      "elapsed_sec": 31.7661,
+      "elapsed_sec": 48.5573,
       "compiling_units": 31,
       "transformed_stamps_file_count": 10,
       "transformed_packages_count": 5,
@@ -103,8 +103,8 @@
       "trace_oracle": {
         "valid": true,
         "total_spans": 7096,
-        "root_trace_id": "63e307d673ce33b415571cc2ffb947a6",
-        "root_span_id": "f4c407b631320ee0",
+        "root_trace_id": "cbdd785fc802b681d043b098b2bda23f",
+        "root_span_id": "e5da8ab477663ba2",
         "scope_distribution": {
           "termcolor": 1086,
           "same_file": 5,
@@ -116,34 +116,34 @@
     },
     "scenario_b": {
       "status": "PASS",
-      "elapsed_sec": 0.2158,
+      "elapsed_sec": 0.3613,
       "compiling_units": 0,
       "cleaned_invocations": 0
     },
     "scenario_c": {
       "status": "PASS",
       "times": [
-        0.2359,
-        0.2185,
-        0.2155,
-        0.2164,
-        0.216
+        0.2782,
+        0.2653,
+        0.2846,
+        0.2631,
+        0.2933
       ],
       "stats": {
         "n": 5,
         "samples": [
-          0.2359,
-          0.2185,
-          0.2155,
-          0.2164,
-          0.216
+          0.2782,
+          0.2653,
+          0.2846,
+          0.2631,
+          0.2933
         ],
-        "median": 0.2164,
-        "mean": 0.2205,
-        "stddev": 0.0078,
-        "min": 0.2155,
-        "max": 0.2359,
-        "spread": 0.0204
+        "median": 0.2782,
+        "mean": 0.2769,
+        "stddev": 0.0114,
+        "min": 0.2631,
+        "max": 0.2933,
+        "spread": 0.0301
       },
       "compiling_units": [
         0,
@@ -168,8 +168,8 @@
         "ignore",
         "ripgrep"
       ],
-      "elapsed_sec": 11.1355,
-      "repeat_sec": 0.2226
+      "elapsed_sec": 17.1789,
+      "repeat_sec": 0.3055
     },
     "scenario_e": {
       "status": "PASS",
@@ -187,14 +187,14 @@
         "grep",
         "ripgrep"
       ],
-      "elapsed_sec": 22.8947,
-      "repeat_sec": 0.2345
+      "elapsed_sec": 33.4612,
+      "repeat_sec": 0.2597
     },
     "scenario_f": {
       "status": "PASS",
       "binary_updated": true,
       "dependency_recompiled_count": 0,
-      "elapsed_sec": 4.1735
+      "elapsed_sec": 6.1214
     },
     "scenario_g": {
       "status": "PASS",
@@ -205,9 +205,9 @@
         "grep",
         "ripgrep"
       ],
-      "elapsed_with_features": 11.8221,
-      "repeat_with_features_sec": 0.2209,
-      "revert_repeat_sec": 0.218
+      "elapsed_with_features": 16.4527,
+      "repeat_with_features_sec": 0.2774,
+      "revert_repeat_sec": 0.3269
     },
     "scenario_h": {
       "status": "PASS",
@@ -217,17 +217,17 @@
         "ignore",
         "ripgrep"
       ],
-      "subsequent_repeat_sec": 0.2148
+      "subsequent_repeat_sec": 0.2735
     },
     "scenario_i": {
       "status": "PASS",
       "initial_policy": "dependencies-v1",
       "legacy_status": 101,
       "legacy_clean_observed": true,
-      "legacy_elapsed_sec": 19.4752,
+      "legacy_elapsed_sec": 28.7498,
       "dep_switch_policy": "dependencies-v1",
-      "dep_elapsed_sec": 19.3012,
-      "subsequent_repeat_sec": 0.2218
+      "dep_elapsed_sec": 27.7395,
+      "subsequent_repeat_sec": 0.3149
     }
   }
 }

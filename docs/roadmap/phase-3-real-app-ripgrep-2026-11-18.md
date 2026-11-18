@@ -74,11 +74,19 @@ Evaluating a multi-crate workspace uncovered three architectural failure modes i
 
 ### 3.2 Transitive Dependency Search Paths for Uninstrumented Units
 - **Failure**: In Cargo 1.100, compiler outputs are placed into per-unit directories (`build/<pkg>/<hash>/out`). When crate A (`memmap2`) was transformed with `--extern opentelemetry`, downstream uninstrumented workspace members (`grep-searcher`, `grep-cli`, `ignore`) linking against A failed with `E0463: can't find crate for opentelemetry`. Cargo passes `-L` only for crates declared in `Cargo.toml`, so rustc lacked search paths to resolve `opentelemetry` referenced in `libmemmap2.rmeta`.
-- **Fix**: In `cargo-instrument/src/wrapper.rs:502`, injected `-L dependency=<path>` for all `r4_search_paths` from `session_plan.r4_native_otel_artifacts` across all compilation units in the build session.
+- **Fix & Invariants**: Implemented `SessionPlan::validated_native_otel_search_paths` in `cargo-instrument/src/session.rs` and called it in `cargo-instrument/src/wrapper.rs:502`. Rather than injecting search paths globally, the wrapper restricts `-L dependency=<path>` injection to units that satisfy five strict boundary checks:
+  1. The compiling unit is not host-only (build scripts and proc macros never receive target paths).
+  2. The target triple matches the OpenTelemetry artifact's target.
+  3. The compilation profile matches the OpenTelemetry artifact's profile.
+  4. The compiling unit transitively depends on OpenTelemetry or on an upstream package configured/eligible for native OpenTelemetry instrumentation. Unrelated workspace units (e.g. `bstr`, `itoa`) do not receive search paths.
+  5. The candidate directory exists on disk, and paths are deterministically sorted and deduplicated.
 
 ### 3.3 Pre-Pass Wrapper Mode for Multi-Crate Dependency Invalidation
 - **Failure**: When an instrumented crate (e.g. `walkdir`) was cleaned via `cargo clean -p walkdir`, the pre-pass in `acquire_native_artifacts` was previously executed with `env_remove("RUSTC_WRAPPER")`. Plain rustc attempted to recompile `walkdir`, which links against `same-file`. Because `same-file` was compiled with `--extern opentelemetry`, plain rustc without wrapper lacked `-L dependency=<otel_out_dir>` and aborted with `E0463`. The pre-pass failure triggered `invalidate_packages(&desired_instrumented_ids)`, falsely wiping all 24 dependencies and forcing a full 31-crate recompilation.
-- **Fix**: Instead of removing `RUSTC_WRAPPER` during the pre-pass, `acquire_native_artifacts` passes `RUSTC_WRAPPER = current_exe` with `CARGO_INSTRUMENT_PREPASS = 1`. In pre-pass wrapper mode (`run_prepass_wrapper`), `cargo-instrument` does not transform source or emit stamps; it solely provides `-L dependency=<otel_dir>` recovered from `cargo_instrument_session.json` (or `build/*/out`), allowing rustc to compile cleanly. The pre-pass succeeds, `invalidate_packages` cleans only the invalidated crate, and all sibling dependencies remain fresh.
+- **Fix & Invariants**: In `acquire_native_artifacts`, Cargo is launched with `RUSTC_WRAPPER = current_exe`, an ephemeral `CARGO_INSTRUMENT_INTERNAL_PREPASS_TOKEN`, and `CARGO_INSTRUMENT_PREPASS_SESSION` pointing to the active session plan.
+  - In pre-pass wrapper mode (`run_prepass_wrapper`), `cargo-instrument` does not transform source code, does not write instrumentation or skipped stamps, and does not alter build policies.
+  - It loads the verified session plan (only if fresh and matching the current build fingerprint) and passes validated search paths via `SessionPlan::validated_native_otel_search_paths`.
+  - Unvetted directory-wide scanning (`build/*/*/out`) was completely eliminated. If session data is missing, corrupted, or exhibits a fingerprint mismatch, the wrapper fails open, executes plain rustc, and safely falls back without injecting unauthorized paths.
 
 ---
 
@@ -148,13 +156,17 @@ All measurements were collected using alternating paired order across isolated v
 
 ### 5.3 Repeat-Build Phase Attribution
 
-| Phase | Observed Duration | Share of Repeat Wall Time | Description |
+The phases below represent independent duration estimates measured by executing each stage in isolation as a standalone subprocess command, rather than an in-process additive decomposition of a single end-to-end repeat build:
+
+| Phase | Observed Duration | Share of Measured Total | Description |
 |:---|:---:|:---:|:---|
-| **Cargo Metadata Resolution** | 0.0624 s | 23.6% | `cargo metadata --format-version 1 --offline --locked` |
-| **Cargo Pre-Pass Build Check** | 0.1004 s | 37.9% | `cargo build --message-format=json-render-diagnostics` (freshness check) |
+| **Cargo Metadata Resolution** | 0.0624 s | 23.6% | Standalone `cargo metadata --format-version 1 --offline --locked` |
+| **Cargo Pre-Pass Build Check** | 0.1004 s | 37.9% | Standalone `cargo build --message-format=json-render-diagnostics` |
 | **Selective Invalidation** | 0.0000 s | 0.0% | Zero packages invalidated; skipped entirely |
-| **Wrapped Cargo Invocation** | 0.1019 s | 38.5% | `cargo build` with `RUSTC_WRAPPER` (0 units recompiled) |
-| **Sum of Measured Phases** | **0.2646 s** | **100.0%** | Reconciles with ~0.22 s end-to-end command |
+| **Wrapped Cargo Invocation** | 0.1019 s | 38.5% | Standalone `cargo build` with `RUSTC_WRAPPER` (0 units recompiled) |
+| **Sum of Independent Runs** | **0.2646 s** | **100.0%** | Independent subprocess execution estimate |
+
+*Attribution Note*: Spawning three separate subprocesses incurs sequential OS process creation, environment propagation, and runtime setup overhead across each invocation. The single unified end-to-end `cargo-instrument --with-dependencies` command achieved a lower median of **0.2169 s** (spread: 0.0263 s) because internal metadata caching and unified orchestration avoid repeated process initialization.
 
 ### 5.4 Application-Only Edit Builds (N=5 Paired Alternating Runs)
 
@@ -187,7 +199,12 @@ Workload command: `rg --threads 1 --sort path --color always "fn parse" crates/`
 | **Median** | **4.7500 ms** | **7.0196 ms** | **Ratio: 1.4778× (+2.2696 ms)** |
 | **Mean ± StdDev** | **4.8135 ± 0.2755 ms** | **7.0471 ± 0.2238 ms** | Spread: 1.0565 ms (B) / 0.8030 ms (I) |
 
-*Per-span recording cost*: 2.27 ms added across 7,096 emitted spans corresponds to **~320 ns per span** for in-process thread-local tracking, parent resolution, and counting processor recording.
+*Amortized Runtime Difference*: The 2.27 ms delta across 7,096 emitted spans corresponds to an amortized workload-level difference of **~320 ns per span**. This figure reflects total end-to-end execution difference divided by span count; it is not an isolated microbenchmark of span construction. Component contributions include:
+1. In-process OpenTelemetry tracer provider and SDK initialization.
+2. In-memory `CountingProcessor` and span lifecycle tracking.
+3. Thread-local context storage and parent-child hierarchy resolution.
+4. Function call boundary overhead (closure invocation, clippy suppression guards).
+5. Workload application execution and search output formatting.
 
 ### 5.6 Binary Executable Size
 
@@ -196,7 +213,13 @@ Workload command: `rg --threads 1 --sort path --color always "fn parse" crates/`
 | **Baseline `rg`** | 30,355,176 B | 28.95 MiB | — | — |
 | **Instrumented `rg`** | 40,927,832 B | 39.03 MiB | +10,572,656 B | +34.83% |
 
-The +10.08 MiB growth stems from the static inclusion of `opentelemetry` and `opentelemetry_sdk` (SDK tracer provider, sampler, processors, exporters, futures runtime machinery), protobuf/serialization metadata, and injected function instrumentation trampolines.
+*Binary Growth Breakdown*: The +10.57 MiB (+34.83%) growth encompasses all static additions linked into the release executable:
+1. OpenTelemetry runtime core (`opentelemetry` crate and its internal dependency closure).
+2. OpenTelemetry SDK (`opentelemetry_sdk` tracer provider, processors, samplers, and futures runtime).
+3. The in-memory evaluation exporter and evaluation test harness.
+4. Static protobuf and trace serialization metadata.
+5. Injected AST instrumentation wrappers and anchor symbols across 5 transformed dependencies.
+Uninstrumented compiler flags, LTO settings, and debug stripping remained identical across baseline and instrumented builds.
 
 ---
 

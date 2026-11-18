@@ -1,7 +1,7 @@
 Phase 3 Real-Application Evaluation Manifest: ripgrep
-Captured: 2026-11-18T07:30:23.902488+00:00
-Tool Revision: 48262c6d86c5f7dcd97d1c98f094cc8a371beb4d
-Tool Binary SHA-256: 6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679
+Captured: 2026-11-18T11:03:24.094919+00:00
+Tool Revision: 82c1c10326947efa67a7d64935ea052638c4f277
+Tool Binary SHA-256: 16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8
 
 Host: Linux 6.19.10-300.fc44.x86_64 x86_64
 

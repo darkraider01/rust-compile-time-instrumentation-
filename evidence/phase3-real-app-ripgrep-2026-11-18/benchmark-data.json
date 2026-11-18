@@ -1,8 +1,8 @@
 {
   "metadata": {
-    "captured": "2026-11-18T07:30:23.901591+00:00",
-    "tool_revision": "48262c6d86c5f7dcd97d1c98f094cc8a371beb4d",
-    "tool_binary_sha256": "6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679",
+    "captured": "2026-11-18T11:03:24.093025+00:00",
+    "tool_revision": "82c1c10326947efa67a7d64935ea052638c4f277",
+    "tool_binary_sha256": "16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8",
     "host": "Linux 6.19.10-300.fc44.x86_64 x86_64",
     "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
     "cargo": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
@@ -18,165 +18,165 @@
     "baseline": {
       "n": 5,
       "samples": [
-        12.613,
-        12.6271,
-        13.2565,
-        12.9022,
-        12.6907
+        22.2313,
+        19.1783,
+        22.4623,
+        16.6097,
+        15.9901
       ],
-      "median": 12.6907,
-      "mean": 12.8179,
-      "stddev": 0.2425,
-      "min": 12.613,
-      "max": 13.2565,
-      "spread": 0.6435
+      "median": 19.1783,
+      "mean": 19.2943,
+      "stddev": 2.7129,
+      "min": 15.9901,
+      "max": 22.4623,
+      "spread": 6.4722
     },
     "instrumented": {
       "n": 5,
       "samples": [
-        32.2075,
-        32.3684,
-        33.5351,
-        31.6215,
-        32.0479
+        54.7978,
+        44.4382,
+        50.3544,
+        44.3571,
+        46.9934
       ],
-      "median": 32.2075,
-      "mean": 32.3561,
-      "stddev": 0.6398,
-      "min": 31.6215,
-      "max": 33.5351,
-      "spread": 1.9136
+      "median": 46.9934,
+      "mean": 48.1882,
+      "stddev": 3.9635,
+      "min": 44.3571,
+      "max": 54.7978,
+      "spread": 10.4407
     },
-    "overhead_ratio": 2.5379,
-    "delta_sec": 19.5168
+    "overhead_ratio": 2.4503,
+    "delta_sec": 27.8151
   },
   "repeat_build": {
     "baseline": {
       "n": 10,
       "samples": [
-        0.0766,
-        0.048,
-        0.049,
-        0.0481,
-        0.0487,
-        0.0477,
-        0.0481,
-        0.0479,
-        0.0488,
-        0.0493
+        0.0549,
+        0.0554,
+        0.0546,
+        0.086,
+        0.0673,
+        0.0551,
+        0.0722,
+        0.0551,
+        0.053,
+        0.067
       ],
-      "median": 0.0484,
-      "mean": 0.0512,
-      "stddev": 0.0085,
-      "min": 0.0477,
-      "max": 0.0766,
-      "spread": 0.0289
+      "median": 0.0553,
+      "mean": 0.0621,
+      "stddev": 0.0103,
+      "min": 0.053,
+      "max": 0.086,
+      "spread": 0.033
     },
     "instrumented": {
       "n": 10,
       "samples": [
-        0.2415,
-        0.2198,
-        0.2183,
-        0.2197,
-        0.2153,
-        0.2152,
-        0.2155,
-        0.2155,
-        0.2155,
-        0.2185
+        0.2706,
+        0.2313,
+        0.2419,
+        0.2801,
+        0.2411,
+        0.2485,
+        0.2783,
+        0.2501,
+        0.2428,
+        0.2426
       ],
-      "median": 0.2169,
-      "mean": 0.2195,
-      "stddev": 0.0075,
-      "min": 0.2152,
-      "max": 0.2415,
-      "spread": 0.0263
+      "median": 0.2457,
+      "mean": 0.2527,
+      "stddev": 0.0163,
+      "min": 0.2313,
+      "max": 0.2801,
+      "spread": 0.0489
     },
-    "overhead_ratio": 4.4814,
-    "delta_sec": 0.1685
+    "overhead_ratio": 4.443,
+    "delta_sec": 0.1904
   },
   "app_edit_build": {
     "baseline": {
       "n": 5,
       "samples": [
-        3.9753,
-        3.8847,
-        3.9392,
-        3.8131,
-        3.7746
+        5.0644,
+        4.9486,
+        4.8288,
+        5.7897,
+        5.5855
       ],
-      "median": 3.8847,
-      "mean": 3.8774,
-      "stddev": 0.075,
-      "min": 3.7746,
-      "max": 3.9753,
-      "spread": 0.2007
+      "median": 5.0644,
+      "mean": 5.2434,
+      "stddev": 0.3758,
+      "min": 4.8288,
+      "max": 5.7897,
+      "spread": 0.9609
     },
     "instrumented": {
       "n": 5,
       "samples": [
-        4.3071,
-        4.244,
-        4.2286,
-        4.1945,
-        4.4234
+        6.2105,
+        5.5574,
+        5.0242,
+        6.2985,
+        6.0741
       ],
-      "median": 4.244,
-      "mean": 4.2795,
-      "stddev": 0.0807,
-      "min": 4.1945,
-      "max": 4.4234,
-      "spread": 0.229
+      "median": 6.0741,
+      "mean": 5.8329,
+      "stddev": 0.479,
+      "min": 5.0242,
+      "max": 6.2985,
+      "spread": 1.2743
     },
-    "overhead_ratio": 1.0925,
-    "delta_sec": 0.3593
+    "overhead_ratio": 1.1994,
+    "delta_sec": 1.0097
   },
   "runtime_workload_ms": {
     "baseline": {
       "n": 10,
       "samples": [
-        5.5982,
-        4.7468,
-        4.5417,
-        4.8236,
-        4.6116,
-        4.8364,
-        4.7923,
-        4.7532,
-        4.72,
-        4.7112
+        16.8332,
+        6.629,
+        6.4476,
+        6.1978,
+        5.8455,
+        5.9274,
+        6.4178,
+        6.1355,
+        6.8703,
+        6.604
       ],
-      "median": 4.75,
-      "mean": 4.8135,
-      "stddev": 0.2755,
-      "min": 4.5417,
-      "max": 5.5982,
-      "spread": 1.0565
+      "median": 6.4327,
+      "mean": 7.3908,
+      "stddev": 3.1622,
+      "min": 5.8455,
+      "max": 16.8332,
+      "spread": 10.9877
     },
     "instrumented": {
       "n": 10,
       "samples": [
-        7.0446,
-        7.5134,
-        6.8603,
-        6.7104,
-        7.0382,
-        6.8331,
-        7.001,
-        7.3021,
-        6.9845,
-        7.1828
+        10.3057,
+        8.4713,
+        9.687,
+        10.0239,
+        8.6962,
+        7.9107,
+        8.2239,
+        8.7863,
+        10.5264,
+        8.8732
       ],
-      "median": 7.0196,
-      "mean": 7.0471,
-      "stddev": 0.2238,
-      "min": 6.7104,
-      "max": 7.5134,
-      "spread": 0.803
+      "median": 8.8298,
+      "mean": 9.1505,
+      "stddev": 0.869,
+      "min": 7.9107,
+      "max": 10.5264,
+      "spread": 2.6157
     },
-    "overhead_ratio": 1.4778,
-    "delta_ms": 2.2696
+    "overhead_ratio": 1.3726,
+    "delta_ms": 2.3971
   },
   "binary_size": {
     "baseline_bytes": 30355176,
@@ -185,16 +185,16 @@
     "growth_ratio": 1.3483
   },
   "repeat_phase_breakdown": {
-    "metadata_sec": 0.0624,
-    "pre_pass_sec": 0.1004,
+    "metadata_sec": 0.0747,
+    "pre_pass_sec": 0.148,
     "invalidation_sec": 0.0,
-    "wrapped_cargo_sec": 0.1019,
-    "total_observed_repeat_sec": 0.2646
+    "wrapped_cargo_sec": 0.146,
+    "total_observed_repeat_sec": 0.3687
   },
   "runtime_trace": {
     "span_count": 7096,
-    "root_trace_id": "63e307d673ce33b415571cc2ffb947a6",
-    "root_span_id": "f4c407b631320ee0",
+    "root_trace_id": "cbdd785fc802b681d043b098b2bda23f",
+    "root_span_id": "e5da8ab477663ba2",
     "scope_distribution": {
       "termcolor": 1086,
       "same_file": 5,
