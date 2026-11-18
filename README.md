@@ -34,7 +34,7 @@ The [Phase 3 evaluation roadmap](docs/roadmap/phase-3-evaluation.md) covers cove
 | Async dependency lifecycle | Native completion, cancellation, and unwind outcomes |
 | Tokio spawn propagation | Implemented for recognized calls in validated native units |
 | Preview command and driver distribution | Pending |
-| Real-application evaluation | Pending |
+| Real-application evaluation | In progress; completed evaluations on toml2json (verified 2026-11-17) and ripgrep (completed 2026-11-18) |
 
 Instrumentation currently generates **traces**. Automatic metrics and logs are outside the implemented scope.
 

@@ -1,0 +1,26 @@
+Phase 3 Real-Application Evaluation Manifest: ripgrep
+Captured: 2026-11-18T07:30:23.902488+00:00
+Tool Revision: 48262c6d86c5f7dcd97d1c98f094cc8a371beb4d
+Tool Binary SHA-256: 6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679
+
+Host: Linux 6.19.10-300.fc44.x86_64 x86_64
+
+Rustc Version:
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+binary: rustc
+commit-hash: 0ef1bc386059596dada8fb65b50425aab2ea637a
+commit-date: 2026-11-09
+host: x86_64-unknown-linux-gnu
+release: 1.100.0
+LLVM version: 23.1.5
+
+Cargo Version:
+cargo 1.100.0 (3acc79c0c 2026-11-05)
+
+Application: BurntSushi/ripgrep
+Version: 14.1.1
+Revision: 4649aa9700619f94cf9c66876e9549d83420e16c
+License: Unlicense OR MIT
+Workload Command: rg --threads 1 --sort path --color always 'fn parse' crates/
+Workload Output: 2122 bytes, SHA-256 1d914b97badcb59f2ec82dcf631d3715cc2f5e4c99059219776da6d578e86aec
+Command: cargo-instrument --with-dependencies -- build --release --locked --offline

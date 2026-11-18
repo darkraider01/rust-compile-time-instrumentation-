@@ -1,0 +1,233 @@
+{
+  "metadata": {
+    "captured": "2026-11-18T07:30:23.901591+00:00",
+    "tool_revision": "48262c6d86c5f7dcd97d1c98f094cc8a371beb4d",
+    "tool_binary_sha256": "6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679",
+    "host": "Linux 6.19.10-300.fc44.x86_64 x86_64",
+    "rustc": "rustc 1.100.0 (0ef1bc386 2026-11-09)",
+    "cargo": "cargo 1.100.0 (3acc79c0c 2026-11-05)",
+    "application": "BurntSushi/ripgrep",
+    "application_revision": "4649aa9700619f94cf9c66876e9549d83420e16c",
+    "application_version": "14.1.1",
+    "application_license": "Unlicense OR MIT",
+    "workload_input": "crates/ directory search: 'fn parse'",
+    "workload_sha256": "1d914b97badcb59f2ec82dcf631d3715cc2f5e4c99059219776da6d578e86aec",
+    "workload_output_bytes": 2122
+  },
+  "scenarios": {
+    "scenario_a": {
+      "status": "PASS",
+      "elapsed_sec": 31.7661,
+      "compiling_units": 31,
+      "transformed_stamps_file_count": 10,
+      "transformed_packages_count": 5,
+      "transformed_packages": [
+        "encoding_rs_io",
+        "memmap2",
+        "same-file",
+        "termcolor",
+        "walkdir"
+      ],
+      "transformed_stamps": [
+        "build/encoding_rs_io/bd51d83d19bf7c91/out/.cargo-instrument-transformed-encoding_rs_io-bd51d83d19bf7c91.stamp",
+        "build/encoding_rs_io/bd51d83d19bf7c91/out/.cargo-instrument-transformed-encoding_rs_io.stamp",
+        "build/memmap2/ce7c112c4d7ea4a5/out/.cargo-instrument-transformed-memmap2-ce7c112c4d7ea4a5.stamp",
+        "build/memmap2/ce7c112c4d7ea4a5/out/.cargo-instrument-transformed-memmap2.stamp",
+        "build/same-file/6d02487860f584d5/out/.cargo-instrument-transformed-same_file-6d02487860f584d5.stamp",
+        "build/same-file/6d02487860f584d5/out/.cargo-instrument-transformed-same_file.stamp",
+        "build/termcolor/361c66ba5cf19983/out/.cargo-instrument-transformed-termcolor-361c66ba5cf19983.stamp",
+        "build/termcolor/361c66ba5cf19983/out/.cargo-instrument-transformed-termcolor.stamp",
+        "build/walkdir/b522787f0bc45105/out/.cargo-instrument-transformed-walkdir-b522787f0bc45105.stamp",
+        "build/walkdir/b522787f0bc45105/out/.cargo-instrument-transformed-walkdir.stamp"
+      ],
+      "skipped_stamps_file_count": 34,
+      "skipped_packages_count": 17,
+      "skipped_packages": [
+        "aho-corasick",
+        "anyhow",
+        "bstr",
+        "crossbeam-deque",
+        "crossbeam-epoch",
+        "crossbeam-utils",
+        "encoding_rs",
+        "itoa",
+        "lexopt",
+        "log",
+        "memchr",
+        "regex-automata",
+        "regex-syntax",
+        "ryu",
+        "serde",
+        "serde_json",
+        "textwrap"
+      ],
+      "skipped_stamps": [
+        "build/aho-corasick/43b2372886ab6e98/out/.cargo-instrument-skipped-aho_corasick-43b2372886ab6e98.stamp",
+        "build/aho-corasick/43b2372886ab6e98/out/.cargo-instrument-skipped-aho_corasick.stamp",
+        "build/anyhow/bd0b279e9b9f016f/out/.cargo-instrument-skipped-anyhow-bd0b279e9b9f016f.stamp",
+        "build/anyhow/bd0b279e9b9f016f/out/.cargo-instrument-skipped-anyhow.stamp",
+        "build/bstr/471c57df3b139db0/out/.cargo-instrument-skipped-bstr-471c57df3b139db0.stamp",
+        "build/bstr/471c57df3b139db0/out/.cargo-instrument-skipped-bstr.stamp",
+        "build/crossbeam-deque/b25ae42890344c06/out/.cargo-instrument-skipped-crossbeam_deque-b25ae42890344c06.stamp",
+        "build/crossbeam-deque/b25ae42890344c06/out/.cargo-instrument-skipped-crossbeam_deque.stamp",
+        "build/crossbeam-epoch/455a46975c8ffe29/out/.cargo-instrument-skipped-crossbeam_epoch-455a46975c8ffe29.stamp",
+        "build/crossbeam-epoch/455a46975c8ffe29/out/.cargo-instrument-skipped-crossbeam_epoch.stamp",
+        "build/crossbeam-utils/c64d9d75838235d4/out/.cargo-instrument-skipped-crossbeam_utils-c64d9d75838235d4.stamp",
+        "build/crossbeam-utils/c64d9d75838235d4/out/.cargo-instrument-skipped-crossbeam_utils.stamp",
+        "build/encoding_rs/0f2b2b1f45015f6e/out/.cargo-instrument-skipped-encoding_rs-0f2b2b1f45015f6e.stamp",
+        "build/encoding_rs/0f2b2b1f45015f6e/out/.cargo-instrument-skipped-encoding_rs.stamp",
+        "build/itoa/b520d038f83ab3ba/out/.cargo-instrument-skipped-itoa-b520d038f83ab3ba.stamp",
+        "build/itoa/b520d038f83ab3ba/out/.cargo-instrument-skipped-itoa.stamp",
+        "build/lexopt/e39ba05cf4b30acc/out/.cargo-instrument-skipped-lexopt-e39ba05cf4b30acc.stamp",
+        "build/lexopt/e39ba05cf4b30acc/out/.cargo-instrument-skipped-lexopt.stamp",
+        "build/log/a2fe13101e0b92c0/out/.cargo-instrument-skipped-log-a2fe13101e0b92c0.stamp",
+        "build/log/a2fe13101e0b92c0/out/.cargo-instrument-skipped-log.stamp",
+        "build/memchr/383fa1fc0b6c12e7/out/.cargo-instrument-skipped-memchr-383fa1fc0b6c12e7.stamp",
+        "build/memchr/383fa1fc0b6c12e7/out/.cargo-instrument-skipped-memchr.stamp",
+        "build/regex-automata/8c58a185ec7e79db/out/.cargo-instrument-skipped-regex_automata-8c58a185ec7e79db.stamp",
+        "build/regex-automata/8c58a185ec7e79db/out/.cargo-instrument-skipped-regex_automata.stamp",
+        "build/regex-syntax/c51d7a64ebf79bd3/out/.cargo-instrument-skipped-regex_syntax-c51d7a64ebf79bd3.stamp",
+        "build/regex-syntax/c51d7a64ebf79bd3/out/.cargo-instrument-skipped-regex_syntax.stamp",
+        "build/ryu/ad677190f2a97f98/out/.cargo-instrument-skipped-ryu-ad677190f2a97f98.stamp",
+        "build/ryu/ad677190f2a97f98/out/.cargo-instrument-skipped-ryu.stamp",
+        "build/serde/0127de291f856f50/out/.cargo-instrument-skipped-serde-0127de291f856f50.stamp",
+        "build/serde/0127de291f856f50/out/.cargo-instrument-skipped-serde.stamp",
+        "build/serde_json/c8a6ba4e2dd67e2b/out/.cargo-instrument-skipped-serde_json-c8a6ba4e2dd67e2b.stamp",
+        "build/serde_json/c8a6ba4e2dd67e2b/out/.cargo-instrument-skipped-serde_json.stamp",
+        "build/textwrap/53127b076f882f90/out/.cargo-instrument-skipped-textwrap-53127b076f882f90.stamp",
+        "build/textwrap/53127b076f882f90/out/.cargo-instrument-skipped-textwrap.stamp"
+      ],
+      "functional_output_match": true,
+      "output_bytes": 2122,
+      "output_sha256": "1d914b97badcb59f2ec82dcf631d3715cc2f5e4c99059219776da6d578e86aec",
+      "trace_oracle": {
+        "valid": true,
+        "total_spans": 7096,
+        "root_trace_id": "63e307d673ce33b415571cc2ffb947a6",
+        "root_span_id": "f4c407b631320ee0",
+        "scope_distribution": {
+          "termcolor": 1086,
+          "same_file": 5,
+          "walkdir": 3453,
+          "encoding_rs_io": 2551,
+          "ripgrep": 1
+        }
+      }
+    },
+    "scenario_b": {
+      "status": "PASS",
+      "elapsed_sec": 0.2158,
+      "compiling_units": 0,
+      "cleaned_invocations": 0
+    },
+    "scenario_c": {
+      "status": "PASS",
+      "times": [
+        0.2359,
+        0.2185,
+        0.2155,
+        0.2164,
+        0.216
+      ],
+      "stats": {
+        "n": 5,
+        "samples": [
+          0.2359,
+          0.2185,
+          0.2155,
+          0.2164,
+          0.216
+        ],
+        "median": 0.2164,
+        "mean": 0.2205,
+        "stddev": 0.0078,
+        "min": 0.2155,
+        "max": 0.2359,
+        "spread": 0.0204
+      },
+      "compiling_units": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "cleaned_invocations": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "scenario_d": {
+      "status": "PASS",
+      "registry_immutability_recompiled_units": 0,
+      "invalidation_recompiled_units": [
+        "walkdir",
+        "ignore",
+        "ripgrep"
+      ],
+      "elapsed_sec": 11.1355,
+      "repeat_sec": 0.2226
+    },
+    "scenario_e": {
+      "status": "PASS",
+      "registry_immutability_recompiled_units": 0,
+      "invalidation_recompiled_units": [
+        "regex-syntax",
+        "regex-automata",
+        "bstr",
+        "globset",
+        "grep-searcher",
+        "grep-regex",
+        "grep-printer",
+        "grep-cli",
+        "ignore",
+        "grep",
+        "ripgrep"
+      ],
+      "elapsed_sec": 22.8947,
+      "repeat_sec": 0.2345
+    },
+    "scenario_f": {
+      "status": "PASS",
+      "binary_updated": true,
+      "dependency_recompiled_count": 0,
+      "elapsed_sec": 4.1735
+    },
+    "scenario_g": {
+      "status": "PASS",
+      "units_compiled_with_features": [
+        "pcre2-sys",
+        "pcre2",
+        "grep-pcre2",
+        "grep",
+        "ripgrep"
+      ],
+      "elapsed_with_features": 11.8221,
+      "repeat_with_features_sec": 0.2209,
+      "revert_repeat_sec": 0.218
+    },
+    "scenario_h": {
+      "status": "PASS",
+      "plain_cargo_reuse_units": 0,
+      "cargo_instrument_reinstrumented": [
+        "walkdir",
+        "ignore",
+        "ripgrep"
+      ],
+      "subsequent_repeat_sec": 0.2148
+    },
+    "scenario_i": {
+      "status": "PASS",
+      "initial_policy": "dependencies-v1",
+      "legacy_status": 101,
+      "legacy_clean_observed": true,
+      "legacy_elapsed_sec": 19.4752,
+      "dep_switch_policy": "dependencies-v1",
+      "dep_elapsed_sec": 19.3012,
+      "subsequent_repeat_sec": 0.2218
+    }
+  }
+}
