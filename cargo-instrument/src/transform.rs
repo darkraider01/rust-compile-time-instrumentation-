@@ -776,7 +776,7 @@ impl Emitter for NativeOtelEmitter {
                      {nl}        .start(&__otel_tracer);\
                      {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
                      {lifecycle}\
-                     {nl}    let __otel_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {{"
+                     {nl}    let __otel_res: core::result::Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {{"
                 )
             } else {
                 format!(
@@ -805,7 +805,7 @@ impl Emitter for NativeOtelEmitter {
                      {nl}    let __otel_cx = <opentelemetry::Context as opentelemetry::trace::TraceContextExt>::current_with_span(__otel_span);\
                      {nl}    let __otel_guard = __otel_cx.clone().attach();\
                      {nl}    #[allow(clippy::redundant_closure_call)]\
-                     {nl}    let __otel_res: Result<_, _> = (|| {{"
+                     {nl}    let __otel_res: core::result::Result<_, _> = (|| {{"
                 )
             } else {
                 format!(

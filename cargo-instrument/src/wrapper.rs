@@ -499,6 +499,16 @@ pub fn run_wrapper(config: &WrapperConfig) -> Result<i32, WrapperError> {
                             }
                         }
                     }
+
+                    for artifact in &session_plan.r4_native_otel_artifacts {
+                        for dir in &artifact.search_paths {
+                            let flag = format!("dependency={}", dir.display());
+                            if !args_to_run.windows(2).any(|w| w[0] == "-L" && w[1] == flag) {
+                                args_to_run.push("-L".to_string());
+                                args_to_run.push(flag);
+                            }
+                        }
+                    }
                 }
             }
         }

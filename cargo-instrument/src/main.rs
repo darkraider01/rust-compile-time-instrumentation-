@@ -23,6 +23,11 @@ fn main() {
             }
         };
 
+        if env::var("CARGO_INSTRUMENT_PREPASS").is_ok() {
+            run_prepass_wrapper(&config);
+            return;
+        }
+
         match run_wrapper(&config) {
             Ok(code) => process::exit(code),
             Err(e) => {
@@ -33,6 +38,83 @@ fn main() {
     } else {
         run_cli(&args);
     }
+}
+
+fn run_prepass_wrapper(config: &WrapperConfig) {
+    let mut args_to_run = config.rustc_args.clone();
+    if let Some(target_dir_idx) = args_to_run.windows(2).position(|w| w[0] == "--out-dir") {
+        let out_dir = Path::new(&args_to_run[target_dir_idx + 1]);
+        for path in find_prepass_search_paths(out_dir) {
+            let flag = format!("dependency={}", path.display());
+            if !args_to_run.windows(2).any(|w| w[0] == "-L" && w[1] == flag) {
+                args_to_run.push("-L".to_string());
+                args_to_run.push(flag);
+            }
+        }
+    }
+
+    let status = match Command::new(&config.rustc_binary)
+        .args(&args_to_run)
+        .status()
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("cargo-instrument pre-pass wrapper failed to execute rustc: {e}");
+            process::exit(1);
+        }
+    };
+    process::exit(status.code().unwrap_or(1));
+}
+
+fn find_prepass_search_paths(out_dir: &Path) -> Vec<PathBuf> {
+    let mut search_paths = Vec::new();
+    let mut curr = out_dir;
+    while let Some(parent) = curr.parent() {
+        let session_file = parent.join("cargo_instrument_session.json");
+        if session_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&session_file) {
+                if let Ok(plan) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(artifacts) = plan["r4_native_otel_artifacts"].as_array() {
+                        for art in artifacts {
+                            if let Some(paths) = art["search_paths"].as_array() {
+                                for p in paths {
+                                    if let Some(s) = p.as_str() {
+                                        search_paths.push(PathBuf::from(s));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !search_paths.is_empty() {
+                return search_paths;
+            }
+        }
+        let build_dir = parent.join("build");
+        if build_dir.is_dir() {
+            if let Ok(crates) = std::fs::read_dir(&build_dir) {
+                for c in crates.flatten() {
+                    if let Ok(hashes) = std::fs::read_dir(c.path()) {
+                        for h in hashes.flatten() {
+                            let out = h.path().join("out");
+                            if out.is_dir() {
+                                search_paths.push(out);
+                            }
+                        }
+                    }
+                }
+            }
+            if !search_paths.is_empty() {
+                return search_paths;
+            }
+        }
+        if parent.ends_with("target") || parent.parent().is_none() {
+            break;
+        }
+        curr = parent;
+    }
+    search_paths
 }
 
 /// Detect whether the binary was invoked as a compiler wrapper by Cargo.
@@ -463,11 +545,14 @@ fn acquire_native_artifacts(
         prepass_args.push(target_dir.display().to_string());
     }
 
+    let current_exe =
+        env::current_exe().map_err(|e| format!("failed to locate current executable: {e}"))?;
     let output = Command::new("cargo")
         .current_dir(invocation_dir)
         .args(&prepass_args)
-        .env_remove("RUSTC_WRAPPER")
-        .env_remove(WRAPPER_MODE_ENV)
+        .env("RUSTC_WRAPPER", &current_exe)
+        .env("CARGO_INSTRUMENT_PREPASS", "1")
+        .env(WRAPPER_MODE_ENV, "1")
         .output()
         .map_err(|e| format!("failed to run same-target artifact pre-pass: {e}"))?;
 

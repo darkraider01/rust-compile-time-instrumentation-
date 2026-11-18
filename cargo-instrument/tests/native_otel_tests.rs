@@ -129,8 +129,8 @@ fn fetch_data(id: u64) -> Result<String, std::io::Error> {
     assert!(transformed.contains("let __otel_guard = __otel_cx.clone().attach();"));
     // Result function MUST use #[allow(clippy::redundant_closure_call)]
     assert!(transformed.contains("#[allow(clippy::redundant_closure_call)]"));
-    // Result function MUST use let __otel_res: Result<_, _> = (|| { ... })();
-    assert!(transformed.contains("let __otel_res: Result<_, _> = (|| {"));
+    // Result function MUST use let __otel_res: core::result::Result<_, _> = (|| { ... })();
+    assert!(transformed.contains("let __otel_res: core::result::Result<_, _> = (|| {"));
     assert!(transformed.contains("})();"));
     // Result function MUST set error status on Err
     assert!(transformed.contains("if __otel_res.is_err() {"));
@@ -160,7 +160,7 @@ fn parse_number(s: &str) -> Result<i32, std::num::ParseIntError> {
     let transformed = transform_source_str_with_native_otel(source, "parser", &report.candidates)
         .expect("transform source");
 
-    assert!(transformed.contains("let __otel_res: Result<_, _> = (|| {"));
+    assert!(transformed.contains("let __otel_res: core::result::Result<_, _> = (|| {"));
     assert!(transformed.contains("let val = s.parse::<i32>()?;"));
     assert!(transformed.contains("return Ok(0);"));
     assert!(transformed.contains("if __otel_res.is_err() {"));
@@ -203,7 +203,7 @@ fn panicking_result() -> Result<i32, String> {
     assert!(transformed.contains("/* __cargo_instrument_anchor: \"abort\" */"));
     // panicking_result() is Result: wrapped in Result closure with pinned Result<_, _>
     assert!(transformed.contains("/* __cargo_instrument_anchor: \"panicking_result\" */"));
-    assert!(transformed.contains("let __otel_res: Result<_, _> = (|| {"));
+    assert!(transformed.contains("let __otel_res: core::result::Result<_, _> = (|| {"));
 }
 
 #[test]
@@ -899,7 +899,7 @@ pub async fn query_user(id: u64) -> Result<String, &'static str> {
 
     assert!(transformed.contains("/* __cargo_instrument_anchor: \"query_user\" */"));
     assert!(transformed.contains(
-        "let __otel_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {"
+        "let __otel_res: core::result::Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {"
     ));
     assert!(transformed.contains("}, __otel_cx.clone()).await;"));
     assert!(transformed.contains("if __otel_res.is_err() {"));
@@ -910,7 +910,7 @@ pub async fn query_user(id: u64) -> Result<String, &'static str> {
     // Invariant: no closure wrap, no redundant clippy allows
     assert!(!transformed.contains("clippy::redundant_async_block"));
     assert!(!transformed.contains("redundant_closure_call"));
-    assert!(!transformed.contains("let __otel_res: Result<_, _> = (|| {"));
+    assert!(!transformed.contains("let __otel_res: core::result::Result<_, _> = (|| {"));
 }
 
 #[test]
@@ -942,7 +942,7 @@ impl AsyncHolder {
     // to prefix-only instrumentation; error status recording is fully preserved!
     assert!(transformed.contains("/* __cargo_instrument_anchor: \"AsyncHolder::get_mut_async\" */"));
     assert!(transformed.contains(
-        "let __otel_res: Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {"
+        "let __otel_res: core::result::Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {"
     ));
     assert!(transformed.contains("}, __otel_cx.clone()).await;"));
     assert!(transformed.contains("if __otel_res.is_err() {"));
