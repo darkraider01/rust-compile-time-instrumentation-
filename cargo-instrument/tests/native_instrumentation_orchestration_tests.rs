@@ -1265,3 +1265,215 @@ fn test_h1_build_lifecycle() {
     let rebuild_stderr = String::from_utf8_lossy(&rebuild.stderr);
     assert!(rebuild_stderr.contains("crate=dep_r4] selecting native R-4 emitter"));
 }
+
+#[test]
+fn test_h1_transitive_dependency_resolution_and_selective_invalidation() {
+    let temp = tempfile::tempdir().expect("create workspace");
+    let workspace = temp.path();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let shim = repo_root
+        .join("otel-shim")
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    fs::write(
+        workspace.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app"]
+exclude = ["dep_leaf", "dep_mid", "dep_sibling"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+
+    // dep_leaf: transformed with native OpenTelemetry
+    let leaf = workspace.join("dep_leaf");
+    fs::create_dir_all(leaf.join("src")).unwrap();
+    fs::write(
+        leaf.join("Cargo.toml"),
+        r#"[package]
+name = "dep_leaf"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        leaf.join("src/lib.rs"),
+        r#"pub fn leaf_work() -> u32 { 10 }"#,
+    )
+    .unwrap();
+
+    // dep_mid: depends on dep_leaf, does NOT declare opentelemetry
+    let mid = workspace.join("dep_mid");
+    fs::create_dir_all(mid.join("src")).unwrap();
+    fs::write(
+        mid.join("Cargo.toml"),
+        r#"[package]
+name = "dep_mid"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_leaf = { path = "../dep_leaf" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        mid.join("src/lib.rs"),
+        r#"pub fn mid_work() -> u32 { dep_leaf::leaf_work() + 20 }"#,
+    )
+    .unwrap();
+
+    // dep_sibling: independent, does not depend on dep_leaf
+    let sibling = workspace.join("dep_sibling");
+    fs::create_dir_all(sibling.join("src")).unwrap();
+    fs::write(
+        sibling.join("Cargo.toml"),
+        r#"[package]
+name = "dep_sibling"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        sibling.join("src/lib.rs"),
+        r#"pub fn sibling_work() -> u32 { 100 }"#,
+    )
+    .unwrap();
+
+    // app: links all together, declares opentelemetry and otel-shim
+    let app = workspace.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_mid = {{ path = "../dep_mid" }}
+dep_sibling = {{ path = "../dep_sibling" }}
+opentelemetry = "0.32.0"
+opentelemetry_sdk = {{ version = "0.32.0", features = ["testing"] }}
+otel-shim = {{ path = "{shim}" }}
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        r#"use opentelemetry::trace::{TraceContextExt as _, Tracer as _};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+
+fn main() {
+    otel_shim::init();
+    let exporter = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    opentelemetry::global::set_tracer_provider(provider);
+
+    let tracer = opentelemetry::global::tracer("test-app");
+    let parent_span = tracer.start("parent");
+    let parent_cx = opentelemetry::Context::current_with_span(parent_span);
+    {
+        let _guard = parent_cx.clone().attach();
+        let total = dep_mid::mid_work() + dep_sibling::sibling_work();
+        assert_eq!(total, 130);
+    }
+    parent_cx.span().end();
+}"#,
+    )
+    .unwrap();
+
+    // 1. Initial build with --with-dependencies
+    let build1 = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args([
+            "--with-dependencies",
+            "--",
+            "build",
+            "--package",
+            "app",
+            "--offline",
+        ])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("initial build");
+    assert_success(&build1, "initial build with transitive dependency");
+    let stderr1 = String::from_utf8_lossy(&build1.stderr);
+    assert!(stderr1.contains("crate=dep_leaf] selecting native R-4 emitter"));
+
+    // 2. Repeat build: must succeed with 0 recompiled units
+    let repeat1 = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args([
+            "--with-dependencies",
+            "--",
+            "build",
+            "--package",
+            "app",
+            "--offline",
+        ])
+        .current_dir(workspace)
+        .output()
+        .expect("repeat build 1");
+    assert_success(&repeat1, "repeat build 1");
+    assert!(!String::from_utf8_lossy(&repeat1.stderr).contains("Compiling dep_"));
+
+    // 3. Selectively clean dep_leaf
+    let clean_leaf = Command::new("cargo")
+        .args([
+            "clean",
+            "-p",
+            "dep_leaf",
+            "--target-dir",
+            "target/instrumented",
+        ])
+        .current_dir(workspace)
+        .output()
+        .expect("clean dep_leaf");
+    assert_success(&clean_leaf, "clean dep_leaf");
+
+    // 4. Rebuild: pre-pass must succeed with session plan search paths
+    let rebuild = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args([
+            "--with-dependencies",
+            "--",
+            "build",
+            "--package",
+            "app",
+            "--offline",
+        ])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("rebuild after selective clean");
+    assert_success(&rebuild, "rebuild after selective clean");
+    let rebuild_stderr = String::from_utf8_lossy(&rebuild.stderr);
+    // dep_sibling was untouched and must remain fresh!
+    assert!(!rebuild_stderr.contains("Compiling dep_sibling"));
+    assert!(rebuild_stderr.contains("crate=dep_leaf] selecting native R-4 emitter"));
+
+    // 5. Subsequent repeat build must be fresh
+    let repeat2 = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args([
+            "--with-dependencies",
+            "--",
+            "build",
+            "--package",
+            "app",
+            "--offline",
+        ])
+        .current_dir(workspace)
+        .output()
+        .expect("repeat build 2");
+    assert_success(&repeat2, "repeat build 2");
+    assert!(!String::from_utf8_lossy(&repeat2.stderr).contains("Compiling dep_"));
+}

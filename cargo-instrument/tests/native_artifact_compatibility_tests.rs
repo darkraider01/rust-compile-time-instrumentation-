@@ -940,3 +940,192 @@ fn test_h2_extern_artifact_path_identity_enforcement() {
         "stale or non-existent extern path must be rejected: {err_stale}"
     );
 }
+
+#[test]
+fn test_validated_search_paths_invariants() {
+    use cargo_instrument::{CargoDepEdge, R4NativeOtelArtifact, R4Profile, SessionPlan};
+
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let otel_dir = temp.path().join("otel_out");
+    fs::create_dir_all(&otel_dir).unwrap();
+
+    let non_existent_dir = temp.path().join("does_not_exist");
+
+    let dep_manifest = temp.path().join("dep_crate");
+    fs::create_dir_all(dep_manifest.join("src")).unwrap();
+    let dep_source = dep_manifest.join("src/lib.rs");
+    fs::write(&dep_source, "pub fn dep_fn() {}").unwrap();
+
+    let downstream_manifest = temp.path().join("downstream_crate");
+    fs::create_dir_all(downstream_manifest.join("src")).unwrap();
+    let downstream_source = downstream_manifest.join("src/lib.rs");
+    fs::write(&downstream_source, "pub fn down() {}").unwrap();
+
+    let unrelated_manifest = temp.path().join("unrelated_crate");
+    fs::create_dir_all(unrelated_manifest.join("src")).unwrap();
+    let unrelated_source = unrelated_manifest.join("src/lib.rs");
+    fs::write(&unrelated_source, "pub fn unrel() {}").unwrap();
+
+    let host_manifest = temp.path().join("host_crate");
+    fs::create_dir_all(host_manifest.join("src")).unwrap();
+    let host_source = host_manifest.join("src/lib.rs");
+    fs::write(&host_source, "pub fn host() {}").unwrap();
+
+    let dep_id = "dep_crate 0.1.0".to_string();
+    let downstream_id = "downstream_crate 0.1.0".to_string();
+    let unrelated_id = "unrelated_crate 0.1.0".to_string();
+    let host_id = "host_crate 0.1.0".to_string();
+    let otel_id = "opentelemetry 0.32.0".to_string();
+
+    let mut plan = SessionPlan::default();
+    plan.package_manifest_dirs
+        .insert(dep_id.clone(), dep_manifest);
+    plan.package_manifest_dirs
+        .insert(downstream_id.clone(), downstream_manifest);
+    plan.package_manifest_dirs
+        .insert(unrelated_id.clone(), unrelated_manifest);
+    plan.package_manifest_dirs
+        .insert(host_id.clone(), host_manifest);
+
+    plan.package_names_by_id
+        .insert(dep_id.clone(), "dep_crate".into());
+    plan.package_names_by_id
+        .insert(downstream_id.clone(), "downstream_crate".into());
+    plan.package_names_by_id
+        .insert(unrelated_id.clone(), "unrelated_crate".into());
+    plan.package_names_by_id
+        .insert(host_id.clone(), "host_crate".into());
+
+    plan.host_only_packages.insert("host_crate".into());
+
+    plan.r4_otel_package_by_dependency
+        .insert(dep_id.clone(), otel_id.clone());
+
+    // Dependency graph:
+    // downstream -> dep_crate
+    // unrelated -> (nothing)
+    plan.package_dependencies.insert(
+        downstream_id.clone(),
+        vec![CargoDepEdge {
+            binding_name: "dep_crate".into(),
+            package_id: dep_id.clone(),
+            kinds: vec![None],
+        }],
+    );
+    plan.package_dependencies.insert(dep_id.clone(), vec![]);
+    plan.package_dependencies
+        .insert(unrelated_id.clone(), vec![]);
+
+    let rlib_path = otel_dir.join("libopentelemetry.rlib");
+    fs::write(&rlib_path, b"dummy rlib").unwrap();
+
+    let release_profile = R4Profile {
+        opt_level: "3".to_string(),
+        debug_assertions: false,
+        overflow_checks: false,
+        test: false,
+    };
+
+    plan.r4_native_otel_artifacts.push(R4NativeOtelArtifact {
+        package_id: otel_id.clone(),
+        package_version: "0.32.0".to_string(),
+        resolved_features: vec!["trace".into()],
+        target: None, // native host target
+        profile: release_profile.clone(),
+        rlib_path,
+        search_paths: vec![
+            otel_dir.clone(),
+            otel_dir.clone(),         // duplicate
+            non_existent_dir.clone(), // missing dir
+        ],
+    });
+
+    let release_args = vec!["-C".to_string(), "opt-level=3".to_string()];
+    let dev_args = vec!["-C".to_string(), "opt-level=0".to_string()];
+    let target_mismatch_args = vec![
+        "-C".to_string(),
+        "opt-level=3".to_string(),
+        "--target".to_string(),
+        "aarch64-unknown-linux-gnu".to_string(),
+    ];
+
+    // Invariant 1: Transitive dependent unit receives validated, deduplicated, existing paths
+    let paths = plan.validated_native_otel_search_paths(
+        "downstream_crate",
+        Some(&downstream_source),
+        &release_args,
+    );
+    assert_eq!(paths, vec![otel_dir.clone()]);
+
+    // Invariant 2: Transformed dependency unit itself receives validated paths
+    let paths_dep =
+        plan.validated_native_otel_search_paths("dep_crate", Some(&dep_source), &release_args);
+    assert_eq!(paths_dep, vec![otel_dir.clone()]);
+
+    // Invariant 3: Unrelated crate receives NO paths
+    let paths_unrel = plan.validated_native_otel_search_paths(
+        "unrelated_crate",
+        Some(&unrelated_source),
+        &release_args,
+    );
+    assert!(
+        paths_unrel.is_empty(),
+        "unrelated crate must receive no search paths"
+    );
+
+    // Invariant 4: Host-only crate receives NO paths
+    let paths_host =
+        plan.validated_native_otel_search_paths("host_crate", Some(&host_source), &release_args);
+    assert!(
+        paths_host.is_empty(),
+        "host-only crate must receive no search paths"
+    );
+
+    // Invariant 5: Target mismatch receives NO paths
+    let paths_target_mismatch = plan.validated_native_otel_search_paths(
+        "downstream_crate",
+        Some(&downstream_source),
+        &target_mismatch_args,
+    );
+    assert!(
+        paths_target_mismatch.is_empty(),
+        "target mismatch must receive no search paths"
+    );
+
+    // Invariant 6: Profile mismatch receives NO paths
+    let paths_profile_mismatch = plan.validated_native_otel_search_paths(
+        "downstream_crate",
+        Some(&downstream_source),
+        &dev_args,
+    );
+    assert!(
+        paths_profile_mismatch.is_empty(),
+        "profile mismatch must receive no search paths"
+    );
+}
+
+#[test]
+fn test_prepass_session_stale_and_corrupt_safety() {
+    use cargo_instrument::SessionPlan;
+
+    let temp = tempfile::tempdir().expect("create temp dir");
+    let session_path = temp.path().join("cargo_instrument_session.json");
+
+    // Case 1: Corrupted JSON -> load_from_file returns Err
+    fs::write(&session_path, b"{ broken-json").unwrap();
+    assert!(SessionPlan::load_from_file(&session_path).is_err());
+
+    // Case 2: Stale fingerprint -> detected
+    let plan1 = SessionPlan {
+        fingerprint: "hash_alpha".into(),
+        ..Default::default()
+    };
+    plan1.save_to_file(&session_path).unwrap();
+
+    let plan2_fingerprint = "hash_beta".to_string();
+    let loaded = SessionPlan::load_from_file(&session_path).unwrap();
+    assert_ne!(loaded.fingerprint, plan2_fingerprint);
+
+    // Case 3: Fresh fingerprint -> matches
+    assert_eq!(loaded.fingerprint, "hash_alpha");
+}

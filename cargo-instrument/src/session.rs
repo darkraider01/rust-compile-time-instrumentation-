@@ -959,6 +959,114 @@ impl SessionPlan {
             )),
         }
     }
+
+    /// Returns validated OpenTelemetry search paths for downstream units or pre-pass compilations.
+    ///
+    /// Only returns paths when all of the following invariants hold:
+    /// 1. The unit is NOT host-only (build scripts and proc macros must not receive target search paths).
+    /// 2. The unit's target triple exactly matches the native artifact's target.
+    /// 3. The unit's compilation profile matches the native artifact's profile.
+    /// 4. The unit belongs to a package that transitively depends on OpenTelemetry or on a unit
+    ///    configured/eligible for native OpenTelemetry instrumentation.
+    /// 5. The search path directory exists on disk.
+    ///
+    /// Returned paths are deterministically sorted and deduplicated.
+    pub fn validated_native_otel_search_paths(
+        &self,
+        crate_name: &str,
+        source_file: Option<&Path>,
+        rustc_args: &[String],
+    ) -> Vec<PathBuf> {
+        if self.r4_native_otel_artifacts.is_empty() {
+            return Vec::new();
+        }
+
+        if self.is_host_only_unit(crate_name, source_file) {
+            return Vec::new();
+        }
+
+        let unit_target = rustc_target(rustc_args);
+        let unit_profile = rustc_profile(rustc_args);
+
+        let pkg_id_opt = source_file
+            .and_then(|s| self.package_id_for_source(s))
+            .or_else(|| {
+                let matching: Vec<_> = self
+                    .package_names_by_id
+                    .iter()
+                    .filter(|(_, name)| {
+                        name.as_str() == crate_name || name.replace('-', "_") == crate_name
+                    })
+                    .map(|(id, _)| id)
+                    .collect();
+                if matching.len() == 1 {
+                    Some(matching[0])
+                } else {
+                    None
+                }
+            });
+
+        let Some(pkg_id) = pkg_id_opt else {
+            return Vec::new();
+        };
+
+        let mut candidate_paths = Vec::new();
+
+        for artifact in &self.r4_native_otel_artifacts {
+            if artifact.target != unit_target {
+                continue;
+            }
+            if artifact.profile != unit_profile {
+                continue;
+            }
+
+            let is_relevant = if pkg_id == &artifact.package_id
+                || self.r4_otel_package_by_dependency.contains_key(pkg_id)
+            {
+                true
+            } else {
+                let mut visited = HashSet::new();
+                let mut queue = VecDeque::new();
+                queue.push_back(pkg_id.as_str());
+                visited.insert(pkg_id.as_str());
+
+                let mut found = false;
+                while let Some(curr) = queue.pop_front() {
+                    if let Some(deps) = self.package_dependencies.get(curr) {
+                        for edge in deps {
+                            if edge.package_id == artifact.package_id
+                                || self
+                                    .r4_otel_package_by_dependency
+                                    .contains_key(&edge.package_id)
+                            {
+                                found = true;
+                                break;
+                            }
+                            if visited.insert(edge.package_id.as_str()) {
+                                queue.push_back(edge.package_id.as_str());
+                            }
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                found
+            };
+
+            if is_relevant {
+                for dir in &artifact.search_paths {
+                    if dir.is_dir() {
+                        candidate_paths.push(dir.clone());
+                    }
+                }
+            }
+        }
+
+        candidate_paths.sort();
+        candidate_paths.dedup();
+        candidate_paths
+    }
 }
 
 /// Extracts the path to a specific extern crate from rustc arguments if provided with `=<path>`.

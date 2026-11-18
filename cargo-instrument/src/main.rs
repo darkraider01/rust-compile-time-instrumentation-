@@ -4,11 +4,14 @@ use std::process::{self, Command};
 
 use cargo_instrument::{
     analyze_source_file, resolve_package_spec, run_wrapper, transform_source_file,
-    transform_source_str, SessionPlan, UnitId, WrapperConfig, DEBUG_ENV, SESSION_ENV,
+    transform_source_str, CrateInvocation, SessionPlan, UnitId, WrapperConfig, DEBUG_ENV,
+    SESSION_ENV,
 };
 
 const WRAPPER_MODE_ENV: &str = "CARGO_INSTRUMENT_WRAPPER_MODE";
 const DEFAULT_TARGET_DIR: &str = "target/instrumented";
+pub const PREPASS_TOKEN_ENV: &str = "CARGO_INSTRUMENT_INTERNAL_PREPASS_TOKEN";
+pub const PREPASS_SESSION_ENV: &str = "CARGO_INSTRUMENT_PREPASS_SESSION";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -23,9 +26,13 @@ fn main() {
             }
         };
 
-        if env::var("CARGO_INSTRUMENT_PREPASS").is_ok() {
-            run_prepass_wrapper(&config);
-            return;
+        if let (Ok(token), Ok(session_path)) =
+            (env::var(PREPASS_TOKEN_ENV), env::var(PREPASS_SESSION_ENV))
+        {
+            if !token.is_empty() && token.starts_with("prepass_") {
+                run_prepass_wrapper(&config, Path::new(&session_path));
+                return;
+            }
         }
 
         match run_wrapper(&config) {
@@ -40,15 +47,34 @@ fn main() {
     }
 }
 
-fn run_prepass_wrapper(config: &WrapperConfig) {
+fn run_prepass_wrapper(config: &WrapperConfig, session_file: &Path) {
     let mut args_to_run = config.rustc_args.clone();
-    if let Some(target_dir_idx) = args_to_run.windows(2).position(|w| w[0] == "--out-dir") {
-        let out_dir = Path::new(&args_to_run[target_dir_idx + 1]);
-        for path in find_prepass_search_paths(out_dir) {
-            let flag = format!("dependency={}", path.display());
-            if !args_to_run.windows(2).any(|w| w[0] == "-L" && w[1] == flag) {
-                args_to_run.push("-L".to_string());
-                args_to_run.push(flag);
+
+    if session_file.is_file() {
+        if let Ok(plan) = SessionPlan::load_from_file(session_file) {
+            if let Ok(invocation) = CrateInvocation::parse(&config.rustc_args) {
+                if let (Some(crate_name), Some(source_file)) =
+                    (invocation.unit.crate_name(), invocation.unit.source_file())
+                {
+                    let current_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    let resolved_path = if source_file.is_absolute() {
+                        source_file.to_path_buf()
+                    } else {
+                        current_dir.join(source_file)
+                    };
+                    let search_paths = plan.validated_native_otel_search_paths(
+                        crate_name,
+                        Some(&resolved_path),
+                        &config.rustc_args,
+                    );
+                    for path in search_paths {
+                        let flag = format!("dependency={}", path.display());
+                        if !args_to_run.windows(2).any(|w| w[0] == "-L" && w[1] == flag) {
+                            args_to_run.push("-L".to_string());
+                            args_to_run.push(flag);
+                        }
+                    }
+                }
             }
         }
     }
@@ -64,57 +90,6 @@ fn run_prepass_wrapper(config: &WrapperConfig) {
         }
     };
     process::exit(status.code().unwrap_or(1));
-}
-
-fn find_prepass_search_paths(out_dir: &Path) -> Vec<PathBuf> {
-    let mut search_paths = Vec::new();
-    let mut curr = out_dir;
-    while let Some(parent) = curr.parent() {
-        let session_file = parent.join("cargo_instrument_session.json");
-        if session_file.is_file() {
-            if let Ok(content) = std::fs::read_to_string(&session_file) {
-                if let Ok(plan) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(artifacts) = plan["r4_native_otel_artifacts"].as_array() {
-                        for art in artifacts {
-                            if let Some(paths) = art["search_paths"].as_array() {
-                                for p in paths {
-                                    if let Some(s) = p.as_str() {
-                                        search_paths.push(PathBuf::from(s));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if !search_paths.is_empty() {
-                return search_paths;
-            }
-        }
-        let build_dir = parent.join("build");
-        if build_dir.is_dir() {
-            if let Ok(crates) = std::fs::read_dir(&build_dir) {
-                for c in crates.flatten() {
-                    if let Ok(hashes) = std::fs::read_dir(c.path()) {
-                        for h in hashes.flatten() {
-                            let out = h.path().join("out");
-                            if out.is_dir() {
-                                search_paths.push(out);
-                            }
-                        }
-                    }
-                }
-            }
-            if !search_paths.is_empty() {
-                return search_paths;
-            }
-        }
-        if parent.ends_with("target") || parent.parent().is_none() {
-            break;
-        }
-        curr = parent;
-    }
-    search_paths
 }
 
 /// Detect whether the binary was invoked as a compiler wrapper by Cargo.
@@ -545,14 +520,33 @@ fn acquire_native_artifacts(
         prepass_args.push(target_dir.display().to_string());
     }
 
+    let prepass_token = format!("prepass_{}_{}", plan.session_id, std::process::id());
+    let session_file = target_dir.join("cargo_instrument_session.json");
+    let valid_prepass_session = if session_file.is_file() {
+        SessionPlan::load_from_file(&session_file)
+            .map(|old_plan| old_plan.fingerprint == plan.fingerprint)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
     let current_exe =
         env::current_exe().map_err(|e| format!("failed to locate current executable: {e}"))?;
-    let output = Command::new("cargo")
+    let mut prepass_cmd = Command::new("cargo");
+    prepass_cmd
         .current_dir(invocation_dir)
         .args(&prepass_args)
         .env("RUSTC_WRAPPER", &current_exe)
-        .env("CARGO_INSTRUMENT_PREPASS", "1")
         .env(WRAPPER_MODE_ENV, "1")
+        .env(PREPASS_TOKEN_ENV, &prepass_token);
+
+    if valid_prepass_session {
+        prepass_cmd.env(PREPASS_SESSION_ENV, &session_file);
+    } else {
+        prepass_cmd.env_remove(PREPASS_SESSION_ENV);
+    }
+
+    let output = prepass_cmd
         .output()
         .map_err(|e| format!("failed to run same-target artifact pre-pass: {e}"))?;
 

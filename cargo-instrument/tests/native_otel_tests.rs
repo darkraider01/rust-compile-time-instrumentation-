@@ -1314,3 +1314,40 @@ async fn test_async_matrix() {
         String::from_utf8_lossy(&test_output.stderr)
     );
 }
+
+#[test]
+fn test_native_otel_single_generic_result_alias_collision() {
+    let source = r#"
+pub struct CustomError;
+pub type Result<T> = core::result::Result<T, CustomError>;
+
+pub fn do_computation(x: i32) -> Result<i32> {
+    if x < 0 {
+        return Err(CustomError);
+    }
+    Ok(x * 2)
+}
+
+pub async fn do_async_computation(x: i32) -> Result<i32> {
+    if x < 0 {
+        return Err(CustomError);
+    }
+    Ok(x * 3)
+}
+"#;
+    let report = analyze_source_str("result_alias", Path::new("src/lib.rs"), source)
+        .expect("analyze source");
+    assert_eq!(report.candidates.len(), 2);
+
+    let transformed =
+        transform_source_str_with_native_otel(source, "result_alias", &report.candidates)
+            .expect("transform source");
+
+    // Must use core::result::Result<_, _> rather than unqualified Result<_, _>
+    // to avoid collision with the 1-generic-parameter type alias pub type Result<T> = ...
+    assert!(transformed.contains("let __otel_res: core::result::Result<_, _> = (|| {"));
+    assert!(transformed.contains(
+        "let __otel_res: core::result::Result<_, _> = opentelemetry::trace::FutureExt::with_context(async move {"
+    ));
+    assert!(!transformed.contains("let __otel_res: Result<_, _> ="));
+}
