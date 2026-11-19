@@ -40,24 +40,6 @@ pub fn is_valid_prepass_token(token: &str) -> bool {
         .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
 }
 
-/// Validate whether an internal pre-pass authorization token matches the required format.
-pub fn is_valid_prepass_token(token: &str) -> bool {
-    let rest = match token.strip_prefix("prepass_") {
-        Some(r) => r,
-        None => return false,
-    };
-    if rest.is_empty() {
-        return false;
-    }
-    let parts: Vec<&str> = rest.split('_').collect();
-    if parts.len() < 2 {
-        return false;
-    }
-    parts.iter().all(|part| {
-        !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-    })
-}
-
 #[derive(Debug, Error)]
 pub enum WrapperError {
     #[error("No rustc command specified")]

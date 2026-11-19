@@ -1,31 +1,60 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use cargo_instrument::{
     is_valid_prepass_token, CargoDepEdge, R4NativeOtelArtifact, R4Profile, SessionPlan,
     PREPASS_FINGERPRINT_ENV, PREPASS_SESSION_ENV, PREPASS_TOKEN_ENV, WRAPPER_MODE_ENV,
 };
 
-fn create_mock_rustc(dir: &Path) -> PathBuf {
-    let mock_path = dir.join("mock_rustc.sh");
-    let script = r#"#!/bin/sh
-if [ -n "$MOCK_RUSTC_LOG" ]; then
-    for arg in "$@"; do
-        echo "$arg" >> "$MOCK_RUSTC_LOG"
-    done
-fi
-exit "${MOCK_RUSTC_EXIT_CODE:-0}"
-"#;
-    fs::write(&mock_path, script).expect("write mock rustc");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&mock_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&mock_path, perms).unwrap();
+static MOCK_RUSTC_DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+fn get_mock_rustc() -> PathBuf {
+    let temp = MOCK_RUSTC_DIR.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("create tempdir for mock rustc");
+        let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+        let src = dir.path().join("mock_rustc.rs");
+        let exe_name = if cfg!(windows) {
+            "mock_rustc.exe"
+        } else {
+            "mock_rustc"
+        };
+        let out = dir.path().join(exe_name);
+        let code = r#"
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Ok(log_path) = std::env::var("MOCK_RUSTC_LOG") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
+            for arg in &args {
+                let _ = writeln!(f, "{}", arg);
+            }
+        }
     }
-    mock_path
+    let code: i32 = std::env::var("MOCK_RUSTC_EXIT_CODE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    std::process::exit(code);
+}
+"#;
+        std::fs::write(&src, code).expect("write mock rustc source");
+        let status = Command::new(&rustc)
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .status()
+            .expect("compile mock rustc");
+        assert!(status.success(), "mock rustc must compile");
+        dir
+    });
+    let exe_name = if cfg!(windows) {
+        "mock_rustc.exe"
+    } else {
+        "mock_rustc"
+    };
+    temp.path().join(exe_name)
 }
 
 fn read_mock_args(log_path: &Path) -> Vec<String> {
@@ -127,7 +156,7 @@ fn test_prepass_wrapper_valid_session_injects_paths() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (source_file, out_dir) = setup_test_crate(temp.path());
     let (plan, session_file, otel_dir) = setup_session_with_otel(temp.path(), &source_file);
-    let mock_rustc = create_mock_rustc(temp.path());
+    let mock_rustc = get_mock_rustc();
     let log_path = temp.path().join("mock_rustc.log");
 
     let source_before = fs::read_to_string(&source_file).unwrap();
@@ -201,7 +230,7 @@ fn test_prepass_wrapper_valid_session_injects_paths() {
 fn test_prepass_wrapper_missing_session_runs_unmodified_without_fallthrough() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (source_file, out_dir) = setup_test_crate(temp.path());
-    let mock_rustc = create_mock_rustc(temp.path());
+    let mock_rustc = get_mock_rustc();
     let log_path = temp.path().join("mock_rustc.log");
 
     let source_before = fs::read_to_string(&source_file).unwrap();
@@ -274,7 +303,7 @@ fn test_prepass_wrapper_missing_session_runs_unmodified_without_fallthrough() {
 fn test_prepass_wrapper_corrupted_session_runs_safely() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (source_file, out_dir) = setup_test_crate(temp.path());
-    let mock_rustc = create_mock_rustc(temp.path());
+    let mock_rustc = get_mock_rustc();
     let log_path = temp.path().join("mock_rustc.log");
 
     // Write malformed JSON to session file
@@ -324,7 +353,7 @@ fn test_prepass_wrapper_stale_fingerprint_omits_search_paths() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (source_file, out_dir) = setup_test_crate(temp.path());
     let (_plan, session_file, otel_dir) = setup_session_with_otel(temp.path(), &source_file);
-    let mock_rustc = create_mock_rustc(temp.path());
+    let mock_rustc = get_mock_rustc();
     let log_path = temp.path().join("mock_rustc.log");
 
     // Pass a different fingerprint in PREPASS_FINGERPRINT_ENV
@@ -364,7 +393,7 @@ fn test_prepass_wrapper_stale_fingerprint_omits_search_paths() {
 fn test_prepass_wrapper_invalid_token_fails_fast_without_invoking_compiler() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (source_file, out_dir) = setup_test_crate(temp.path());
-    let mock_rustc = create_mock_rustc(temp.path());
+    let mock_rustc = get_mock_rustc();
     let log_path = temp.path().join("mock_rustc.log");
 
     // Invalid token format (e.g. malformed prefix / structure)
@@ -407,7 +436,7 @@ fn test_prepass_wrapper_invalid_token_fails_fast_without_invoking_compiler() {
 fn test_prepass_wrapper_compiler_failure_propagates_exit_code() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (source_file, out_dir) = setup_test_crate(temp.path());
-    let mock_rustc = create_mock_rustc(temp.path());
+    let mock_rustc = get_mock_rustc();
     let log_path = temp.path().join("mock_rustc.log");
 
     let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
