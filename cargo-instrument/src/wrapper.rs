@@ -22,7 +22,14 @@ pub const PREPASS_TOKEN_ENV: &str = "CARGO_INSTRUMENT_INTERNAL_PREPASS_TOKEN";
 pub const PREPASS_SESSION_ENV: &str = "CARGO_INSTRUMENT_PREPASS_SESSION";
 pub const PREPASS_FINGERPRINT_ENV: &str = "CARGO_INSTRUMENT_PREPASS_FINGERPRINT";
 
-/// Validate whether an internal pre-pass authorization token matches the required format.
+/// Validate whether an internal pre-pass mode selector token matches the required format.
+///
+/// This token is an internal inter-process execution mode selector and safety guard,
+/// NOT a cryptographic secret or external security mechanism. It ensures deterministic
+/// dispatch between the parent `cargo-instrument` invocation and child `rustc` wrapper
+/// processes: if the environment variable is corrupted, empty, or set to an invalid
+/// format, the wrapper fails fast with exit code 1 rather than falling through to
+/// normal instrumentation or executing unintended code paths.
 pub fn is_valid_prepass_token(token: &str) -> bool {
     let rest = match token.strip_prefix("prepass_") {
         Some(r) => r,
@@ -632,7 +639,7 @@ pub fn run_prepass_wrapper(
             if let Ok(plan) = SessionPlan::load_from_file(session_path) {
                 let fingerprint_valid = match env::var(PREPASS_FINGERPRINT_ENV) {
                     Ok(expected_fp) => !expected_fp.is_empty() && plan.fingerprint == expected_fp,
-                    Err(_) => true,
+                    Err(_) => false,
                 };
 
                 if fingerprint_valid {

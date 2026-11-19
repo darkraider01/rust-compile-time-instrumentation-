@@ -1393,3 +1393,383 @@ fn test_native_otel_search_paths_requires_existing_rlib_and_trace_feature() {
         "valid artifact must be accepted"
     );
 }
+
+#[test]
+fn test_compilation_context_dependency_kind_filtering() {
+    use cargo_instrument::{CargoDepEdge, R4NativeOtelArtifact, R4Profile, SessionPlan};
+
+    let temp = tempfile::tempdir().unwrap();
+    let otel_dir = temp.path().join("otel_search_dir");
+    fs::create_dir_all(&otel_dir).unwrap();
+    let rlib_path = otel_dir.join("libopentelemetry.rlib");
+    fs::write(&rlib_path, b"dummy rlib content").unwrap();
+
+    let otel_id = "opentelemetry 0.32.0".to_string();
+    let app_a_id = "app_a 0.1.0".to_string();
+    let app_b_id = "app_b 0.1.0".to_string();
+    let app_c_id = "app_c 0.1.0".to_string();
+    let app_multi_id = "app_multi 0.1.0".to_string();
+
+    let crate_a_id = "crate_a 0.1.0".to_string();
+    let crate_b_id = "crate_b 0.1.0".to_string();
+    let crate_c_id = "crate_c 0.1.0".to_string();
+    let crate_multi_id = "crate_multi 0.1.0".to_string();
+
+    let mut plan = SessionPlan::default();
+    for (id, name) in [
+        (&otel_id, "opentelemetry"),
+        (&app_a_id, "app_a"),
+        (&app_b_id, "app_b"),
+        (&app_c_id, "app_c"),
+        (&app_multi_id, "app_multi"),
+        (&crate_a_id, "crate_a"),
+        (&crate_b_id, "crate_b"),
+        (&crate_c_id, "crate_c"),
+        (&crate_multi_id, "crate_multi"),
+    ] {
+        plan.package_names_by_id
+            .insert(id.clone(), name.to_string());
+        plan.package_manifest_dirs
+            .insert(id.clone(), temp.path().join(name));
+    }
+
+    // All dependency crates map to the valid OpenTelemetry artifact
+    plan.r4_otel_package_by_dependency
+        .insert(crate_a_id.clone(), otel_id.clone());
+    plan.r4_otel_package_by_dependency
+        .insert(crate_b_id.clone(), otel_id.clone());
+    plan.r4_otel_package_by_dependency
+        .insert(crate_c_id.clone(), otel_id.clone());
+    plan.r4_otel_package_by_dependency
+        .insert(crate_multi_id.clone(), otel_id.clone());
+
+    // 1. app_a depends on crate_a via normal dependency (kinds: [None])
+    plan.package_dependencies.insert(
+        app_a_id.clone(),
+        vec![CargoDepEdge {
+            binding_name: "crate_a".into(),
+            package_id: crate_a_id.clone(),
+            kinds: vec![None],
+        }],
+    );
+    // 2. app_b depends on crate_b via build-only dependency (kinds: [Some("build")])
+    plan.package_dependencies.insert(
+        app_b_id.clone(),
+        vec![CargoDepEdge {
+            binding_name: "crate_b".into(),
+            package_id: crate_b_id.clone(),
+            kinds: vec![Some("build".into())],
+        }],
+    );
+    // 3 & 4. app_c depends on crate_c via dev-only dependency (kinds: [Some("dev")])
+    plan.package_dependencies.insert(
+        app_c_id.clone(),
+        vec![CargoDepEdge {
+            binding_name: "crate_c".into(),
+            package_id: crate_c_id.clone(),
+            kinds: vec![Some("dev".into())],
+        }],
+    );
+    // 5 & 6. app_multi depends on crate_multi via multi-kind (kinds: [None, Some("build")])
+    plan.package_dependencies.insert(
+        app_multi_id.clone(),
+        vec![CargoDepEdge {
+            binding_name: "crate_multi".into(),
+            package_id: crate_multi_id.clone(),
+            kinds: vec![None, Some("build".into())],
+        }],
+    );
+
+    for dep_id in [&crate_a_id, &crate_b_id, &crate_c_id, &crate_multi_id] {
+        plan.package_dependencies.insert((*dep_id).clone(), vec![]);
+    }
+
+    let profile = R4Profile {
+        opt_level: "3".to_string(),
+        debug_assertions: false,
+        overflow_checks: false,
+        test: false,
+    };
+
+    plan.r4_native_otel_artifacts.push(R4NativeOtelArtifact {
+        package_id: otel_id.clone(),
+        package_version: "0.32.0".to_string(),
+        resolved_features: vec!["trace".into()],
+        target: None,
+        profile: profile.clone(),
+        rlib_path: rlib_path.clone(),
+        search_paths: vec![otel_dir.clone()],
+    });
+
+    let normal_args = vec!["-C".to_string(), "opt-level=3".to_string()];
+    let test_args = vec![
+        "--test".to_string(),
+        "-C".to_string(),
+        "opt-level=3".to_string(),
+    ];
+    let proc_macro_args = vec![
+        "--crate-type".to_string(),
+        "proc-macro".to_string(),
+        "-C".to_string(),
+        "opt-level=3".to_string(),
+    ];
+
+    let app_a_src = temp.path().join("app_a/src/main.rs");
+    let app_b_src = temp.path().join("app_b/src/main.rs");
+    let app_c_src = temp.path().join("app_c/src/main.rs");
+    let app_multi_src = temp.path().join("app_multi/src/main.rs");
+    let build_rs_src = temp.path().join("app_a/build.rs");
+
+    // Case 1: Target crate depending on crate A via normal dependency -> receives paths
+    let paths_a_normal =
+        plan.validated_native_otel_search_paths("app_a", Some(&app_a_src), &normal_args);
+    assert_eq!(
+        paths_a_normal,
+        vec![otel_dir.clone()],
+        "normal dependency must receive search paths in normal build"
+    );
+    let paths_a_test =
+        plan.validated_native_otel_search_paths("app_a", Some(&app_a_src), &test_args);
+    assert_eq!(
+        paths_a_test,
+        vec![otel_dir.clone()],
+        "normal dependency must receive search paths in test build"
+    );
+
+    // Case 2: Target crate depending on crate B via build-only dependency -> does NOT receive paths
+    let paths_b_normal =
+        plan.validated_native_otel_search_paths("app_b", Some(&app_b_src), &normal_args);
+    assert!(
+        paths_b_normal.is_empty(),
+        "build-only dependency must NOT inject search paths into target unit"
+    );
+
+    // Case 3: Target crate depending on crate C via dev-only dependency -> does NOT receive paths in normal compilation
+    let paths_c_normal =
+        plan.validated_native_otel_search_paths("app_c", Some(&app_c_src), &normal_args);
+    assert!(
+        paths_c_normal.is_empty(),
+        "dev-only dependency must NOT inject search paths in normal build"
+    );
+
+    // Case 4: Target crate compiling with `--test` depending on crate C via dev-only dependency -> DOES receive paths
+    let paths_c_test =
+        plan.validated_native_otel_search_paths("app_c", Some(&app_c_src), &test_args);
+    assert_eq!(
+        paths_c_test,
+        vec![otel_dir.clone()],
+        "dev-only dependency DOES receive search paths when compiling with --test"
+    );
+
+    // Case 5: Target crate compiling with `--test` depending on crate B via build-only dependency -> does NOT receive paths
+    let paths_b_test =
+        plan.validated_native_otel_search_paths("app_b", Some(&app_b_src), &test_args);
+    assert!(
+        paths_b_test.is_empty(),
+        "build-only dependency must NOT receive search paths even when compiling with --test"
+    );
+
+    // Case 6: Multi-kind dependency (both normal and build) -> receives paths in normal compilation
+    let paths_multi_normal =
+        plan.validated_native_otel_search_paths("app_multi", Some(&app_multi_src), &normal_args);
+    assert_eq!(
+        paths_multi_normal,
+        vec![otel_dir.clone()],
+        "multi-kind dependency containing normal kind must receive paths"
+    );
+
+    // Case 7: Host units (build script build.rs or build_script_build, or proc-macro crate-type) never receive target paths
+    let paths_build_script = plan.validated_native_otel_search_paths(
+        "build_script_build",
+        Some(&build_rs_src),
+        &normal_args,
+    );
+    assert!(
+        paths_build_script.is_empty(),
+        "build scripts must never receive target OpenTelemetry search paths"
+    );
+    let paths_proc_macro =
+        plan.validated_native_otel_search_paths("app_a", Some(&app_a_src), &proc_macro_args);
+    assert!(
+        paths_proc_macro.is_empty(),
+        "proc macros must never receive target OpenTelemetry search paths"
+    );
+
+    // Case 8: Missing or stale on-disk .rlib rejected
+    fs::remove_file(&rlib_path).unwrap();
+    let paths_stale_rlib =
+        plan.validated_native_otel_search_paths("app_a", Some(&app_a_src), &normal_args);
+    assert!(
+        paths_stale_rlib.is_empty(),
+        "missing/stale .rlib must cause conservative rejection of search paths"
+    );
+}
+
+#[test]
+fn test_compilation_context_cargo_build_and_dev_dependencies() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path();
+
+    fs::write(
+        workspace.join("Cargo.toml"),
+        r#"[workspace]
+members = ["app"]
+exclude = ["dep_normal", "dep_build", "dep_dev", "otel-shim"]
+resolver = "2"
+"#,
+    )
+    .unwrap();
+
+    write_shim(&workspace.join("otel-shim"));
+
+    // dep_normal: target dependency
+    let dep_normal = workspace.join("dep_normal");
+    fs::create_dir_all(dep_normal.join("src")).unwrap();
+    fs::write(
+        dep_normal.join("Cargo.toml"),
+        r#"[package]
+name = "dep_normal"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dep_normal.join("src/lib.rs"),
+        r#"pub fn compute() -> u32 { 101 }
+"#,
+    )
+    .unwrap();
+
+    // dep_build: build-only dependency
+    let dep_build = workspace.join("dep_build");
+    fs::create_dir_all(dep_build.join("src")).unwrap();
+    fs::write(
+        dep_build.join("Cargo.toml"),
+        r#"[package]
+name = "dep_build"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dep_build.join("src/lib.rs"),
+        r#"pub fn build_value() -> &'static str { "BUILD_OK" }
+"#,
+    )
+    .unwrap();
+
+    // dep_dev: dev-only dependency
+    let dep_dev = workspace.join("dep_dev");
+    fs::create_dir_all(dep_dev.join("src")).unwrap();
+    fs::write(
+        dep_dev.join("Cargo.toml"),
+        r#"[package]
+name = "dep_dev"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dep_dev.join("src/lib.rs"),
+        r#"pub fn test_value() -> u32 { 202 }
+"#,
+    )
+    .unwrap();
+
+    // app: application using all three in distinct contexts
+    let app = workspace.join("app");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::create_dir_all(app.join("tests")).unwrap();
+    fs::write(
+        app.join("Cargo.toml"),
+        r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dep_normal = { path = "../dep_normal" }
+opentelemetry = "0.32.0"
+otel-shim = { path = "../otel-shim" }
+
+[build-dependencies]
+dep_build = { path = "../dep_build" }
+
+[dev-dependencies]
+dep_dev = { path = "../dep_dev" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app.join("build.rs"),
+        r#"fn main() {
+    println!("cargo:warning=BUILD_SCRIPT_RUNNING_{}", dep_build::build_value());
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app.join("src/main.rs"),
+        r#"fn main() {
+    otel_shim::init();
+    println!("APP_RESULT={}", dep_normal::compute());
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app.join("tests/integration_test.rs"),
+        r#"#[test]
+fn test_dev_dep() {
+    assert_eq!(dep_dev::test_value(), 202);
+}
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .args([
+            "--with-dependencies",
+            "--",
+            "run",
+            "--package",
+            "app",
+            "--offline",
+        ])
+        .current_dir(workspace)
+        .env("INSTRUMENT_DEBUG", "1")
+        .output()
+        .expect("run app under cargo-instrument");
+
+    assert_success(&output, "run app under cargo-instrument");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Assert app ran and computed correctly
+    assert!(stdout.contains("APP_RESULT=101"), "stdout:\n{stdout}");
+
+    // Assert build script executed without being transformed or injected with target otel
+    assert!(
+        stderr.contains("BUILD_SCRIPT_RUNNING_BUILD_OK"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("crate=build_script_build] selecting"),
+        "build script must never select an instrumentation emitter:\n{stderr}"
+    );
+
+    // Assert normal target dependency was transformed and selected native R-4 emitter
+    assert!(
+        stderr.contains("crate=dep_normal] selecting native R-4 emitter"),
+        "dep_normal must select native R-4 emitter:\n{stderr}"
+    );
+
+    // Assert build-only dependency was NOT selected for instrumentation
+    assert!(
+        !stderr.contains("crate=dep_build] selecting"),
+        "build-only dependency must not be instrumented for target:\n{stderr}"
+    );
+}

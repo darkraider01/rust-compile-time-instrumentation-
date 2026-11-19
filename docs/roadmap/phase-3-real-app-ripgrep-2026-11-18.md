@@ -40,7 +40,7 @@ Key results from this evaluation:
      - **Repeat release build**: Baseline 0.048 s vs. Instrumented 0.217 s (4.48× overhead ratio, +0.169 s absolute delta).
      - **App-only edit build**: Baseline 3.88 s vs. Instrumented 4.24 s (1.09× overhead ratio, +0.359 s absolute delta).
      - **Workload runtime execution**: Baseline 4.75 ms vs. Instrumented 7.02 ms (1.48× overhead ratio, +2.27 ms absolute delta for 7,096 spans, ~320 ns/span).
-   - **Session 2 (Post-Hardening Validation, commit `2d9d10d6`, concurrent background test load)**:
+   - **Session 2 (Post-Hardening Validation, Provenance-Limited, concurrent background test load)**:
      - **Clean release build**: Baseline 19.18 s vs. Instrumented 46.99 s (2.45× overhead ratio, +27.82 s absolute delta).
      - **Repeat release build**: Baseline 0.055 s vs. Instrumented 0.246 s (4.44× overhead ratio, +0.190 s absolute delta).
      - **App-only edit build**: Baseline 5.06 s vs. Instrumented 6.07 s (1.20× overhead ratio, +1.010 s absolute delta).
@@ -60,8 +60,8 @@ All evaluation measurements and evidence artifacts were captured in an isolated,
 - **Cargo**: `cargo 1.100.0 (3acc79c0c 2026-11-05)`
 - **Tool Revisions & Provenance**:
   - **Session 1 (Initial Evaluation)**: commit `48262c6d86c5f7dcd97d1c98f094cc8a371beb4d` + initial ripgrep fixes, binary SHA-256 `6680134a21867768caec555d22fa26766526267817a9c26eb013fd8dc70c7679` (captured 2026-11-18T07:30:23Z, dedicated load).
-  - **Session 2 (Post-Hardening Validation)**: commit `2d9d10d6cc69691433940850a4be1d4017c9695e`, binary SHA-256 `16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8` (captured 2026-11-18T11:03:24Z, concurrent background test load).
-  - *Provenance Note*: The intermediate commit `82c1c10326947efa67a7d64935ea052638c4f277` was recorded in the raw evidence manifest at capture time because `git rev-parse HEAD` evaluated the committed HEAD prior to committing the hardening changes in `2d9d10d6cc69691433940850a4be1d4017c9695e`. The compiled tool binary SHA-256 (`16541cc8...`) authentically verifies that the post-hardening code was evaluated.
+  - **Session 2 (Post-Hardening Validation, Provenance-Limited)**: committed HEAD `82c1c10326947efa67a7d64935ea052638c4f277` with uncommitted working-tree hardening changes (subsequently committed in `2d9d10d6cc69691433940850a4be1d4017c9695e`), binary SHA-256 `16541cc8599d896c93f5eb45aa71c406e0d8b33a97a62fec56b13c1c20aee8e8` (captured 2026-11-18T11:03:24Z, concurrent background test load).
+  - *Provenance Note*: Session 2 is designated "provenance-limited". The raw evidence manifest recorded `tool_revision: 82c1c10326947efa67a7d64935ea052638c4f277` because `git rev-parse HEAD` evaluated the committed repository HEAD at capture time while uncommitted working-tree modifications from the active hardening cycle were present in the build tree before being committed in `2d9d10d6`. Because uncommitted working-tree state cannot be independently reproduced from git commit hashes alone without a tree hash, Session 2 cannot claim strict commit provenance; however, the compiled binary SHA-256 (`16541cc8...`) provides verifiable binary provenance that the post-hardening implementation was executed.
 - **Evaluated Application**: `BurntSushi/ripgrep` @ revision `4649aa9700619f94cf9c66876e9549d83420e16c` (Tag `14.1.1`, License: `Unlicense OR MIT`)
 - **Deterministic Workload**: `rg --threads 1 --sort path --color always "fn parse" crates/`
 - **Workload Output**: 2,122 bytes, SHA-256 `1d914b97badcb59f2ec82dcf631d3715cc2f5e4c99059219776da6d578e86aec`, exit code `0`
@@ -139,7 +139,7 @@ All measurements were collected using alternating paired order across isolated v
 
 The evaluation encompasses two distinct benchmark captures:
 1. **Session 1 (Dedicated Host, commit `48262c6d` + initial ripgrep fixes)**: Captured on an unconstrained 12-core host (binary `6680134a...`).
-2. **Session 2 (Post-Hardening Validation, commit `2d9d10d6`, binary `16541cc8...`)**: Captured while concurrent background cargo compilation was running on the host, increasing absolute wall-clock durations across both baseline and instrumented builds.
+2. **Session 2 (Post-Hardening Validation, Provenance-Limited, binary `16541cc8...`)**: Captured while concurrent background cargo compilation was running on the host, increasing absolute wall-clock durations across both baseline and instrumented builds. Recorded committed HEAD was `82c1c10326947efa67a7d64935ea052638c4f277` with uncommitted working-tree hardening changes (subsequently committed in `2d9d10d6cc69691433940850a4be1d4017c9695e`).
 
 | Metric | Session 1 (Dedicated Host) Baseline → Instrumented | Session 1 Overhead Ratio | Session 2 (Concurrent Load) Baseline → Instrumented | Session 2 Overhead Ratio | Consistency Assessment |
 |:---|:---:|:---:|:---:|:---:|:---|

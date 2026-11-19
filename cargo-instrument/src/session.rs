@@ -963,11 +963,12 @@ impl SessionPlan {
     /// Returns validated OpenTelemetry search paths for downstream units or pre-pass compilations.
     ///
     /// Only returns paths when all of the following invariants hold:
-    /// 1. The unit is NOT host-only (build scripts and proc macros must not receive target search paths).
+    /// 1. The unit is NOT host-only (build scripts, proc macros, and host-only crates must not receive target search paths).
     /// 2. The unit's target triple exactly matches the native artifact's target.
     /// 3. The unit's compilation profile matches the native artifact's profile.
-    /// 4. The unit belongs to a package that transitively depends on OpenTelemetry or on a unit
-    ///    configured/eligible for native OpenTelemetry instrumentation.
+    /// 4. The unit belongs to a package that transitively reaches OpenTelemetry along valid
+    ///    compilation-context edges (normal edges for normal compilation; normal and dev edges for `--test`;
+    ///    build-only edges are never traversed for target units).
     /// 5. The search path directory exists on disk.
     ///
     /// Returned paths are deterministically sorted and deduplicated.
@@ -981,12 +982,27 @@ impl SessionPlan {
             return Vec::new();
         }
 
-        if self.is_host_only_unit(crate_name, source_file) {
+        let is_build_script = crate_name == "build_script_build"
+            || crate_name.starts_with("build_script_")
+            || source_file
+                .and_then(|s| s.file_name())
+                .and_then(|n| n.to_str())
+                .map(|n| n == "build.rs")
+                .unwrap_or(false);
+        let is_proc_macro = rustc_args
+            .windows(2)
+            .any(|w| w[0] == "--crate-type" && w[1] == "proc-macro")
+            || rustc_args
+                .iter()
+                .any(|arg| arg == "--crate-type=proc-macro");
+
+        if is_build_script || is_proc_macro || self.is_host_only_unit(crate_name, source_file) {
             return Vec::new();
         }
 
         let unit_target = rustc_target(rustc_args);
         let unit_profile = rustc_profile(rustc_args);
+        let is_test = rustc_args.iter().any(|arg| arg == "--test");
 
         let pkg_id_opt = source_file
             .and_then(|s| self.package_id_for_source(s))
@@ -1016,7 +1032,11 @@ impl SessionPlan {
             if artifact.target != unit_target {
                 continue;
             }
-            if artifact.profile != unit_profile {
+            let profile_matches = artifact.profile.opt_level == unit_profile.opt_level
+                && artifact.profile.debug_assertions == unit_profile.debug_assertions
+                && artifact.profile.overflow_checks == unit_profile.overflow_checks
+                && (!artifact.profile.test || unit_profile.test);
+            if !profile_matches {
                 continue;
             }
             if !artifact.rlib_path.is_file() {
@@ -1040,6 +1060,20 @@ impl SessionPlan {
                 while let Some(curr) = queue.pop_front() {
                     if let Some(deps) = self.package_dependencies.get(curr) {
                         for edge in deps {
+                            let edge_allowed = if edge.kinds.is_empty() {
+                                true
+                            } else {
+                                edge.kinds.iter().any(|k| match k.as_deref() {
+                                    None => true,
+                                    Some("dev") => is_test,
+                                    Some("build") => false,
+                                    _ => false,
+                                })
+                            };
+                            if !edge_allowed {
+                                continue;
+                            }
+
                             if edge.package_id == artifact.package_id
                                 || self.r4_otel_package_by_dependency.get(&edge.package_id)
                                     == Some(&artifact.package_id)

@@ -390,6 +390,142 @@ fn test_prepass_wrapper_stale_fingerprint_omits_search_paths() {
 }
 
 #[test]
+fn test_prepass_wrapper_missing_fingerprint_omits_search_paths() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (source_file, out_dir) = setup_test_crate(temp.path());
+    let (_plan, session_file, otel_dir) = setup_session_with_otel(temp.path(), &source_file);
+    let mock_rustc = get_mock_rustc();
+    let log_path = temp.path().join("mock_rustc.log");
+    let source_before = fs::read_to_string(&source_file).unwrap();
+
+    // Valid session present, but PREPASS_FINGERPRINT_ENV is completely absent.
+    // Must conservatively reject session artifact injection, execute plain rustc without search paths,
+    // write no stamps, and never fall through to normal instrumentation.
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .arg(&mock_rustc)
+        .args([
+            "--crate-name",
+            "test_crate",
+            source_file.to_str().unwrap(),
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+            "-C",
+            "opt-level=3",
+        ])
+        .env(WRAPPER_MODE_ENV, "1")
+        .env(PREPASS_TOKEN_ENV, "prepass_sess123_456_789")
+        .env(PREPASS_SESSION_ENV, &session_file)
+        .env_remove(PREPASS_FINGERPRINT_ENV)
+        .env("MOCK_RUSTC_LOG", &log_path)
+        .output()
+        .expect("invoke cargo-instrument with missing fingerprint");
+
+    assert!(
+        output.status.success(),
+        "missing fingerprint in pre-pass should succeed with plain rustc"
+    );
+    let recorded_args = read_mock_args(&log_path);
+    assert!(!recorded_args.is_empty(), "mock rustc must be executed");
+
+    let expected_flag = format!("dependency={}", otel_dir.display());
+    assert!(
+        !recorded_args.iter().any(|arg| arg == &expected_flag),
+        "missing fingerprint must conservatively reject session and not inject search paths"
+    );
+
+    // Invariant: source file is unmodified
+    let source_after = fs::read_to_string(&source_file).unwrap();
+    assert_eq!(
+        source_before, source_after,
+        "pre-pass must not transform source code"
+    );
+
+    // Invariant: zero stamps written
+    let stamps: Vec<_> = fs::read_dir(&out_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .contains(".cargo-instrument-")
+        })
+        .collect();
+    assert!(
+        stamps.is_empty(),
+        "pre-pass with missing fingerprint must not write stamps"
+    );
+}
+
+#[test]
+fn test_prepass_wrapper_empty_fingerprint_omits_search_paths() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let (source_file, out_dir) = setup_test_crate(temp.path());
+    let (_plan, session_file, otel_dir) = setup_session_with_otel(temp.path(), &source_file);
+    let mock_rustc = get_mock_rustc();
+    let log_path = temp.path().join("mock_rustc.log");
+    let source_before = fs::read_to_string(&source_file).unwrap();
+
+    // Valid session present, but PREPASS_FINGERPRINT_ENV is empty string.
+    let output = Command::new(env!("CARGO_BIN_EXE_cargo-instrument"))
+        .arg(&mock_rustc)
+        .args([
+            "--crate-name",
+            "test_crate",
+            source_file.to_str().unwrap(),
+            "--crate-type",
+            "lib",
+            "--out-dir",
+            out_dir.to_str().unwrap(),
+            "-C",
+            "opt-level=3",
+        ])
+        .env(WRAPPER_MODE_ENV, "1")
+        .env(PREPASS_TOKEN_ENV, "prepass_sess123_456_789")
+        .env(PREPASS_SESSION_ENV, &session_file)
+        .env(PREPASS_FINGERPRINT_ENV, "")
+        .env("MOCK_RUSTC_LOG", &log_path)
+        .output()
+        .expect("invoke cargo-instrument with empty fingerprint");
+
+    assert!(
+        output.status.success(),
+        "empty fingerprint in pre-pass should succeed with plain rustc"
+    );
+    let recorded_args = read_mock_args(&log_path);
+    assert!(!recorded_args.is_empty(), "mock rustc must be executed");
+
+    let expected_flag = format!("dependency={}", otel_dir.display());
+    assert!(
+        !recorded_args.iter().any(|arg| arg == &expected_flag),
+        "empty fingerprint must conservatively reject session and not inject search paths"
+    );
+
+    // Invariant: source file is unmodified
+    let source_after = fs::read_to_string(&source_file).unwrap();
+    assert_eq!(
+        source_before, source_after,
+        "pre-pass must not transform source code"
+    );
+
+    // Invariant: zero stamps written
+    let stamps: Vec<_> = fs::read_dir(&out_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .contains(".cargo-instrument-")
+        })
+        .collect();
+    assert!(
+        stamps.is_empty(),
+        "pre-pass with empty fingerprint must not write stamps"
+    );
+}
+
+#[test]
 fn test_prepass_wrapper_invalid_token_fails_fast_without_invoking_compiler() {
     let temp = tempfile::tempdir().expect("tempdir");
     let (source_file, out_dir) = setup_test_crate(temp.path());
